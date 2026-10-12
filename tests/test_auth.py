@@ -16,7 +16,7 @@ from needtoknow.auth import (
     authenticate,
     jwks_signing_key,
 )
-from needtoknow.config import Settings
+from needtoknow.config import JWKS_PATH, Settings
 
 Sign = Callable[[dict[str, object]], str]
 
@@ -26,15 +26,15 @@ def test_valid_token_gives_user_groups_and_everyone(
 ) -> None:
     identity = authenticate(sign_token({}), token_settings, token_signing_key)
 
-    assert identity.user_id == "lukas"
-    assert identity.principals == {"user:lukas", "group:everyone", "group:finance"}
+    assert identity.user_id == "district-1"
+    assert identity.principals == {"user:district-1", "group:everyone", "group:district:1"}
 
 
 def test_missing_groups_gives_user_and_everyone(
     sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup
 ) -> None:
     identity = authenticate(sign_token({"groups": None}), token_settings, token_signing_key)
-    assert identity.principals == {"user:lukas", "group:everyone"}
+    assert identity.principals == {"user:district-1", "group:everyone"}
 
 
 @pytest.mark.parametrize(
@@ -50,8 +50,8 @@ def test_missing_groups_gives_user_and_everyone(
         pytest.param({"typ": "ID"}, "not an access token", id="id-token"),
         pytest.param({"preferred_username": None}, "preferred_username", id="no-username"),
         pytest.param({"preferred_username": "a,b"}, "comma", id="comma-in-username"),
-        pytest.param({"groups": ["finance,hr"]}, "comma", id="comma-in-group"),
-        pytest.param({"groups": "finance"}, "groups must be a list", id="groups-not-a-list"),
+        pytest.param({"groups": ["district:1,analyst"]}, "comma", id="comma-in-group"),
+        pytest.param({"groups": "district:1"}, "groups must be a list", id="groups-not-a-list"),
     ],
 )
 def test_bad_claims_are_refused(
@@ -69,7 +69,7 @@ def test_audience_list_naming_the_api_is_accepted(
     sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup
 ) -> None:
     token = sign_token({"aud": ["account", token_settings.client_id]})
-    assert authenticate(token, token_settings, token_signing_key).user_id == "lukas"
+    assert authenticate(token, token_settings, token_signing_key).user_id == "district-1"
 
 
 def test_clock_skew_within_thirty_seconds_is_accepted(
@@ -79,8 +79,8 @@ def test_clock_skew_within_thirty_seconds_is_accepted(
     issued_ahead = sign_token({"iat": now + 10})
     expired_just_now = sign_token({"iat": now - 300, "exp": now - 10})
 
-    assert authenticate(issued_ahead, token_settings, token_signing_key).user_id == "lukas"
-    assert authenticate(expired_just_now, token_settings, token_signing_key).user_id == "lukas"
+    assert authenticate(issued_ahead, token_settings, token_signing_key).user_id == "district-1"
+    assert authenticate(expired_just_now, token_settings, token_signing_key).user_id == "district-1"
 
 
 def test_unreachable_key_server_is_unavailable_not_invalid(
@@ -97,7 +97,11 @@ def test_real_key_client_reports_a_closed_port_as_unavailable(
     sign_token: Sign, token_settings: Settings
 ) -> None:
     # Nothing listens on port 9, so the connection is refused at once.
-    closed = replace(token_settings, issuer="http://127.0.0.1:9/realms/needtoknow")
+    closed = replace(
+        token_settings,
+        issuer="http://127.0.0.1:9/realms/needtoknow",
+        jwks_url=f"http://127.0.0.1:9/realms/needtoknow{JWKS_PATH}",
+    )
     with pytest.raises(AuthUnavailable):
         authenticate(sign_token({}), closed, jwks_signing_key(closed))
 
@@ -106,7 +110,7 @@ def test_bad_signature_is_refused(
     token_settings: Settings, token_signing_key: SigningKeyLookup
 ) -> None:
     other_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    token = jwt.encode({"preferred_username": "lukas"}, other_key, algorithm="RS256")
+    token = jwt.encode({"preferred_username": "district-1"}, other_key, algorithm="RS256")
     with pytest.raises(AuthError, match="Signature verification failed"):
         authenticate(token, token_settings, token_signing_key)
 
@@ -114,7 +118,9 @@ def test_bad_signature_is_refused(
 def test_symmetric_algorithm_is_refused(
     token_settings: Settings, token_signing_key: SigningKeyLookup
 ) -> None:
-    token = jwt.encode({"preferred_username": "lukas"}, "a-shared-secret-of-32-bytes-long", "HS256")
+    token = jwt.encode(
+        {"preferred_username": "district-1"}, "a-shared-secret-of-32-bytes-long", "HS256"
+    )
     with pytest.raises(AuthError, match="invalid token"):
         authenticate(token, token_settings, token_signing_key)
 

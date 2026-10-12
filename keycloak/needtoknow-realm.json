@@ -4,29 +4,71 @@
   "enabled": true,
   "groups": [
     {
-      "name": "executives"
+      "name": "district:1"
     },
     {
-      "name": "finance"
+      "name": "county:Sierra"
     },
     {
-      "name": "engineering"
-    },
-    {
-      "name": "hr"
-    },
-    {
-      "name": "sales"
+      "name": "analyst"
     }
   ],
   "users": [
     {
-      "username": "elena",
+      "username": "kaminski-v",
       "enabled": true,
-      "email": "elena@calder.example",
+      "email": "kaminski-v@needtoknow.example",
       "emailVerified": true,
-      "firstName": "Elena",
-      "lastName": "Duval",
+      "firstName": "Vince",
+      "lastName": "Kaminski",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "needtoknow",
+          "temporary": false
+        }
+      ],
+      "groups": []
+    },
+    {
+      "username": "dasovich-j",
+      "enabled": true,
+      "email": "dasovich-j@needtoknow.example",
+      "emailVerified": true,
+      "firstName": "Jeff",
+      "lastName": "Dasovich",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "needtoknow",
+          "temporary": false
+        }
+      ],
+      "groups": []
+    },
+    {
+      "username": "kean-s",
+      "enabled": true,
+      "email": "kean-s@needtoknow.example",
+      "emailVerified": true,
+      "firstName": "Steven",
+      "lastName": "Kean",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "needtoknow",
+          "temporary": false
+        }
+      ],
+      "groups": []
+    },
+    {
+      "username": "district-1",
+      "enabled": true,
+      "email": "district-1@needtoknow.example",
+      "emailVerified": true,
+      "firstName": "Hl.m. Praha",
+      "lastName": "District",
       "credentials": [
         {
           "type": "password",
@@ -35,16 +77,16 @@
         }
       ],
       "groups": [
-        "/executives"
+        "/district:1"
       ]
     },
     {
-      "username": "tomas",
+      "username": "county-sierra",
       "enabled": true,
-      "email": "tomas@calder.example",
+      "email": "county-sierra@needtoknow.example",
       "emailVerified": true,
-      "firstName": "Tomas",
-      "lastName": "Lindqvist",
+      "firstName": "Sierra",
+      "lastName": "County",
       "credentials": [
         {
           "type": "password",
@@ -53,17 +95,16 @@
         }
       ],
       "groups": [
-        "/executives",
-        "/finance"
+        "/county:Sierra"
       ]
     },
     {
-      "username": "rafael",
+      "username": "analyst",
       "enabled": true,
-      "email": "rafael@calder.example",
+      "email": "analyst@needtoknow.example",
       "emailVerified": true,
-      "firstName": "Rafael",
-      "lastName": "Ortega",
+      "firstName": "Data",
+      "lastName": "Analyst",
       "credentials": [
         {
           "type": "password",
@@ -72,170 +113,7 @@
         }
       ],
       "groups": [
-        "/executives",
-        "/engineering"
-      ]
-    },
-    {
-      "username": "chloe",
-      "enabled": true,
-      "email": "chloe@calder.example",
-      "emailVerified": true,
-      "firstName": "Chloe",
-      "lastName": "Martin",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "needtoknow",
-          "temporary": false
-        }
-      ],
-      "groups": [
-        "/hr"
-      ]
-    },
-    {
-      "username": "nadia",
-      "enabled": true,
-      "email": "nadia@calder.example",
-      "emailVerified": true,
-      "firstName": "Nadia",
-      "lastName": "Benali",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "needtoknow",
-          "temporary": false
-        }
-      ],
-      "groups": [
-        "/hr"
-      ]
-    },
-    {
-      "username": "marco",
-      "enabled": true,
-      "email": "marco@calder.example",
-      "emailVerified": true,
-      "firstName": "Marco",
-      "lastName": "Bianchi",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "needtoknow",
-          "temporary": false
-        }
-      ],
-      "groups": [
-        "/sales"
-      ]
-    },
-    {
-      "username": "sofia",
-      "enabled": true,
-      "email": "sofia@calder.example",
-      "emailVerified": true,
-      "firstName": "Sofia",
-      "lastName": "Novak",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "needtoknow",
-          "temporary": false
-        }
-      ],
-      "groups": [
-        "/sales"
-      ]
-    },
-    {
-      "username": "ben",
-      "enabled": true,
-      "email": "ben@calder.example",
-      "emailVerified": true,
-      "firstName": "Ben",
-      "lastName": "Carter",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "needtoknow",
-          "temporary": false
-        }
-      ],
-      "groups": [
-        "/sales"
-      ]
-    },
-    {
-      "username": "lukas",
-      "enabled": true,
-      "email": "lukas@calder.example",
-      "emailVerified": true,
-      "firstName": "Lukas",
-      "lastName": "Weber",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "needtoknow",
-          "temporary": false
-        }
-      ],
-      "groups": [
-        "/finance"
-      ]
-    },
-    {
-      "username": "amir",
-      "enabled": true,
-      "email": "amir@calder.example",
-      "emailVerified": true,
-      "firstName": "Amir",
-      "lastName": "Haddad",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "needtoknow",
-          "temporary": false
-        }
-      ],
-      "groups": [
-        "/engineering"
-      ]
-    },
-    {
-      "username": "julie",
-      "enabled": true,
-      "email": "julie@calder.example",
-      "emailVerified": true,
-      "firstName": "Julie",
-      "lastName": "Moreau",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "needtoknow",
-          "temporary": false
-        }
-      ],
-      "groups": [
-        "/engineering"
-      ]
-    },
-    {
-      "username": "oskar",
-      "enabled": true,
-      "email": "oskar@calder.example",
-      "emailVerified": true,
-      "firstName": "Oskar",
-      "lastName": "Nilsson",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "needtoknow",
-          "temporary": false
-        }
-      ],
-      "groups": [
-        "/engineering"
+        "/analyst"
       ]
     }
   ],

@@ -15,16 +15,18 @@ from psycopg.rows import TupleRow
 from starlette.applications import Starlette
 
 from needtoknow.auth import SigningKeyLookup
-from needtoknow.config import Settings
-from needtoknow.corpus import Corpus
+from needtoknow.config import Settings, load_settings
+from needtoknow.documents import Document
 from needtoknow.mcp_server import create_server
 from needtoknow.retrieval import MAX_RESULTS
 
 Sign = Callable[[dict[str, object]], str]
 
 URL = "http://127.0.0.1:8001/mcp"
-QUERY = "What is the salary band for a senior engineer?"
-SALARY_DOC = "hr-salary-bands-2026"
+QUERY = "Who is helping with the Wharton and Rice projects for the Tiger Team?"
+TIGER_TEAM = "enron-770963d7e2ceeb8d22d92a1ebfaba325068dfa242524cb4a8983dc0d1165f2ab"
+ACCOUNTS_IN_DISTRICT_1 = "SELECT COUNT(*) FROM financial.account WHERE district_id = 1"
+WRITE = "UPDATE financial.account SET frequency = 'x'"
 
 pytestmark = pytest.mark.anyio
 
@@ -91,16 +93,15 @@ async def test_a_request_with_garbage_is_refused(asgi_app: Starlette) -> None:
     assert response.status_code == 401
 
 
-@pytest.mark.parametrize("user", ["julie", "nadia"])
-async def test_search_returns_only_documents_the_token_employee_can_read(
+@pytest.mark.parametrize("user", ["kean-s", "kaminski-v"])
+async def test_search_returns_only_documents_the_token_user_can_read(
     owner: psycopg.Connection[TupleRow],
     asgi_app: Starlette,
     sign_token: Sign,
-    corpus: Corpus,
+    emails: dict[str, Document],
     user: str,
 ) -> None:
-    groups = {"julie": ["engineering"], "nadia": ["hr"]}[user]
-    token = sign_token({"preferred_username": user, "groups": groups})
+    token = sign_token({"preferred_username": user, "groups": []})
 
     async with _connect(asgi_app, token) as client:
         result = await client.call_tool("search_documents", {"query": QUERY, "k": MAX_RESULTS})
@@ -109,9 +110,9 @@ async def test_search_returns_only_documents_the_token_employee_can_read(
     assert result.structured_content is not None
     hits: list[dict[str, Any]] = result.structured_content["result"]
     found = {hit["doc_id"] for hit in hits}
-    readable = {doc.id for doc in corpus.documents if corpus.can_read(user, doc)}
-    assert found <= readable
-    assert (SALARY_DOC in found) == (user == "nadia")
+    for doc_id in found:
+        assert doc_id not in emails or f"user:{user}" in emails[doc_id].readers
+    assert (TIGER_TEAM in found) == (user == "kaminski-v")
     for hit in hits:
         assert set(hit) == {"doc_id", "title", "text", "distance"}
 
@@ -127,3 +128,76 @@ async def test_k_out_of_range_is_a_tool_error(
     [content] = result.content
     assert isinstance(content, TextContent)
     assert content.text.endswith(f"k must be between 1 and {MAX_RESULTS}, got {k}")
+
+
+def test_the_server_listens_on_localhost_unless_told_otherwise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("NEEDTOKNOW_MCP_HOST", raising=False)
+    assert load_settings().mcp_host == "127.0.0.1"
+
+    monkeypatch.setenv("NEEDTOKNOW_MCP_HOST", "10.1.2.3")
+    assert load_settings().mcp_host == "10.1.2.3"
+
+
+async def test_the_server_offers_the_document_and_the_data_tools(
+    asgi_app: Starlette, sign_token: Sign
+) -> None:
+    async with _connect(asgi_app, sign_token({})) as client:
+        listing = await client.list_tools()
+
+    names = {tool.name for tool in listing.tools}
+    assert names == {"search_documents", "describe_data", "query_data"}
+
+
+async def test_describe_data_names_the_bird_schemas(
+    owner: psycopg.Connection[TupleRow], asgi_app: Starlette, sign_token: Sign
+) -> None:
+    async with _connect(asgi_app, sign_token({})) as client:
+        result = await client.call_tool("describe_data", {})
+
+    assert not result.is_error
+    [content] = result.content
+    assert isinstance(content, TextContent)
+    assert "financial" in content.text
+
+
+@pytest.mark.parametrize(
+    ("user", "group", "count"),
+    [
+        pytest.param("district-1", "district:1", "5", id="the-district-sees-its-rows"),
+        pytest.param("county-sierra", "county:Sierra", "0", id="another-user-sees-none"),
+    ],
+)
+async def test_query_data_returns_only_the_rows_the_token_user_can_read(
+    owner: psycopg.Connection[TupleRow],
+    asgi_app: Starlette,
+    sign_token: Sign,
+    user: str,
+    group: str,
+    count: str,
+) -> None:
+    token = sign_token({"preferred_username": user, "groups": [group]})
+
+    async with _connect(asgi_app, token) as client:
+        result = await client.call_tool("query_data", {"sql": ACCOUNTS_IN_DISTRICT_1})
+
+    assert not result.is_error
+    [content] = result.content
+    assert isinstance(content, TextContent)
+    assert content.text.splitlines()[1] == count
+
+
+async def test_a_write_through_query_data_is_a_tool_error(
+    owner: psycopg.Connection[TupleRow], asgi_app: Starlette, sign_token: Sign
+) -> None:
+    token = sign_token({"preferred_username": "district-1", "groups": ["district:1"]})
+
+    async with _connect(asgi_app, token) as client:
+        result = await client.call_tool("query_data", {"sql": WRITE})
+
+    assert result.is_error
+    [content] = result.content
+    assert isinstance(content, TextContent)
+    assert "The query failed" in content.text
+    assert owner.execute("SELECT DISTINCT frequency FROM financial.account").fetchall() != [("x",)]

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "needtoknow"
 version = "0.0.0"
-description = "A company AI assistant that never uses a document the person asking cannot open."
+description = "Open-source AI data agent with database-enforced permissions."
 requires-python = ">=3.12"
 authors = [{ name = "Wang Jiacheng" }]
 dependencies = [
@@ -26,7 +26,7 @@ package-dir = {"" = "src"}
 packages = ["needtoknow"]
 
 [tool.setuptools.package-data]
-needtoknow = ["static/chat.html"]
+needtoknow = ["static/chat.html", "sql/*.sql"]
 
 [tool.ruff]
 line-length = 100

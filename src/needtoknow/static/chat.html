@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- The demo chat page: sign in through Keycloak, ask a question, read the answer and its sources. -->
+<!-- The demo chat page: sign in through Keycloak, ask a question, read the answer, its SQL and its sources. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -15,6 +15,7 @@
   .reply.refused { border-left-color: #b00020; }
   .question { font-weight: bold; }
   .label { color: #b00020; font-weight: bold; }
+  pre { background: #fff; padding: 0.5rem; overflow-x: auto; max-height: 20rem; }
 </style>
 </head>
 <body>
@@ -110,6 +111,23 @@
     const answer = document.createElement("p");
     answer.textContent = body.answer;
     reply.append(answer);
+    if (body.queries.length > 0) {
+      const queries = document.createElement("div");
+      queries.className = "queries";
+      for (const query of body.queries) {
+        const code = document.createElement("code");
+        code.textContent = query.sql;
+        const sql = document.createElement("pre");
+        sql.append(code);
+        const result = document.createElement("pre");
+        result.textContent = query.error ?? query.rows;
+        queries.append(sql, result);
+      }
+      const label = document.createElement("p");
+      label.className = "label";
+      label.textContent = "Queries:";
+      reply.append(label, queries);
+    }
     if (body.citations.length > 0) {
       const list = document.createElement("ul");
       for (const id of body.citations) {

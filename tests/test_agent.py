@@ -1,6 +1,6 @@
-# The agent with a scripted model and the real database: every tool runs with the asker's
-# principals and nothing the model sends can change them, citations no tool returned are
-# dropped, and the round cap, the budget and the price table stop runaway or unpriced calls.
+# The agent loop with a scripted model and the Enron slice: nothing the model sends can change
+# who is asking, citations no tool returned are dropped, each enforcement method shapes what the
+# model sees, and the round cap, the budget and the price table stop runaway or unpriced calls.
 
 import re
 from dataclasses import replace
@@ -13,7 +13,6 @@ from psycopg.rows import TupleRow
 from fakes import USAGE, ScriptedModel, call_tool, final_reply, scripted, search_call
 from needtoknow.agent import (
     MAX_TOOL_ROUNDS,
-    NO_COLLEAGUE,
     NOT_OPEN,
     REFUSAL,
     SEARCH_RESULTS,
@@ -21,74 +20,45 @@ from needtoknow.agent import (
     Answer,
     ask,
 )
+from needtoknow.auth import principals
 from needtoknow.config import load_settings
-from needtoknow.corpus import Corpus
+from needtoknow.documents import Document
 from needtoknow.methods import Method
 from needtoknow.providers import BudgetExceeded, Spending, chat_model, price_of
 
 Connection = psycopg.Connection[TupleRow]
 
-QUESTION = "What is the lower bound of the 2026 salary band for senior engineers?"
-SALARY_DOC = "hr-salary-bands-2026"
+TIGER_TEAM = "enron-770963d7e2ceeb8d22d92a1ebfaba325068dfa242524cb4a8983dc0d1165f2ab"
+QUESTION = "Who is helping with the Wharton and Rice projects for the Tiger Team?"
+CONTENT = "I have two persons in my group"
+HOLDER = principals("kaminski-v", [])
+OTHER = principals("kean-s", [])
 MODEL = "claude-haiku-5-5"
 
 
-def _ask(app: Connection, corpus: Corpus, user: str, model: ScriptedModel) -> Answer:
-    principals = corpus.employees[user].principals()
-    return ask(QUESTION, app, principals, model, Spending(MODEL, budget_usd=1.0))
+def _ask(
+    connection: Connection,
+    asker: frozenset[str],
+    model: ScriptedModel,
+    method: Method = Method.RLS,
+) -> Answer:
+    return ask(QUESTION, connection, asker, model, Spending(MODEL, budget_usd=1.0), method)
 
 
 def _tool_results(model: ScriptedModel) -> list[ToolMessage]:
-    last_prompt = model.prompts[-1]
-    return [message for message in last_prompt if isinstance(message, ToolMessage)]
+    return [message for message in model.prompts[-1] if isinstance(message, ToolMessage)]
 
 
 def _tagged_ids(result: ToolMessage) -> set[str]:
-    assert isinstance(result.content, str)
-    return set(re.findall(r"^\[([a-z0-9-]+)\]$", result.content, flags=re.MULTILINE))
+    return set(re.findall(r"^\[([a-z0-9-]+)\]", result.text, flags=re.MULTILINE))
 
 
-def test_the_allowed_user_gets_the_fact_with_its_citation(app: Connection, corpus: Corpus) -> None:
+def test_the_model_cannot_pass_principals_to_the_tool(app: Connection) -> None:
     model = scripted(
-        search_call({"query": QUESTION}),
-        final_reply(f"The lower bound is 78,400 EUR [{SALARY_DOC}]."),
+        search_call({"query": QUESTION, "principals": ["user:kaminski-v"]}), final_reply(REFUSAL)
     )
 
-    answer = _ask(app, corpus, "nadia", model)
-
-    (result,) = _tool_results(model)
-    assert SALARY_DOC in _tagged_ids(result)
-    assert "78,400" in result.text
-    assert answer.citations == (SALARY_DOC,)
-    assert answer.dropped_citations == ()
-    assert not answer.refused
-
-
-@pytest.mark.parametrize("user", ["sofia", "julie", "ben", "nadia"])
-def test_the_model_sees_only_documents_the_asker_may_read(
-    app: Connection, corpus: Corpus, user: str
-) -> None:
-    model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
-
-    _ask(app, corpus, user, model)
-
-    (result,) = _tool_results(model)
-    documents = {doc.id: doc for doc in corpus.documents}
-    returned = _tagged_ids(result)
-    assert len(returned) >= 1
-    for doc_id in returned:
-        assert corpus.can_read(user, documents[doc_id])
-    if not corpus.can_read(user, documents[SALARY_DOC]):
-        assert "78,400" not in result.text
-
-
-def test_the_model_cannot_pass_principals_to_the_tool(app: Connection, corpus: Corpus) -> None:
-    model = scripted(
-        search_call({"query": QUESTION, "principals": ["group:hr", "group:executives"]}),
-        final_reply(REFUSAL),
-    )
-
-    answer = _ask(app, corpus, "sofia", model)
+    answer = _ask(app, OTHER, model)
 
     (result,) = _tool_results(model)
     assert result.status == "error"
@@ -96,51 +66,39 @@ def test_the_model_cannot_pass_principals_to_the_tool(app: Connection, corpus: C
     assert answer.refused
 
 
-def test_a_citation_the_search_never_returned_is_dropped(app: Connection, corpus: Corpus) -> None:
+def test_a_citation_the_search_never_returned_is_dropped(app: Connection) -> None:
     model = scripted(
         search_call({"query": QUESTION}),
         final_reply(
-            f"The lower bound is 78,400 EUR [{SALARY_DOC}] [board-secret-plan]. "
-            f"It was approved in January [{SALARY_DOC}, exec-fundraising]."
+            f"Two people help [{TIGER_TEAM}] [enron-made-up]. "
+            f"They started in January [{TIGER_TEAM}, enron-other]."
         ),
     )
 
-    answer = _ask(app, corpus, "nadia", model)
+    answer = _ask(app, HOLDER, model)
 
-    assert answer.citations == (SALARY_DOC,)
-    assert answer.dropped_citations == ("board-secret-plan", "exec-fundraising")
+    assert answer.citations == (TIGER_TEAM,)
+    assert answer.dropped_citations == ("enron-made-up", "enron-other")
     assert answer.text == (
-        f"The lower bound is 78,400 EUR [{SALARY_DOC}]. It was approved in January [{SALARY_DOC}]."
+        f"Two people help [{TIGER_TEAM}]. They started in January [{TIGER_TEAM}]."
     )
-
-
-def test_a_denied_document_cited_by_the_model_is_dropped(app: Connection, corpus: Corpus) -> None:
-    model = scripted(
-        search_call({"query": QUESTION}), final_reply(f"See the salary bands [{SALARY_DOC}].")
-    )
-
-    answer = _ask(app, corpus, "sofia", model)
-
-    assert answer.citations == ()
-    assert answer.dropped_citations == (SALARY_DOC,)
-    assert SALARY_DOC not in answer.text
 
 
 @pytest.mark.parametrize("text", [REFUSAL, f"  {REFUSAL}\n", ""])
-def test_the_fixed_refusal_is_recognised(app: Connection, corpus: Corpus, text: str) -> None:
+def test_the_fixed_refusal_is_recognised(app: Connection, text: str) -> None:
     model = scripted(search_call({"query": QUESTION}), final_reply(text))
 
-    answer = _ask(app, corpus, "sofia", model)
+    answer = _ask(app, OTHER, model)
 
     assert answer.refused
     assert answer.text == REFUSAL
     assert answer.citations == ()
 
 
-def test_the_round_cap_stops_a_model_that_keeps_searching(app: Connection, corpus: Corpus) -> None:
+def test_the_round_cap_stops_a_model_that_keeps_searching(app: Connection) -> None:
     model = scripted(*[search_call({"query": QUESTION}) for _ in range(10)])
 
-    answer = _ask(app, corpus, "nadia", model)
+    answer = _ask(app, HOLDER, model)
 
     assert len(model.prompts) == MAX_TOOL_ROUNDS + 1
     assert len(_tool_results(model)) == MAX_TOOL_ROUNDS
@@ -148,15 +106,12 @@ def test_the_round_cap_stops_a_model_that_keeps_searching(app: Connection, corpu
     assert answer.text == REFUSAL
 
 
-def test_tokens_and_cost_are_counted_per_request_and_per_process(
-    app: Connection, corpus: Corpus
-) -> None:
+def test_tokens_and_cost_are_counted_per_request_and_per_process(app: Connection) -> None:
     spending = Spending(MODEL, budget_usd=1.0)
-    principals = corpus.employees["nadia"].principals()
 
     for _ in range(2):
         model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
-        answer = ask(QUESTION, app, principals, model, spending)
+        answer = ask(QUESTION, app, HOLDER, model, spending)
 
     assert answer.input_tokens == 2 * USAGE["input_tokens"]
     assert answer.output_tokens == 2 * USAGE["output_tokens"]
@@ -166,25 +121,24 @@ def test_tokens_and_cost_are_counted_per_request_and_per_process(
     assert spending.cost_usd == pytest.approx(0.0006)
 
 
-def test_the_budget_refuses_a_call_once_it_is_spent(app: Connection, corpus: Corpus) -> None:
+def test_the_budget_refuses_a_call_once_it_is_spent(app: Connection) -> None:
     # One scripted call costs 0.00015 USD, so the second call finds the budget spent.
     spending = Spending(MODEL, budget_usd=0.0001)
     model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
-    principals = corpus.employees["nadia"].principals()
 
     with pytest.raises(BudgetExceeded, match="budget is 0.0001 USD"):
-        ask(QUESTION, app, principals, model, spending)
+        ask(QUESTION, app, HOLDER, model, spending)
 
     assert len(model.prompts) == 1
     assert spending.input_tokens == USAGE["input_tokens"]
 
 
-def test_a_zero_budget_refuses_the_first_call(app: Connection, corpus: Corpus) -> None:
+def test_a_zero_budget_refuses_the_first_call(app: Connection) -> None:
     spending = Spending(MODEL, budget_usd=0.0)
     model = scripted(final_reply(REFUSAL))
 
     with pytest.raises(BudgetExceeded):
-        ask(QUESTION, app, corpus.employees["nadia"].principals(), model, spending)
+        ask(QUESTION, app, HOLDER, model, spending)
 
     assert model.prompts == []
 
@@ -206,92 +160,79 @@ def test_the_price_table_matches_the_list_prices() -> None:
 
 
 @pytest.mark.parametrize("method", [Method.IN_QUERY, Method.POST_FILTER])
-def test_the_application_filters_hide_denied_documents_from_the_model(
-    reader: Connection, corpus: Corpus, method: Method
+def test_the_application_filters_hide_denied_emails_from_the_model(
+    reader: Connection, emails: dict[str, Document], method: Method
 ) -> None:
     model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
-    principals = corpus.employees["sofia"].principals()
 
-    ask(QUESTION, reader, principals, model, Spending(MODEL, budget_usd=1.0), method)
+    _ask(reader, OTHER, model, method)
 
     (result,) = _tool_results(model)
-    documents = {doc.id: doc for doc in corpus.documents}
     returned = _tagged_ids(result)
-    assert len(returned) >= 1
+    assert returned
     for doc_id in returned:
-        assert corpus.can_read("sofia", documents[doc_id])
-    assert "78,400" not in result.text
+        assert doc_id not in emails or "user:kean-s" in emails[doc_id].readers
+    assert CONTENT not in result.text
     assert model.prompts[0][0].text == SYSTEM_PROMPT
 
 
-def test_prompt_only_labels_every_passage_and_names_the_asker(
-    reader: Connection, corpus: Corpus
-) -> None:
+def test_prompt_only_labels_every_passage_and_names_the_asker(reader: Connection) -> None:
     model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
-    principals = corpus.employees["sofia"].principals()
 
-    ask(QUESTION, reader, principals, model, Spending(MODEL, budget_usd=1.0), Method.PROMPT_ONLY)
+    _ask(reader, OTHER, model, Method.PROMPT_ONLY)
 
     (result,) = _tool_results(model)
-    salary = next(doc for doc in corpus.documents if doc.id == SALARY_DOC)
-    assert f"[{SALARY_DOC}] (readers: {', '.join(sorted(salary.readers))})\n" in result.text
-    assert "78,400" in result.text
+    assert f"[{TIGER_TEAM}] (readers: user:kaminski-v)\n" in result.text
+    assert CONTENT in result.text
     labels = re.findall(r"^\[[a-z0-9-]+\] \(readers: [^)]+\)$", result.text, flags=re.MULTILINE)
     assert len(labels) == SEARCH_RESULTS
     system_prompt = model.prompts[0][0].text
-    assert "group:everyone, group:sales, user:sofia" in system_prompt
+    assert "group:everyone, user:kean-s" in system_prompt
     assert "Use only passages whose readers include one of those principals" in system_prompt
 
 
-def test_the_default_method_is_rls_with_unlabelled_passages(
-    app: Connection, corpus: Corpus
-) -> None:
+def test_the_default_method_is_rls_with_unlabelled_passages(app: Connection) -> None:
     model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
 
-    _ask(app, corpus, "nadia", model)
+    _ask(app, HOLDER, model)
 
     (result,) = _tool_results(model)
     assert "(readers:" not in result.text
     assert model.prompts[0][0].text == SYSTEM_PROMPT
 
 
-def test_a_method_on_the_wrong_role_is_refused(app: Connection, corpus: Corpus) -> None:
+def test_a_method_on_the_wrong_role_is_refused(app: Connection) -> None:
     model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
-    principals = corpus.employees["sofia"].principals()
 
     with pytest.raises(ValueError, match="prompt_only searches as needtoknow_reader"):
-        ask(QUESTION, app, principals, model, Spending(MODEL, budget_usd=1.0), Method.PROMPT_ONLY)
+        _ask(app, OTHER, model, Method.PROMPT_ONLY)
 
 
-def test_an_opened_document_gives_its_full_text_and_counts_as_returned(
-    app: Connection, corpus: Corpus
+def test_an_opened_email_gives_its_full_text_and_counts_as_returned(
+    app: Connection, emails: dict[str, Document]
 ) -> None:
     model = scripted(
-        search_call({"query": QUESTION}),
-        call_tool("open_document", {"doc_id": SALARY_DOC}),
-        final_reply(f"The lower bound is 78,400 EUR [{SALARY_DOC}]."),
+        call_tool("open_document", {"doc_id": TIGER_TEAM}),
+        final_reply(f"Two people help [{TIGER_TEAM}]."),
     )
 
-    answer = _ask(app, corpus, "nadia", model)
+    answer = _ask(app, HOLDER, model)
 
-    opened = _tool_results(model)[-1]
-    salary = next(doc for doc in corpus.documents if doc.id == SALARY_DOC)
+    (opened,) = _tool_results(model)
+    email = emails[TIGER_TEAM]
     assert opened.status == "success"
-    assert opened.text == f"[{SALARY_DOC}]\n{salary.title}\n\n{salary.body.strip()}"
-    assert answer.citations == (SALARY_DOC,)
-    assert answer.tool_outputs[-1] == opened.text
+    assert opened.text == f"[{TIGER_TEAM}]\n{email.title}\n\n{email.body.strip()}"
+    assert answer.citations == (TIGER_TEAM,)
+    assert answer.tool_outputs == (opened.text,)
 
 
-@pytest.mark.parametrize("doc_id", [SALARY_DOC, "no-such-document"])
-def test_a_denied_and_an_unknown_document_get_the_same_reply(
-    app: Connection, corpus: Corpus, doc_id: str
-) -> None:
+@pytest.mark.parametrize("doc_id", [TIGER_TEAM, "enron-no-such-email"])
+def test_a_denied_and_an_unknown_email_get_the_same_reply(app: Connection, doc_id: str) -> None:
     model = scripted(
-        call_tool("open_document", {"doc_id": doc_id}),
-        final_reply(f"See the salary bands [{doc_id}]."),
+        call_tool("open_document", {"doc_id": doc_id}), final_reply(f"See [{doc_id}].")
     )
 
-    answer = _ask(app, corpus, "sofia", model)
+    answer = _ask(app, OTHER, model)
 
     (result,) = _tool_results(model)
     assert result.status == "success"
@@ -300,71 +241,34 @@ def test_a_denied_and_an_unknown_document_get_the_same_reply(
     assert answer.dropped_citations == (doc_id,)
 
 
-def test_open_document_on_the_reader_role_still_hides_a_denied_document(
-    reader: Connection, corpus: Corpus
-) -> None:
-    model = scripted(call_tool("open_document", {"doc_id": SALARY_DOC}), final_reply(REFUSAL))
-    principals = corpus.employees["sofia"].principals()
+def test_open_document_on_the_reader_role_still_hides_a_denied_email(reader: Connection) -> None:
+    model = scripted(call_tool("open_document", {"doc_id": TIGER_TEAM}), final_reply(REFUSAL))
 
-    ask(QUESTION, reader, principals, model, Spending(MODEL, budget_usd=1.0), Method.PROMPT_ONLY)
+    _ask(reader, OTHER, model, Method.PROMPT_ONLY)
 
     (result,) = _tool_results(model)
     assert result.text == NOT_OPEN
 
 
 @pytest.mark.parametrize(
-    ("query", "expected"),
-    [
-        pytest.param(
-            "nadia", "Nadia Benali, HR Specialist, hr, reports to Chloe Martin", id="name"
-        ),
-        pytest.param(
-            "SALES",
-            "Ben Carter, Sales Development Representative, sales, reports to Marco Bianchi\n"
-            "Marco Bianchi, Head of Sales, sales, reports to Elena Duval\n"
-            "Sofia Novak, Account Executive, sales, reports to Marco Bianchi",
-            id="department",
-        ),
-        pytest.param(
-            "chief financial",
-            "Tomas Lindqvist, Chief Financial Officer, executives and finance, "
-            "reports to Elena Duval",
-            id="title",
-        ),
-        pytest.param("zebra", NO_COLLEAGUE, id="no-match"),
-    ],
-)
-def test_find_colleague_searches_the_directory(
-    app: Connection, corpus: Corpus, query: str, expected: str
-) -> None:
-    model = scripted(call_tool("find_colleague", {"query": query}), final_reply(REFUSAL))
-
-    _ask(app, corpus, "julie", model)
-
-    (result,) = _tool_results(model)
-    assert result.status == "success"
-    assert result.text == expected
-
-
-@pytest.mark.parametrize(
     ("name", "args"),
     [
         pytest.param(
-            "open_document", {"doc_id": SALARY_DOC, "principals": ["group:hr"]}, id="extra"
+            "open_document", {"doc_id": TIGER_TEAM, "principals": ["user:kaminski-v"]}, id="extra"
         ),
-        pytest.param("open_document", {"query": SALARY_DOC}, id="wrong-name"),
+        pytest.param("open_document", {"query": TIGER_TEAM}, id="wrong-name"),
         pytest.param("open_document", {"doc_id": ""}, id="empty"),
-        pytest.param("find_colleague", {"query": "   "}, id="blank"),
-        pytest.param("find_colleague", {"query": 7}, id="not-a-string"),
+        pytest.param("search_documents", {"query": "   "}, id="blank"),
+        pytest.param("search_documents", {"query": 7}, id="not-a-string"),
         pytest.param("delete_documents", {"query": "all"}, id="unknown-tool"),
     ],
 )
 def test_a_tool_call_with_wrong_arguments_is_an_error(
-    app: Connection, corpus: Corpus, name: str, args: dict[str, object]
+    app: Connection, name: str, args: dict[str, object]
 ) -> None:
     model = scripted(call_tool(name, args), final_reply(REFUSAL))
 
-    answer = _ask(app, corpus, "nadia", model)
+    answer = _ask(app, HOLDER, model)
 
     (result,) = _tool_results(model)
     assert result.status == "error"

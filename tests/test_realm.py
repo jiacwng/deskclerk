@@ -1,29 +1,41 @@
-# The Keycloak realm and corpus/company.toml describe the same people in the same groups, so the
-# two cannot drift apart.
+# The Keycloak realm holds the users of the public data, each taken from the slices in
+# tests/data, and a client that puts their groups and itself in the access token.
 
 import json
 from pathlib import Path
 from typing import Any
 
-from needtoknow.corpus import load_corpus
-
 ROOT = Path(__file__).parent.parent
 REALM: dict[str, Any] = json.loads((ROOT / "keycloak" / "needtoknow-realm.json").read_text())
-CORPUS = load_corpus(ROOT / "corpus")
+DATA = ROOT / "tests" / "data"
+# The three largest Enron mailboxes, a district and a county of the BIRD slice, and an analyst.
+DATA_USERS: dict[str, list[str]] = {
+    "kaminski-v": [],
+    "dasovich-j": [],
+    "kean-s": [],
+    "district-1": ["district:1"],
+    "county-sierra": ["county:Sierra"],
+    "analyst": ["analyst"],
+}
 
 
-def test_realm_users_and_their_groups_match_the_corpus() -> None:
+def test_realm_groups_are_the_groups_of_the_data_users() -> None:
+    data_groups = {group for groups in DATA_USERS.values() for group in groups}
+    assert sorted(group["name"] for group in REALM["groups"]) == sorted(data_groups)
+
+
+def test_the_data_users_are_mailboxes_a_district_and_a_county_of_the_slices() -> None:
     realm_users = {
-        user["username"]: sorted(group.removeprefix("/") for group in user["groups"])
+        user["username"]: [group.removeprefix("/") for group in user["groups"]]
         for user in REALM["users"]
     }
-    corpus_users = {employee.id: sorted(employee.groups) for employee in CORPUS.employees.values()}
-    assert realm_users == corpus_users
+    dump = (DATA / "bird" / "MINIDEV_postgresql" / "BIRD_dev.sql").read_text(encoding="utf-8")
 
-
-def test_realm_groups_match_the_corpus() -> None:
-    corpus_groups = {group for employee in CORPUS.employees.values() for group in employee.groups}
-    assert sorted(group["name"] for group in REALM["groups"]) == sorted(corpus_groups)
+    assert realm_users == DATA_USERS
+    for custodian in ("kaminski-v", "dasovich-j", "kean-s"):
+        assert (DATA / "enron" / "maildir" / custodian).is_dir()
+    assert "\n2\t1\tPOPLATEK MESICNE\t" in dump
+    assert "\tSierra\t" in dump
 
 
 def test_every_user_can_log_in() -> None:

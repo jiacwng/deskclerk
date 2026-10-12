@@ -1,6 +1,7 @@
 # local
 local/
 data/
+!tests/data/
 *.local.md
 runs/
 

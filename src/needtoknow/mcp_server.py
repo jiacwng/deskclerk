@@ -1,5 +1,6 @@
-# An MCP server over Streamable HTTP with one tool, search_documents. Every call searches as the
-# employee named in the request's bearer token, so an MCP client finds only what they may read.
+# An MCP server over Streamable HTTP with three tools: search_documents, describe_data and
+# query_data. Every call runs as the employee named in the request's bearer token, so an MCP
+# client reads only the documents and rows that employee may read.
 # Run locally: PYTHONPATH=src .venv/bin/python -m needtoknow.mcp_server
 
 import anyio.to_thread
@@ -10,7 +11,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import AnyHttpUrl
 
-from needtoknow import db, retrieval
+from needtoknow import data, db, retrieval
 from needtoknow.auth import AuthError, Identity, SigningKeyLookup, authenticate, jwks_signing_key
 from needtoknow.config import Settings, load_settings
 
@@ -52,22 +53,52 @@ def create_server(settings: Settings, signing_key: SigningKeyLookup) -> MCPServe
 
     @server.tool(description="Search the company documents the signed-in employee may read.")
     def search_documents(query: str, k: int = 5) -> list[retrieval.Hit]:
-        token = get_access_token()
-        if not isinstance(token, EmployeeToken):
-            raise ToolError("no signed-in employee")
+        token = _employee()
         try:
             with db.connect_app(settings) as connection:
                 return retrieval.search(connection, token.identity.principals, query, k)
         except ValueError as error:
             raise ToolError(str(error)) from error
 
+    @server.tool(
+        description="List the schemas of the company data, or one schema's tables and columns."
+    )
+    def describe_data(schema: str | None = None) -> str:
+        _employee()
+        try:
+            with db.connect_app(settings) as connection:
+                return data.describe_data(connection, schema)
+        except ValueError as error:
+            raise ToolError(str(error)) from error
+
+    @server.tool(
+        description="Run one read-only SQL query as the signed-in employee and return the rows."
+    )
+    def query_data(sql: str) -> str:
+        token = _employee()
+        try:
+            with db.connect_app(settings) as connection:
+                result = data.query_data(connection, token.identity.principals, sql)
+        except ValueError as error:
+            raise ToolError(str(error)) from error
+        if result.failed:
+            raise ToolError(result.text)
+        return result.text
+
     return server
+
+
+def _employee() -> EmployeeToken:
+    token = get_access_token()
+    if not isinstance(token, EmployeeToken):
+        raise ToolError("no signed-in employee")
+    return token
 
 
 def main() -> None:
     settings = load_settings()
     server = create_server(settings, jwks_signing_key(settings))
-    server.run("streamable-http", port=settings.mcp_port)
+    server.run("streamable-http", host=settings.mcp_host, port=settings.mcp_port)
 
 
 if __name__ == "__main__":

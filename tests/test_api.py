@@ -1,6 +1,6 @@
 # The HTTP API against the real database and embedding model, with tokens signed by the throwaway
 # key from conftest.py and a scripted chat model: no token or a bad one is refused, results are
-# only documents the token's employee may read, and nothing in the body can change who is asking.
+# only documents the token's user may read, and nothing in the body can change who is asking.
 
 import re
 from collections.abc import Callable, Iterator
@@ -18,13 +18,13 @@ from needtoknow.agent import REFUSAL
 from needtoknow.api import create_app
 from needtoknow.auth import SigningKeyLookup
 from needtoknow.config import Settings, load_settings
-from needtoknow.corpus import Corpus
+from needtoknow.documents import Document
 
 Sign = Callable[[dict[str, object]], str]
 
-QUESTION = {"query": "What is the salary band for a senior engineer?"}
-ASK = {"question": "What is the lower bound of the 2026 salary band for senior engineers?"}
-SALARY_DOC = "hr-salary-bands-2026"
+QUESTION = {"query": "Who is helping with the Wharton and Rice projects for the Tiger Team?"}
+ASK = {"question": QUESTION["query"]}
+TIGER_TEAM = "enron-770963d7e2ceeb8d22d92a1ebfaba325068dfa242524cb4a8983dc0d1165f2ab"
 
 
 @pytest.fixture(scope="module")
@@ -43,8 +43,8 @@ def _bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _julie(sign_token: Sign) -> dict[str, str]:
-    return _bearer(sign_token({"preferred_username": "julie", "groups": ["engineering"]}))
+def _kean(sign_token: Sign) -> dict[str, str]:
+    return _bearer(sign_token({"preferred_username": "kean-s", "groups": []}))
 
 
 def test_health_needs_no_token(client: TestClient) -> None:
@@ -58,6 +58,15 @@ def test_chat_page_is_served(client: TestClient) -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert '<form id="ask"' in response.text
+
+
+def test_chat_page_shows_each_query_as_text(client: TestClient) -> None:
+    page = client.get("/").text
+    assert 'queries.className = "queries"' in page
+    assert 'label.textContent = "Queries:"' in page
+    assert "for (const query of body.queries)" in page
+    assert "result.textContent = query.error ?? query.rows;" in page
+    assert "innerHTML" not in page
 
 
 def test_chat_page_calls_only_the_api_and_the_issuer(client: TestClient) -> None:
@@ -126,39 +135,40 @@ def test_search_with_the_login_server_down_is_unavailable(
         raise jwt.PyJWKClientConnectionError("connection refused")
 
     with TestClient(create_app(token_settings, unreachable, scripted())) as down_client:
-        response = down_client.post("/search", json=QUESTION, headers=_julie(sign_token))
+        response = down_client.post("/search", json=QUESTION, headers=_kean(sign_token))
 
     assert response.status_code == 503
     assert response.json() == {"detail": "the login server cannot be reached"}
     assert "WWW-Authenticate" not in response.headers
 
 
-def test_search_returns_only_documents_julie_can_read(
-    client: TestClient, sign_token: Sign, corpus: Corpus
+def test_search_returns_only_documents_the_caller_can_read(
+    client: TestClient, sign_token: Sign, emails: dict[str, Document]
 ) -> None:
-    response = client.post("/search", json=QUESTION | {"k": 20}, headers=_julie(sign_token))
+    response = client.post("/search", json=QUESTION | {"k": 20}, headers=_kean(sign_token))
 
     assert response.status_code == 200
     body = response.json()
-    readable = {doc.id for doc in corpus.documents if corpus.can_read("julie", doc)}
-    assert body["user"] == "julie"
-    assert {result["doc_id"] for result in body["results"]} == readable
+    assert body["user"] == "kean-s"
+    assert len(body["results"]) == 20
     for result in body["results"]:
         assert set(result) == {"doc_id", "title", "text", "distance"}
+        doc_id = result["doc_id"]
+        assert doc_id not in emails or "user:kean-s" in emails[doc_id].readers
 
 
 @pytest.mark.parametrize(
     "extra",
     [
-        pytest.param({"user": "elena"}, id="user"),
-        pytest.param({"principals": ["group:executives", "group:hr"]}, id="principals"),
-        pytest.param({"user_id": "elena", "groups": ["executives"]}, id="user-id-and-groups"),
+        pytest.param({"user": "kaminski-v"}, id="user"),
+        pytest.param({"principals": ["user:kaminski-v"]}, id="principals"),
+        pytest.param({"user_id": "kaminski-v", "groups": ["analyst"]}, id="user-id-and-groups"),
     ],
 )
 def test_identity_in_the_body_is_rejected(
     client: TestClient, sign_token: Sign, extra: dict[str, object]
 ) -> None:
-    response = client.post("/search", json=QUESTION | extra, headers=_julie(sign_token))
+    response = client.post("/search", json=QUESTION | extra, headers=_kean(sign_token))
     assert response.status_code == 422
     assert {error["type"] for error in response.json()["detail"]} == {"extra_forbidden"}
 
@@ -178,7 +188,7 @@ def test_identity_in_the_body_is_rejected(
 def test_invalid_body_is_refused(
     client: TestClient, sign_token: Sign, body: dict[str, object]
 ) -> None:
-    response = client.post("/search", json=body, headers=_julie(sign_token))
+    response = client.post("/search", json=body, headers=_kean(sign_token))
     assert response.status_code == 422
 
 
@@ -191,8 +201,8 @@ def test_ask_without_a_token_is_refused(client: TestClient) -> None:
 @pytest.mark.parametrize(
     "body",
     [
-        pytest.param(ASK | {"user": "elena"}, id="user"),
-        pytest.param(ASK | {"principals": ["group:hr"]}, id="principals"),
+        pytest.param(ASK | {"user": "kaminski-v"}, id="user"),
+        pytest.param(ASK | {"principals": ["user:kaminski-v"]}, id="principals"),
         pytest.param({}, id="no-question"),
         pytest.param({"question": ""}, id="empty-question"),
         pytest.param({"question": "x" * 2001}, id="long-question"),
@@ -202,46 +212,44 @@ def test_ask_without_a_token_is_refused(client: TestClient) -> None:
 def test_ask_with_an_invalid_body_is_refused(
     client: TestClient, sign_token: Sign, body: dict[str, object]
 ) -> None:
-    response = client.post("/ask", json=body, headers=_julie(sign_token))
+    response = client.post("/ask", json=body, headers=_kean(sign_token))
     assert response.status_code == 422
 
 
 @pytest.mark.parametrize(
-    ("user", "groups", "reply", "expected"),
+    ("user", "reply", "expected"),
     [
         pytest.param(
-            "nadia",
-            ["hr"],
-            f"The lower bound is 78,400 EUR [{SALARY_DOC}].",
+            "kaminski-v",
+            f"Two people in his group help [{TIGER_TEAM}].",
             {
-                "user": "nadia",
-                "answer": f"The lower bound is 78,400 EUR [{SALARY_DOC}].",
-                "citations": [SALARY_DOC],
+                "user": "kaminski-v",
+                "answer": f"Two people in his group help [{TIGER_TEAM}].",
+                "citations": [TIGER_TEAM],
                 "refused": False,
+                "queries": [],
             },
-            id="nadia-allowed",
+            id="holder",
         ),
         pytest.param(
-            "sofia",
-            ["sales"],
+            "kean-s",
             REFUSAL,
-            {"user": "sofia", "answer": REFUSAL, "citations": [], "refused": True},
-            id="sofia-denied",
+            {"user": "kean-s", "answer": REFUSAL, "citations": [], "refused": True, "queries": []},
+            id="other-custodian",
         ),
     ],
 )
-def test_ask_answers_as_the_token_employee(
+def test_ask_answers_as_the_token_user(
     owner: psycopg.Connection[TupleRow],
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     sign_token: Sign,
     user: str,
-    groups: list[str],
     reply: str,
     expected: dict[str, object],
 ) -> None:
     model = scripted(search_call({"query": ASK["question"]}), final_reply(reply))
-    token = sign_token({"preferred_username": user, "groups": groups})
+    token = sign_token({"preferred_username": user, "groups": []})
 
     with TestClient(create_app(token_settings, token_signing_key, model)) as ask_client:
         response = ask_client.post("/ask", json=ASK, headers=_bearer(token))
@@ -249,7 +257,7 @@ def test_ask_answers_as_the_token_employee(
     assert response.status_code == 200
     assert response.json() == expected
     search_result = model.prompts[-1][-1].text
-    assert (f"[{SALARY_DOC}]" in search_result) == (user == "nadia")
+    assert (f"[{TIGER_TEAM}]" in search_result) == (user == "kaminski-v")
 
 
 def test_ask_after_opening_a_document_keeps_the_response_shape(
@@ -258,19 +266,20 @@ def test_ask_after_opening_a_document_keeps_the_response_shape(
     token_signing_key: SigningKeyLookup,
     sign_token: Sign,
 ) -> None:
-    reply = f"The lower bound is 78,400 EUR [{SALARY_DOC}]."
-    model = scripted(call_tool("open_document", {"doc_id": SALARY_DOC}), final_reply(reply))
-    token = sign_token({"preferred_username": "nadia", "groups": ["hr"]})
+    reply = f"Two people in his group help [{TIGER_TEAM}]."
+    model = scripted(call_tool("open_document", {"doc_id": TIGER_TEAM}), final_reply(reply))
+    token = sign_token({"preferred_username": "kaminski-v", "groups": []})
 
     with TestClient(create_app(token_settings, token_signing_key, model)) as ask_client:
         response = ask_client.post("/ask", json=ASK, headers=_bearer(token))
 
     assert response.status_code == 200
     assert response.json() == {
-        "user": "nadia",
+        "user": "kaminski-v",
         "answer": reply,
-        "citations": [SALARY_DOC],
+        "citations": [TIGER_TEAM],
         "refused": False,
+        "queries": [],
     }
 
 
@@ -284,18 +293,18 @@ def test_ask_with_the_budget_spent_is_unavailable(
     spent = replace(token_settings, budget_usd=0.0)
 
     with TestClient(create_app(spent, token_signing_key, model)) as ask_client:
-        response = ask_client.post("/ask", json=ASK, headers=_julie(sign_token))
+        response = ask_client.post("/ask", json=ASK, headers=_kean(sign_token))
 
     assert response.status_code == 503
     assert model.prompts == []
 
 
 def test_concurrent_searches_each_answer_as_their_own_caller(
-    client: TestClient, sign_token: Sign, corpus: Corpus
+    client: TestClient, sign_token: Sign, emails: dict[str, Document]
 ) -> None:
     callers = {
-        "julie": _julie(sign_token),
-        "nadia": _bearer(sign_token({"preferred_username": "nadia", "groups": ["hr"]})),
+        "kean-s": _kean(sign_token),
+        "kaminski-v": _bearer(sign_token({"preferred_username": "kaminski-v", "groups": []})),
     }
 
     def search_as(user: str) -> tuple[str, dict[str, object]]:
@@ -304,20 +313,20 @@ def test_concurrent_searches_each_answer_as_their_own_caller(
         return user, response.json()
 
     with ThreadPoolExecutor(max_workers=8) as pool:
-        replies = list(pool.map(search_as, ["julie", "nadia"] * 20))
+        replies = list(pool.map(search_as, ["kean-s", "kaminski-v"] * 20))
 
-    documents = {doc.id: doc for doc in corpus.documents}
-    found: dict[str, set[str]] = {"julie": set(), "nadia": set()}
+    found: dict[str, set[str]] = {"kean-s": set(), "kaminski-v": set()}
     for user, body in replies:
         assert body["user"] == user
         results = body["results"]
         assert isinstance(results, list)
         for result in results:
-            assert corpus.can_read(user, documents[result["doc_id"]])
-            found[user].add(result["doc_id"])
+            doc_id = result["doc_id"]
+            assert doc_id not in emails or f"user:{user}" in emails[doc_id].readers
+            found[user].add(doc_id)
     assert len(replies) == 40
-    assert SALARY_DOC in found["nadia"]
-    assert SALARY_DOC not in found["julie"]
+    assert TIGER_TEAM in found["kaminski-v"]
+    assert TIGER_TEAM not in found["kean-s"]
 
 
 def test_the_api_settings_hold_no_provisioning_password(monkeypatch: pytest.MonkeyPatch) -> None:

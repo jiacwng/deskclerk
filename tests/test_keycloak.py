@@ -1,12 +1,10 @@
-# Logs in as each employee through the running Keycloak and checks that auth.py derives the same
-# principals from the real token as the corpus gives that employee, and that the API searches as
-# the employee who holds the token.
+# Logs in as each user through the running Keycloak and checks that auth.py derives their
+# principals from the real token, and that the API searches as the user who holds the token.
 
 import json
 import urllib.error
 import urllib.parse
 import urllib.request
-from pathlib import Path
 from typing import Any
 
 import psycopg
@@ -21,14 +19,14 @@ from needtoknow.auth import (
     SigningKeyLookup,
     authenticate,
     jwks_signing_key,
+    principals,
 )
 from needtoknow.config import load_settings
-from needtoknow.corpus import load_corpus
 
 pytestmark = pytest.mark.keycloak
 
 SETTINGS = load_settings()
-CORPUS = load_corpus(Path(__file__).parent.parent / "corpus")
+TIGER_TEAM = "enron-770963d7e2ceeb8d22d92a1ebfaba325068dfa242524cb4a8983dc0d1165f2ab"
 PASSWORD = "needtoknow"  # noqa: S105, the development password in keycloak/needtoknow-realm.json
 
 
@@ -67,33 +65,42 @@ def signing_key() -> SigningKeyLookup:
     return jwks_signing_key(SETTINGS)
 
 
-@pytest.mark.parametrize("username", sorted(CORPUS.employees))
-def test_token_gives_the_corpus_principals(username: str, signing_key: SigningKeyLookup) -> None:
-    identity = authenticate(_login(username)["access_token"], SETTINGS, signing_key)
-
-    assert identity.user_id == username
-    assert identity.principals == CORPUS.employees[username].principals()
-
-
 def test_id_token_is_refused(signing_key: SigningKeyLookup) -> None:
     with pytest.raises(AuthError, match="not an access token"):
-        authenticate(_login("julie")["id_token"], SETTINGS, signing_key)
+        authenticate(_login("kean-s")["id_token"], SETTINGS, signing_key)
 
 
 def test_search_answers_as_the_token_holder(
     owner: psycopg.Connection[TupleRow], signing_key: SigningKeyLookup
 ) -> None:
-    pipeline = next(doc for doc in CORPUS.documents if doc.id == "sales-pipeline-q4")
-    assert pipeline.planted is not None
-    question = {"query": pipeline.planted.question}
+    question = {"query": "Who is helping with the Wharton and Rice projects for the Tiger Team?"}
     with TestClient(create_app(SETTINGS, signing_key, scripted())) as client:
         found: dict[str, list[str]] = {}
-        for username in ("sofia", "lukas"):
+        for username in ("kaminski-v", "kean-s"):
             headers = {"Authorization": f"Bearer {_login(username)['access_token']}"}
             response = client.post("/search", json=question, headers=headers)
             assert response.status_code == 200
             assert response.json()["user"] == username
             found[username] = [result["doc_id"] for result in response.json()["results"]]
 
-    assert "sales-pipeline-q4" in found["sofia"]
-    assert "sales-pipeline-q4" not in found["lukas"]
+    assert TIGER_TEAM in found["kaminski-v"]
+    assert TIGER_TEAM not in found["kean-s"]
+
+
+@pytest.mark.parametrize(
+    ("username", "groups"),
+    [
+        ("kaminski-v", []),
+        ("dasovich-j", []),
+        ("kean-s", []),
+        ("district-1", ["district:1"]),
+        ("county-sierra", ["county:Sierra"]),
+        ("analyst", ["analyst"]),
+    ],
+)
+def test_token_gives_each_user_their_principals(
+    username: str, groups: list[str], signing_key: SigningKeyLookup
+) -> None:
+    identity = authenticate(_login(username)["access_token"], SETTINGS, signing_key)
+    assert identity.user_id == username
+    assert identity.principals == principals(username, groups)

@@ -1,14 +1,15 @@
 # Validates a Keycloak access token and turns it into the principals the database filters on.
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 import jwt
 
-from needtoknow import corpus
 from needtoknow.config import Settings
 
 SigningKeyLookup = Callable[[str], jwt.PyJWK]
+
+EVERYONE = "group:everyone"
 
 JWKS_TIMEOUT_SECONDS = 5
 CLOCK_SKEW_SECONDS = 30
@@ -28,10 +29,12 @@ class Identity:
     principals: frozenset[str]
 
 
+def principals(user_id: str, groups: Iterable[str]) -> frozenset[str]:
+    return frozenset({f"user:{user_id}", EVERYONE, *(f"group:{g}" for g in groups)})
+
+
 def jwks_signing_key(settings: Settings) -> SigningKeyLookup:
-    client = jwt.PyJWKClient(
-        f"{settings.issuer}/protocol/openid-connect/certs", timeout=JWKS_TIMEOUT_SECONDS
-    )
+    client = jwt.PyJWKClient(settings.jwks_url, timeout=JWKS_TIMEOUT_SECONDS)
     return client.get_signing_key_from_jwt
 
 
@@ -69,4 +72,4 @@ def authenticate(token: str, settings: Settings, signing_key: SigningKeyLookup) 
         if "," in name:
             raise AuthError(f"{name!r} contains a comma")
 
-    return Identity(user_id=username, principals=corpus.principals(username, groups))
+    return Identity(user_id=username, principals=principals(username, groups))

@@ -1,10 +1,12 @@
-# Shared fixtures. Database: an admin connection creates the roles and tables, the owner ingests
-# the real corpus with its embeddings, and the tests read through the app role. Tokens: access
-# tokens signed with a throwaway RSA key, so tests that need one run without Keycloak.
+# Shared fixtures. Database: an admin connection creates the roles and tables, the owner loads the
+# slices of public data in tests/data, the Enron emails and the BIRD databases, with their
+# embeddings, and the tests read through the app role or the reader role. Tokens: access tokens
+# signed with a throwaway RSA key, so tests that need one run without Keycloak.
 
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import replace
+from pathlib import Path
 
 import jwt
 import psycopg
@@ -14,28 +16,21 @@ from jwt.algorithms import RSAAlgorithm
 from psycopg.rows import TupleRow
 
 from needtoknow.auth import SigningKeyLookup
+from needtoknow.bird import load_bird
 from needtoknow.config import Settings, load_provision_settings, load_settings
-from needtoknow.corpus import Corpus, load_corpus
 from needtoknow.db import connect_app, connect_reader
-from needtoknow.ingest import CORPUS, ingest
+from needtoknow.documents import Document
+from needtoknow.enron import load_enron, mail_files, parse_email
 from needtoknow.provision import connect_admin, connect_owner, create_schema, prepare_database
-from needtoknow.workplace import Workplace, read_workplace
 
 TOKEN_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+DATA = Path(__file__).parent / "data"
+MAILDIR = DATA / "enron" / "maildir"
+MINIDEV = DATA / "bird"
 
 
 @pytest.fixture(scope="session")
-def corpus() -> Corpus:
-    return load_corpus(CORPUS)
-
-
-@pytest.fixture(scope="session")
-def workplace(corpus: Corpus) -> Workplace:
-    return read_workplace(CORPUS, corpus)
-
-
-@pytest.fixture(scope="session")
-def owner(corpus: Corpus, workplace: Workplace) -> Iterator[psycopg.Connection[TupleRow]]:
+def owner() -> Iterator[psycopg.Connection[TupleRow]]:
     settings = load_settings()
     provision = load_provision_settings()
     try:
@@ -50,7 +45,8 @@ def owner(corpus: Corpus, workplace: Workplace) -> Iterator[psycopg.Connection[T
         prepare_database(admin, settings, provision)
     with connect_owner(settings, provision) as connection:
         create_schema(connection)
-        ingest(connection, corpus, workplace)
+        load_enron(connection, MAILDIR)
+        load_bird(connection, MINIDEV)
         yield connection
 
 
@@ -64,6 +60,19 @@ def app(owner: psycopg.Connection[TupleRow]) -> Iterator[psycopg.Connection[Tupl
 def reader(owner: psycopg.Connection[TupleRow]) -> Iterator[psycopg.Connection[TupleRow]]:
     with connect_reader(load_settings(), load_provision_settings()) as connection:
         yield connection
+
+
+# Every email of the slice once, read by the custodians whose mailbox holds a copy.
+@pytest.fixture(scope="session")
+def emails() -> dict[str, Document]:
+    found: dict[str, tuple[str, str, set[str]]] = {}
+    for custodian, path in mail_files(MAILDIR):
+        email = parse_email(path.read_bytes())
+        found.setdefault(email.id, (email.subject, email.body, set()))[2].add(f"user:{custodian}")
+    return {
+        doc_id: Document(id=doc_id, title=title, body=body, readers=frozenset(readers))
+        for doc_id, (title, body, readers) in found.items()
+    }
 
 
 @pytest.fixture(scope="session")
@@ -95,8 +104,8 @@ def sign_token(token_settings: Settings) -> Callable[[dict[str, object]], str]:
             "typ": "Bearer",
             "iat": now,
             "exp": now + 300,
-            "preferred_username": "lukas",
-            "groups": ["finance"],
+            "preferred_username": "district-1",
+            "groups": ["district:1"],
         }
         merged = {name: value for name, value in (base | claims).items() if value is not None}
         return jwt.encode(merged, TOKEN_KEY, algorithm="RS256")

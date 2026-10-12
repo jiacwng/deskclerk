@@ -1,8 +1,8 @@
-# Sets up the database: the admin creates the owner, app and reader roles, the owner creates the
-# tables and loads the documents, the employee directory and the workplace data. Only ingestion
-# and the tests run this; the API never does.
+# Sets up the database: the admin creates the owner, app and reader roles and takes the
+# dangerous built-ins away from them, and the owner creates the tables. Only ingestion and the
+# tests run this; the API never does.
 
-from pathlib import Path
+from importlib.resources import files
 from typing import Any
 
 import psycopg
@@ -11,12 +11,10 @@ from psycopg import sql
 from psycopg.rows import TupleRow
 
 from needtoknow.config import ProvisionSettings, Settings
-from needtoknow.corpus import Corpus
 from needtoknow.db import APP_ROLE, READER_ROLE, connect
-from needtoknow.workplace import Workplace
 
 OWNER_ROLE = "needtoknow_owner"
-SCHEMA = Path(__file__).resolve().parents[2] / "sql" / "schema.sql"
+SCHEMA = files("needtoknow").joinpath("sql/schema.sql")
 
 _CREATE_ROLES = """
 DO $$
@@ -32,6 +30,38 @@ BEGIN
     END IF;
 END
 $$
+"""
+
+# SQL the model writes runs as the app role, on a connection other employees' requests share.
+# These built-ins would let it rewrite the identity the policies read (set_config, which only the
+# owner keeps, for set_identity), cancel or kill other sessions, read their SQL, prepared
+# statements, cursors or locks, notify their listeners, or hold an advisory lock across requests.
+_REVOKE_FROM_PUBLIC = r"""
+DO $$
+DECLARE
+    target REGPROCEDURE;
+BEGIN
+    FOR target IN
+        SELECT oid::regprocedure
+        FROM pg_proc
+        WHERE pronamespace = 'pg_catalog'::regnamespace
+          AND (
+            proname IN (
+                'set_config', 'pg_cancel_backend', 'pg_terminate_backend',
+                'pg_stat_get_activity', 'pg_lock_status', 'pg_blocking_pids',
+                'pg_safe_snapshot_blocking_pids', 'pg_prepared_statement', 'pg_cursor',
+                'pg_notify'
+            )
+            OR proname LIKE 'pg\_stat\_get\_backend\_%'
+            OR proname LIKE 'pg\_%advisory\_%'
+          )
+    LOOP
+        EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC', target);
+    END LOOP;
+END
+$$;
+REVOKE SELECT ON pg_catalog.pg_stat_activity, pg_catalog.pg_locks,
+    pg_catalog.pg_prepared_statements, pg_catalog.pg_cursors FROM PUBLIC;
 """
 
 
@@ -62,64 +92,21 @@ def prepare_database(
                 sql.Identifier(role), sql.Literal(password)
             )
         )
+    # The owner creates one schema per BIRD database.
+    admin.execute(
+        sql.SQL("GRANT CREATE ON DATABASE {} TO needtoknow_owner").format(
+            sql.Identifier(settings.db_name)
+        )
+    )
     admin.execute("GRANT USAGE, CREATE ON SCHEMA public TO needtoknow_owner")
     admin.execute("GRANT USAGE ON SCHEMA public TO needtoknow_app")
     admin.execute("GRANT USAGE ON SCHEMA public TO needtoknow_reader")
+    admin.execute(_REVOKE_FROM_PUBLIC)
+    admin.execute(
+        "GRANT EXECUTE ON FUNCTION pg_catalog.set_config(text, text, boolean) TO needtoknow_owner"
+    )
 
 
 def create_schema(owner: psycopg.Connection[Any]) -> None:
     with owner.transaction():
         owner.execute(SCHEMA.read_text(encoding="utf-8"))
-
-
-def load_documents(owner: psycopg.Connection[Any], corpus: Corpus) -> None:
-    with owner.transaction(), owner.cursor() as cursor:
-        cursor.execute("TRUNCATE chunks, doc_access, documents")
-        cursor.executemany(
-            "INSERT INTO documents (id, title, body) VALUES (%s, %s, %s)",
-            [(doc.id, doc.title, doc.body) for doc in corpus.documents],
-        )
-        cursor.executemany(
-            "INSERT INTO doc_access (doc_id, principal) VALUES (%s, %s)",
-            [(doc.id, reader) for doc in corpus.documents for reader in doc.readers],
-        )
-
-
-def load_employees(owner: psycopg.Connection[Any], corpus: Corpus) -> None:
-    with owner.transaction(), owner.cursor() as cursor:
-        cursor.execute("TRUNCATE employees CASCADE")
-        cursor.executemany(
-            "INSERT INTO employees (id, name, title, groups, manager) VALUES (%s, %s, %s, %s, %s)",
-            [(e.id, e.name, e.title, list(e.groups), e.manager) for e in corpus.employees.values()],
-        )
-
-
-def load_workplace(owner: psycopg.Connection[Any], workplace: Workplace) -> None:
-    with owner.transaction(), owner.cursor() as cursor:
-        cursor.execute(
-            "TRUNCATE spending, forecasts, meeting_attendees, meetings, tasks RESTART IDENTITY"
-        )
-        cursor.executemany(
-            "INSERT INTO spending (department, vendor, month, amount_eur) VALUES (%s, %s, %s, %s)",
-            [(s.department, s.vendor, s.month, s.amount_eur) for s in workplace.spending],
-        )
-        cursor.executemany(
-            "INSERT INTO forecasts (department, month, amount_eur) VALUES (%s, %s, %s)",
-            [(f.department, f.month, f.amount_eur) for f in workplace.forecasts],
-        )
-        cursor.executemany(
-            "WITH meeting AS ("
-            "INSERT INTO meetings (organizer, title, starts_at, ends_at) "
-            "VALUES (%s, %s, %s, %s) RETURNING id) "
-            "INSERT INTO meeting_attendees (meeting_id, employee) "
-            "SELECT meeting.id, attendee FROM meeting, unnest(%s::text[]) AS attendee",
-            [
-                (m.organizer, m.title, m.starts_at, m.ends_at, list(m.attendees))
-                for m in workplace.meetings
-            ],
-        )
-        cursor.executemany(
-            "INSERT INTO tasks (title, description, owner, assignee, due_date) "
-            "VALUES (%s, %s, %s, %s, %s)",
-            [(t.title, t.description, t.owner, t.assignee, t.due_date) for t in workplace.tasks],
-        )

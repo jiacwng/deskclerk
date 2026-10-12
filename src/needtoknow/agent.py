@@ -1,7 +1,7 @@
 # The question-answering agent: a LangGraph loop in which the model searches and opens the
-# documents the asker may read and looks up colleagues, then answers with the ids of the
-# documents it used. Development check:
-# PYTHONPATH=src .venv/bin/python -m needtoknow.agent --user nadia "your question"
+# documents the asker may read and queries the company's data as the asker, then answers with
+# the figures, the SQL it ran and the ids of the documents it used. Development check:
+# PYTHONPATH=src .venv/bin/python -m needtoknow.agent --user district-1 --group district:1 "..."
 
 import argparse
 import logging
@@ -19,26 +19,25 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.graph.state import CompiledStateGraph
 
-from needtoknow import retrieval
+from needtoknow import auth, data, retrieval
 from needtoknow.config import load_settings
-from needtoknow.corpus import load_corpus
 from needtoknow.db import connect_app
-from needtoknow.ingest import CORPUS
 from needtoknow.methods import Method, Results, search
 from needtoknow.providers import Spending, chat_model
 
 REFUSAL = "I found nothing you have access to on this."
 NOT_OPEN = "No document with that id is open to you."
-NO_COLLEAGUE = "No colleague matches."
-MAX_TOOL_ROUNDS = 4
+MAX_TOOL_ROUNDS = 5
 SEARCH_RESULTS = 5
-COLLEAGUE_RESULTS = 5
 
-SYSTEM_PROMPT = f"""You answer questions from employees using their company's documents.
+SYSTEM_PROMPT = f"""You answer questions from employees using their company's documents and data.
 Call search_documents to find passages. It returns only documents the employee asking may read,
-so you can share anything in them. Answer only from the passages it returns.
-Cite every claim with the document id in square brackets, for example [some-document-id].
-If the passages do not contain the answer, reply exactly: {REFUSAL}"""
+so you can share anything in them. Answer only from the passages and query results you get.
+Cite every claim from a document with its id in square brackets, for example [some-document-id].
+For figures in the data, call describe_data to pick a schema, describe_data with that schema to
+see its tables, then query_data with one read-only query. If the query fails, read the error and
+fix the query once; if it fails again, say so. Answer with the figures and the SQL you ran.
+If neither the passages nor the data contain the answer, reply exactly: {REFUSAL}"""
 
 # Under prompt_only the search returns every document, and only this instruction stands between
 # the asker and the passages they may not read.
@@ -74,26 +73,56 @@ OPEN_DOCUMENT_TOOL = {
     },
 }
 
-FIND_COLLEAGUE_TOOL = {
-    "name": "find_colleague",
-    "description": "Look up colleagues in the company directory by part of their name, job "
-    f"title or department. Returns up to {COLLEAGUE_RESULTS} people, each with their title, "
-    "departments and manager.",
+DESCRIBE_DATA_TOOL = {
+    "name": "describe_data",
+    "description": "Describe the company's data. Without a schema, list the schemas you can "
+    "read, each with its comment and number of tables. With a schema, list its tables and views "
+    "with their columns, types and comments. Call it without a schema first, then with the "
+    "schema you pick, then call query_data.",
     "input_schema": {
         "type": "object",
-        "properties": {
-            "query": {"type": "string", "description": "A name, title or department to match."}
-        },
-        "required": ["query"],
+        "properties": {"schema": {"type": "string", "description": "The schema to describe."}},
+        "required": [],
         "additionalProperties": False,
     },
 }
 
-Tools = dict[str, tuple[str, Callable[[str], str]]]
+QUERY_DATA_TOOL = {
+    "name": "query_data",
+    "description": "Run one read-only PostgreSQL SELECT over the company's data and return the "
+    "rows as text. Call describe_data with the schema first and query only the tables and views "
+    "it lists, named as it writes them. Send a single SELECT without a semicolon. The database "
+    "leaves out rows the employee asking may not see, and returns at most "
+    f"{data.ROW_CAP} rows. If the query fails, read the error and fix the query once.",
+    "input_schema": {
+        "type": "object",
+        "properties": {"sql": {"type": "string", "description": "One SELECT statement."}},
+        "required": ["sql"],
+        "additionalProperties": False,
+    },
+}
+
+TOOL_SPECS = [
+    SEARCH_TOOL,
+    OPEN_DOCUMENT_TOOL,
+    DESCRIBE_DATA_TOOL,
+    QUERY_DATA_TOOL,
+]
+
+# A tool's argument name, whether the model may leave it out, and the function that runs it.
+Tools = dict[str, tuple[str, bool, Callable[..., str]]]
 
 _CITATION = re.compile(r"( ?)\[([a-z0-9-]+(?:, *[a-z0-9-]+)*)\]")
 
 _log = logging.getLogger(__name__)
+
+
+# One query_data call: the rows as query_data printed them, or its error.
+@dataclass(frozen=True)
+class Query:
+    sql: str
+    rows: str | None
+    error: str | None
 
 
 @dataclass(frozen=True)
@@ -105,6 +134,7 @@ class Answer:
     input_tokens: int
     output_tokens: int
     cost_usd: float
+    queries: tuple[Query, ...]
     # Every tool result the model was shown. The system prompt and the question are the rest of
     # its input, so a fact absent from these never reached the model.
     tool_outputs: tuple[str, ...] = field(repr=False)
@@ -128,6 +158,7 @@ def ask(
 ) -> Answer:
     returned: set[str] = set()
     outputs: list[str] = []
+    queries: list[Query] = []
 
     # The principals are fixed here, outside the model's reach: each tool takes only one string.
     def search_documents(query: str) -> str:
@@ -146,16 +177,27 @@ def ask(
             outputs.append(f"[{doc_id}]\n{title}\n\n{body.strip()}")
         return outputs[-1]
 
-    def find_colleague(query: str) -> str:
-        colleagues = retrieval.find_colleagues(connection, principals, query, COLLEAGUE_RESULTS)
-        outputs.append("\n".join(map(_format_colleague, colleagues)) or NO_COLLEAGUE)
+    def describe_data(schema: str | None = None) -> str:
+        outputs.append(data.describe_data(connection, schema))
         return outputs[-1]
 
+    def query_data(sql: str) -> str:
+        result = data.query_data(connection, principals, sql)
+        if result.failed:
+            queries.append(Query(sql=sql, rows=None, error=result.text))
+        else:
+            queries.append(Query(sql=sql, rows=result.text, error=None))
+        outputs.append(result.text)
+        return result.text
+
     tools: Tools = {
-        "search_documents": ("query", search_documents),
-        "open_document": ("doc_id", open_document),
-        "find_colleague": ("query", find_colleague),
+        "search_documents": ("query", False, search_documents),
+        "open_document": ("doc_id", False, open_document),
     }
+    # The other methods search as the reader role, which every row is open to.
+    if method is Method.RLS:
+        tools["describe_data"] = ("schema", True, describe_data)
+        tools["query_data"] = ("sql", False, query_data)
     graph = _build_graph(model, _system_prompt(method, principals), tools, spending)
     final = graph.invoke(
         {
@@ -165,7 +207,7 @@ def ask(
             "output_tokens": 0,
         }
     )
-    return _answer(final, returned, tuple(outputs), spending)
+    return _answer(final, returned, tuple(outputs), tuple(queries), spending)
 
 
 def _system_prompt(method: Method, principals: frozenset[str]) -> str:
@@ -180,9 +222,8 @@ def _build_graph(
     tools: Tools,
     spending: Spending,
 ) -> CompiledStateGraph[AgentState, None, AgentState, AgentState]:
-    model_with_tools = model.bind_tools(
-        [SEARCH_TOOL, OPEN_DOCUMENT_TOOL, FIND_COLLEAGUE_TOOL], strict=True
-    )
+    specs = [spec for spec in TOOL_SPECS if spec["name"] in tools]
+    model_with_tools = model.bind_tools(specs, strict=True)
 
     def call_model(state: AgentState) -> dict[str, Any]:
         spending.check()
@@ -221,22 +262,19 @@ def _run_tool(call: ToolCall, tools: Tools) -> ToolMessage:
     if call["name"] not in tools:
         error = f"unknown tool, call one of {', '.join(tools)}"
         return ToolMessage(error, tool_call_id=call_id, status="error")
-    argument, run = tools[call["name"]]
+    argument, optional, run = tools[call["name"]]
+    if optional and not call["args"]:
+        return ToolMessage(run(), tool_call_id=call_id)
     if set(call["args"]) != {argument}:
         error = f"wrong arguments, call {call['name']} with a {argument} only"
+        if optional:
+            error += " or with no arguments"
         return ToolMessage(error, tool_call_id=call_id, status="error")
     value = call["args"][argument]
     if not isinstance(value, str) or not value.strip():
         error = f"{argument} must be a non-empty string"
         return ToolMessage(error, tool_call_id=call_id, status="error")
     return ToolMessage(run(value), tool_call_id=call_id)
-
-
-def _format_colleague(colleague: retrieval.Colleague) -> str:
-    line = f"{colleague.name}, {colleague.title}, {' and '.join(colleague.groups)}"
-    if colleague.manager is not None:
-        line += f", reports to {colleague.manager}"
-    return line
 
 
 def _format_hits(results: Results) -> str:
@@ -252,7 +290,11 @@ def _format_hits(results: Results) -> str:
 
 
 def _answer(
-    final: dict[str, Any], returned: set[str], tool_outputs: tuple[str, ...], spending: Spending
+    final: dict[str, Any],
+    returned: set[str],
+    tool_outputs: tuple[str, ...],
+    queries: tuple[Query, ...],
+    spending: Spending,
 ) -> Answer:
     input_tokens = final["input_tokens"]
     output_tokens = final["output_tokens"]
@@ -279,6 +321,7 @@ def _answer(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cost_usd=cost_usd,
+        queries=queries,
         tool_outputs=tool_outputs,
     )
 
@@ -305,15 +348,15 @@ def _check_citations(text: str, returned: set[str]) -> tuple[str, tuple[str, ...
 
 
 def main() -> None:
-    corpus = load_corpus(CORPUS)
-    parser = argparse.ArgumentParser(description="Ask a question as one corpus employee.")
-    parser.add_argument("--user", required=True, choices=sorted(corpus.employees))
+    parser = argparse.ArgumentParser(description="Ask a question as one user.")
+    parser.add_argument("--user", required=True)
+    parser.add_argument("--group", action="append", default=[], help="repeat for each group")
     parser.add_argument("question")
     args = parser.parse_args()
 
     settings = load_settings()
     spending = Spending(settings.model, settings.budget_usd)
-    principals = corpus.employees[args.user].principals()
+    principals = auth.principals(args.user, args.group)
     with connect_app(settings) as app:
         answer = ask(args.question, app, principals, chat_model(settings), spending)
 

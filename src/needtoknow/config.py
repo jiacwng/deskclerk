@@ -6,6 +6,10 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+# The signing keys sit under the issuer, except where the API reaches the login server by a
+# different address than the one stamped into the tokens, as it does inside a container.
+JWKS_PATH = "/protocol/openid-connect/certs"
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -15,9 +19,11 @@ class Settings:
     app_password: str
     model_cache: Path
     issuer: str
+    jwks_url: str
     client_id: str
     model: str
     budget_usd: float
+    mcp_host: str
     mcp_port: int
 
 
@@ -31,6 +37,7 @@ class ProvisionSettings:
 
 def load_settings() -> Settings:
     env = os.environ
+    issuer = env.get("NEEDTOKNOW_ISSUER", "http://localhost:8080/realms/needtoknow")
     return Settings(
         db_host=env.get("NEEDTOKNOW_DB_HOST", "localhost"),
         db_port=int(env.get("NEEDTOKNOW_DB_PORT", "5432")),
@@ -39,10 +46,12 @@ def load_settings() -> Settings:
         model_cache=Path(
             env.get("NEEDTOKNOW_MODEL_CACHE", "~/.cache/needtoknow/models")
         ).expanduser(),
-        issuer=env.get("NEEDTOKNOW_ISSUER", "http://localhost:8080/realms/needtoknow"),
+        issuer=issuer,
+        jwks_url=env.get("NEEDTOKNOW_JWKS_URL", f"{issuer}{JWKS_PATH}"),
         client_id=env.get("NEEDTOKNOW_CLIENT_ID", "needtoknow-api"),
         model=env.get("NEEDTOKNOW_MODEL", "claude-haiku-5-5"),
         budget_usd=float(env.get("NEEDTOKNOW_BUDGET_USD", "2.0")),
+        mcp_host=env.get("NEEDTOKNOW_MCP_HOST", "127.0.0.1"),
         mcp_port=int(env.get("NEEDTOKNOW_MCP_PORT", "8001")),
     )
 

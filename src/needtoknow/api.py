@@ -1,7 +1,7 @@
 # The HTTP API. Every request is answered as the employee named in its bearer token, and nothing
 # in the request body can change who that is.
-# Run locally: docker compose up -d --wait, PYTHONPATH=src .venv/bin/python -m needtoknow.ingest,
-# then .venv/bin/uvicorn --app-dir src --factory needtoknow.api:create_default_app
+# Run locally: docker compose up -d --wait, load the data with needtoknow.ingest, then
+# .venv/bin/uvicorn --app-dir src --factory needtoknow.api:create_default_app
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -54,6 +54,7 @@ class AskResponse(BaseModel):
     answer: str
     citations: list[str]
     refused: bool
+    queries: list[agent.Query]
 
 
 def create_app(settings: Settings, signing_key: SigningKeyLookup, model: BaseChatModel) -> FastAPI:
@@ -116,6 +117,7 @@ def create_app(settings: Settings, signing_key: SigningKeyLookup, model: BaseCha
             answer=answer.text,
             citations=list(answer.citations),
             refused=answer.refused,
+            queries=list(answer.queries),
         )
 
     return api

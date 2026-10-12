@@ -1,0 +1,22 @@
+needtoknow
+Copyright Wang Jiacheng
+
+This repository includes small extracts of two public datasets, in tests/data, cut from the
+downloads by tests/data/extract.py.
+
+BIRD Mini-Dev
+  tests/data/bird holds rows of the financial and california_schools databases from the
+  PostgreSQL version of BIRD Mini-Dev, with their database description files.
+  Source: https://github.com/bird-bench/mini_dev
+  Licence: Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0),
+  https://creativecommons.org/licenses/by-sa/4.0/
+  The extract is shared under the same licence.
+
+Enron Email Dataset
+  tests/data/enron holds 55 message files from three mailboxes of the May 7, 2015 release of
+  the Enron Email Dataset prepared by William W. Cohen at Carnegie Mellon University. The file
+  names drop the trailing dot of the release, which Windows does not allow.
+  Source: https://www.cs.cmu.edu/~enron/
+  The release note on that page describes the corpus as collected and prepared by the CALO
+  Project and made public by the Federal Energy Regulatory Commission during its
+  investigation, with some messages deleted at the request of affected employees.

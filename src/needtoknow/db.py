@@ -47,16 +47,10 @@ def as_user(app: psycopg.Connection[Any], principals: Iterable[str]) -> Iterator
     for name in names:
         if not name or "," in name:
             raise ValueError(f"principal {name!r} is empty or contains a comma")
-    users = [name.removeprefix("user:") for name in names if name.startswith("user:")]
-    if len(users) > 1:
-        raise ValueError(f"principals name more than one user: {users}")
     # Inside an open transaction this block would only be a savepoint, and the identity would
     # outlive it until the outer transaction ends.
     if app.info.transaction_status != TransactionStatus.IDLE:
         raise RuntimeError("as_user needs a connection with no open transaction")
     with app.transaction():
-        app.execute(
-            "SELECT set_config('app.principals', %s, true), set_config('app.user_id', %s, true)",
-            [",".join(names), users[0] if users else ""],
-        )
+        app.execute("SELECT set_identity(%s)", [",".join(names)])
         yield
