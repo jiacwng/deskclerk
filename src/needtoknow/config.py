@@ -10,6 +10,10 @@ from pathlib import Path
 # different address than the one stamped into the tokens, as it does inside a container.
 JWKS_PATH = "/protocol/openid-connect/certs"
 
+# Half the cores embeds as fast as all of them on a mixed corpus and leaves the machine usable.
+# A bulk load that owns the machine raises it.
+DEFAULT_EMBED_THREADS = max(1, (os.cpu_count() or 2) // 2)
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -18,6 +22,7 @@ class Settings:
     db_name: str
     app_password: str
     model_cache: Path
+    embed_threads: int
     issuer: str
     jwks_url: str
     client_id: str
@@ -46,6 +51,7 @@ def load_settings() -> Settings:
         model_cache=Path(
             env.get("NEEDTOKNOW_MODEL_CACHE", "~/.cache/needtoknow/models")
         ).expanduser(),
+        embed_threads=int(env.get("NEEDTOKNOW_EMBED_THREADS", DEFAULT_EMBED_THREADS)),
         issuer=issuer,
         jwks_url=env.get("NEEDTOKNOW_JWKS_URL", f"{issuer}{JWKS_PATH}"),
         client_id=env.get("NEEDTOKNOW_CLIENT_ID", "needtoknow-api"),

@@ -15,7 +15,7 @@ PRICES = {
     "claude-sonnet-5-5": (2.00, 10.00),
     "claude-opus-5-5": (4.00, 20.00),
 }
-MAX_TOKENS = 1024
+MAX_TOKENS = 4096
 
 
 class BudgetExceeded(RuntimeError):

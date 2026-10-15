@@ -20,6 +20,8 @@ USAGE: UsageMetadata = {"input_tokens": 1000, "output_tokens": 100, "total_token
 
 class ScriptedModel(GenericFakeChatModel):
     prompts: list[list[BaseMessage]] = Field(default_factory=list)
+    tools: list[Any] = Field(default_factory=list)
+    options: list[dict[str, Any]] = Field(default_factory=list)
 
     def bind_tools(
         self,
@@ -28,6 +30,7 @@ class ScriptedModel(GenericFakeChatModel):
         tool_choice: str | None = None,
         **kwargs: Any,
     ) -> Runnable[LanguageModelInput, AIMessage]:
+        self.tools = list(tools)
         return self
 
     def _generate(
@@ -38,6 +41,7 @@ class ScriptedModel(GenericFakeChatModel):
         **kwargs: Any,
     ) -> ChatResult:
         self.prompts.append(list(messages))
+        self.options.append(kwargs)
         return super()._generate(messages, stop, run_manager, **kwargs)
 
 

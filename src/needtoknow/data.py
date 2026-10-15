@@ -17,6 +17,17 @@ ROW_CAP = 200
 CHAR_CAP = 16_000
 TIMEOUT_MS = 3000
 
+
+# The caps keep a huge result out of the model's context. The evaluation raises them, because a
+# benchmark answer the agent never sees is scored as a wrong answer.
+@dataclass(frozen=True)
+class Caps:
+    rows: int
+    chars: int
+
+
+DEFAULT_CAPS = Caps(rows=ROW_CAP, chars=CHAR_CAP)
+
 DESCRIBE_TABLES = 40
 DESCRIBE_COLUMNS = 300
 DESCRIPTION_CUT = "The list was cut. Query information_schema.columns for the rest."
@@ -96,11 +107,16 @@ class QueryResult:
 # The newlines keep a trailing -- comment from swallowing the closing parenthesis. A prepared
 # statement goes through the extended query protocol, which refuses more than one statement even
 # when the SQL closes the parenthesis itself.
-def query_data(app: psycopg.Connection[Any], principals: Iterable[str], query: str) -> QueryResult:
+def query_data(
+    app: psycopg.Connection[Any],
+    principals: Iterable[str],
+    query: str,
+    caps: Caps = DEFAULT_CAPS,
+) -> QueryResult:
     if app.info.user != APP_ROLE:
         raise ValueError(f"query_data runs as {APP_ROLE}, not as {app.info.user}")
     wrapped = sql.SQL("SELECT * FROM (\n{}\n) AS q LIMIT {}").format(
-        sql.SQL(query), sql.Literal(ROW_CAP + 1)
+        sql.SQL(query), sql.Literal(caps.rows + 1)
     )
     try:
         with as_user(app, principals), app.cursor() as cursor:
@@ -111,13 +127,16 @@ def query_data(app: psycopg.Connection[Any], principals: Iterable[str], query: s
     except psycopg.Error as error:
         message = error.diag.message_primary or "the database refused it"
         return QueryResult(text=f"The query failed: {message}", failed=True)
+    except UnicodeEncodeError:
+        return QueryResult(text="The query failed: the query is not valid UTF-8.", failed=True)
 
     lines = [" | ".join(columns)]
     size = len(lines[0])
-    for row in rows[:ROW_CAP]:
-        line = " | ".join(_text(value) for value in row)
+    for row in rows[: caps.rows]:
+        room = caps.chars - size
+        line = " | ".join(_text(value)[: room + 1] for value in row)
         size += len(line) + 1
-        if size > CHAR_CAP:
+        if size > caps.chars:
             break
         lines.append(line)
     shown = len(lines) - 1

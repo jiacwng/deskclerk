@@ -87,29 +87,24 @@ DESCRIBE_DATA_TOOL = {
     },
 }
 
-QUERY_DATA_TOOL = {
-    "name": "query_data",
-    "description": "Run one read-only PostgreSQL SELECT over the company's data and return the "
-    "rows as text. Call describe_data with the schema first and query only the tables and views "
-    "it lists, named as it writes them. Send a single SELECT without a semicolon. The database "
-    "leaves out rows the employee asking may not see, and returns at most "
-    f"{data.ROW_CAP} rows. If the query fails, read the error and fix the query once.",
-    "input_schema": {
-        "type": "object",
-        "properties": {"sql": {"type": "string", "description": "One SELECT statement."}},
-        "required": ["sql"],
-        "additionalProperties": False,
-    },
-}
 
-TOOL_SPECS = [
-    SEARCH_TOOL,
-    OPEN_DOCUMENT_TOOL,
-    DESCRIBE_DATA_TOOL,
-    QUERY_DATA_TOOL,
-]
+def query_data_tool(caps: data.Caps) -> dict[str, Any]:
+    return {
+        "name": "query_data",
+        "description": "Run one read-only PostgreSQL SELECT over the company's data and return "
+        "the rows as text. Call describe_data with the schema first and query only the tables and "
+        "views it lists, named as it writes them. Send a single SELECT without a semicolon. The "
+        "database leaves out rows the employee asking may not see, and returns at most "
+        f"{caps.rows} rows. If the query fails, read the error and fix the query once.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"sql": {"type": "string", "description": "One SELECT statement."}},
+            "required": ["sql"],
+            "additionalProperties": False,
+        },
+    }
 
-# A tool's argument name, whether the model may leave it out, and the function that runs it.
+
 Tools = dict[str, tuple[str, bool, Callable[..., str]]]
 
 _CITATION = re.compile(r"( ?)\[([a-z0-9-]+(?:, *[a-z0-9-]+)*)\]")
@@ -117,7 +112,6 @@ _CITATION = re.compile(r"( ?)\[([a-z0-9-]+(?:, *[a-z0-9-]+)*)\]")
 _log = logging.getLogger(__name__)
 
 
-# One query_data call: the rows as query_data printed them, or its error.
 @dataclass(frozen=True)
 class Query:
     sql: str
@@ -155,6 +149,7 @@ def ask(
     spending: Spending,
     method: Method = Method.RLS,
     filter_forgotten: bool = False,
+    caps: data.Caps = data.DEFAULT_CAPS,
 ) -> Answer:
     returned: set[str] = set()
     outputs: list[str] = []
@@ -182,7 +177,7 @@ def ask(
         return outputs[-1]
 
     def query_data(sql: str) -> str:
-        result = data.query_data(connection, principals, sql)
+        result = data.query_data(connection, principals, sql, caps)
         if result.failed:
             queries.append(Query(sql=sql, rows=None, error=result.text))
         else:
@@ -198,7 +193,9 @@ def ask(
     if method is Method.RLS:
         tools["describe_data"] = ("schema", True, describe_data)
         tools["query_data"] = ("sql", False, query_data)
-    graph = _build_graph(model, _system_prompt(method, principals), tools, spending)
+    specs = [SEARCH_TOOL, OPEN_DOCUMENT_TOOL, DESCRIBE_DATA_TOOL, query_data_tool(caps)]
+    specs = [spec for spec in specs if spec["name"] in tools]
+    graph = _build_graph(model, _system_prompt(method, principals), specs, tools, spending)
     final = graph.invoke(
         {
             "messages": [HumanMessage(question)],
@@ -219,10 +216,10 @@ def _system_prompt(method: Method, principals: frozenset[str]) -> str:
 def _build_graph(
     model: BaseChatModel,
     system_prompt: str,
+    specs: list[dict[str, Any]],
     tools: Tools,
     spending: Spending,
 ) -> CompiledStateGraph[AgentState, None, AgentState, AgentState]:
-    specs = [spec for spec in TOOL_SPECS if spec["name"] in tools]
     model_with_tools = model.bind_tools(specs, strict=True)
 
     def call_model(state: AgentState) -> dict[str, Any]:

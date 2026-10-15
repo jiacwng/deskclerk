@@ -5,6 +5,6 @@ Each database attack runs as a district user through query_data and reports whet
 | Attack | Source | OWASP category | Result |
 |---|---|---|---|
 | Multi-statement read-only bypass | [Datadog Security Labs, PostgreSQL MCP server SQL injection](https://securitylabs.datadoghq.com/articles/mcp-vulnerability-case-study-SQL-injection-in-the-postgresql-mcp-server/) | LLM05:2025 Improper Output Handling | blocked |
-| Identity rewrite through set_config | [Datadog Security Labs, PostgreSQL MCP server SQL injection](https://securitylabs.datadoghq.com/articles/mcp-vulnerability-case-study-SQL-injection-in-the-postgresql-mcp-server/) | LLM06:2025 Excessive Agency | blocked |
-| Identity rewrite through set_identity | [Datadog Security Labs, PostgreSQL MCP server SQL injection](https://securitylabs.datadoghq.com/articles/mcp-vulnerability-case-study-SQL-injection-in-the-postgresql-mcp-server/) | LLM06:2025 Excessive Agency | blocked |
+| Identity rewrite through set_config | [PostgreSQL set_config](https://www.postgresql.org/docs/current/functions-admin.html#FUNCTIONS-ADMIN-SET) | LLM06:2025 Excessive Agency | blocked |
+| Identity rewrite through set_identity | [PostgreSQL set_config](https://www.postgresql.org/docs/current/functions-admin.html#FUNCTIONS-ADMIN-SET) | LLM06:2025 Excessive Agency | blocked |
 | Reading other sessions' query text | [PostgreSQL pg_stat_activity](https://www.postgresql.org/docs/current/monitoring-stats.html) | LLM02:2025 Sensitive Information Disclosure | blocked |

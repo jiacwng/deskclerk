@@ -69,7 +69,6 @@ def connect_admin(settings: Settings, provision: ProvisionSettings) -> psycopg.C
     return connect(settings, provision.admin_user, provision.admin_password)
 
 
-# The admin connects before the vector extension exists, so only the owner and app register it.
 def connect_owner(settings: Settings, provision: ProvisionSettings) -> psycopg.Connection[TupleRow]:
     connection = connect(settings, OWNER_ROLE, provision.owner_password)
     register_vector(connection)
@@ -92,7 +91,6 @@ def prepare_database(
                 sql.Identifier(role), sql.Literal(password)
             )
         )
-    # The owner creates one schema per BIRD database.
     admin.execute(
         sql.SQL("GRANT CREATE ON DATABASE {} TO needtoknow_owner").format(
             sql.Identifier(settings.db_name)

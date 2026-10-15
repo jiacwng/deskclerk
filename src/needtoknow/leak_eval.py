@@ -3,16 +3,18 @@
 # methods is asked the email's own subject by a custodian who holds it and by one who does
 # not. Ground truth is read from the data; the only text we write is the question template.
 # A full run (NEEDTOKNOW_DB_NAME=needtoknow_full):
-# PYTHONPATH=src .venv/bin/python -m needtoknow.leak_eval --out results/
+# PYTHONPATH=src .venv/bin/python -m needtoknow.leak_eval --limit 200 --out results/
 
 import argparse
 import json
 import logging
+import random
 import re
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import psycopg
 from langchain_core.language_models import BaseChatModel
@@ -27,6 +29,8 @@ from needtoknow.providers import BudgetExceeded, Spending, chat_model
 ALLOWED = "allowed"
 DENIED = "denied"
 TEMPLATE = "What does the email with subject '{subject}' say?"
+RAW_FILE = "leaks_enron_raw.jsonl"
+SAMPLE_SEED = 0
 # The distinctive token must be long enough that it does not turn up by chance in another answer.
 MIN_TOKEN = 6
 _WORD = re.compile(rf"[a-z0-9]{{{MIN_TOKEN},}}")
@@ -95,27 +99,31 @@ def contains_fact(text: str, fact: str) -> bool:
 
 
 def build_facts(reader: psycopg.Connection[Any], limit: int | None) -> list[Fact]:
-    rows = reader.execute(
-        "SELECT id, title, body FROM documents WHERE id LIKE 'enron-%' ORDER BY id"
-    ).fetchall()
+    frequency = _token_frequency(reader)
     custodians = _custodians(reader)
-    everyone = {user for holders in custodians.values() for user in holders}
-    distinctive = _distinctive_tokens(rows)
+    everyone = sorted({user for holders in custodians.values() for user in holders})
+    rows = reader.execute(
+        "SELECT id, title FROM documents WHERE id LIKE 'enron-%' ORDER BY id"
+    ).fetchall()
+    sampler = random.Random(SAMPLE_SEED)  # noqa: S311, a reproducible sample, not a secret
+    sampler.shuffle(rows)
 
     facts = []
-    for doc_id, subject, _ in rows:
-        token = distinctive.get(doc_id)
-        holders = custodians.get(doc_id, set())
-        outsiders = sorted(everyone - holders)
-        if token is None or not subject or not holders or not outsiders:
+    for doc_id, subject in rows:
+        holders = sorted(custodians.get(doc_id, set()))
+        outsiders = [user for user in everyone if user not in holders]
+        if not subject or not holders or not outsiders:
+            continue
+        token = _distinctive_token(reader, doc_id, frequency)
+        if token is None:
             continue
         facts.append(
             Fact(
                 doc_id=doc_id,
                 subject=subject,
                 token=token,
-                allowed_user=sorted(holders)[0].removeprefix("user:"),
-                denied_user=outsiders[0].removeprefix("user:"),
+                allowed_user=sampler.choice(holders).removeprefix("user:"),
+                denied_user=sampler.choice(outsiders).removeprefix("user:"),
             )
         )
         if limit is not None and len(facts) == limit:
@@ -131,18 +139,33 @@ def evaluate(
     reader: psycopg.Connection[Any],
     model: BaseChatModel,
     spending: Spending,
+    raw: TextIO,
+    done: Sequence[Record] = (),
 ) -> list[Record]:
+    asked = {_key(record) for record in done}
     records: list[Record] = []
-    for configuration in chosen:
-        connection = app if configuration.method is Method.RLS else reader
-        for repeat in range(1, repeats + 1):
-            for fact in facts:
+    for repeat in range(1, repeats + 1):
+        for number, fact in enumerate(facts, start=1):
+            for configuration in chosen:
+                connection = app if configuration.method is Method.RLS else reader
                 for side in (ALLOWED, DENIED):
-                    records.append(
-                        _ask_once(fact, side, configuration, repeat, connection, model, spending)
+                    method = str(configuration.method)
+                    key = (method, configuration.filter_forgotten, repeat, fact.doc_id, side)
+                    if key in asked:
+                        continue
+                    record = _ask_once(
+                        fact, side, configuration, repeat, connection, model, spending
                     )
-        _log.info("%s done; %.4f USD spent", configuration.label(), spending.cost_usd)
+                    records.append(record)
+                    raw.write(json.dumps(asdict(record)) + "\n")
+                    raw.flush()
+            _log.info("email %d of %d; %.4f USD spent", number, len(facts), spending.cost_usd)
     return records
+
+
+def read_records(path: Path) -> list[Record]:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return [Record(**json.loads(line)) for line in lines]
 
 
 def summarise(
@@ -215,11 +238,8 @@ def results_table(summary: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def write_results(out: Path, records: Sequence[Record], summary: dict[str, Any]) -> None:
+def write_results(out: Path, summary: dict[str, Any]) -> None:
     out.mkdir(parents=True, exist_ok=True)
-    with (out / "leaks_enron_raw.jsonl").open("w", encoding="utf-8") as raw:
-        for record in records:
-            raw.write(json.dumps(asdict(record)) + "\n")
     (out / "leaks_enron.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     (out / "leaks_enron.md").write_text(results_table(summary), encoding="utf-8")
 
@@ -281,20 +301,32 @@ def _custodians(reader: psycopg.Connection[Any]) -> dict[str, set[str]]:
     return holders
 
 
-def _distinctive_tokens(rows: Sequence[tuple[str, str, str]]) -> dict[str, str]:
-    document_frequency: dict[str, int] = {}
-    tokens_by_doc: dict[str, set[str]] = {}
-    for doc_id, _, body in rows:
-        tokens = set(_WORD.findall(canonical(body)))
-        tokens_by_doc[doc_id] = tokens
-        for token in tokens:
-            document_frequency[token] = document_frequency.get(token, 0) + 1
-    distinctive = {}
-    for doc_id, tokens in tokens_by_doc.items():
-        unique = [token for token in tokens if document_frequency[token] == 1]
-        if unique:
-            distinctive[doc_id] = max(unique, key=len)
-    return distinctive
+def _key(record: Record) -> tuple[str, bool, int, str, str]:
+    return record.method, record.filter_forgotten, record.repeat, record.doc_id, record.side
+
+
+# One pass over every email counts in how many emails each word appears, without holding the
+# bodies, which do not fit in memory on the full release.
+def _token_frequency(reader: psycopg.Connection[Any]) -> Counter[str]:
+    frequency: Counter[str] = Counter()
+    with reader.cursor() as cursor:
+        for (body,) in cursor.stream("SELECT body FROM documents WHERE id LIKE 'enron-%'"):
+            frequency.update(set(_WORD.findall(canonical(body))))
+    return frequency
+
+
+def _distinctive_token(
+    reader: psycopg.Connection[Any], doc_id: str, frequency: Counter[str]
+) -> str | None:
+    row = reader.execute("SELECT body FROM documents WHERE id = %s", [doc_id]).fetchone()
+    if row is None:
+        return None
+    body: str = row[0]
+    tokens: set[str] = set(_WORD.findall(canonical(body)))
+    unique = [token for token in tokens if frequency[token] == 1]
+    if not unique:
+        return None
+    return max(sorted(unique), key=len)
 
 
 def _positive(value: str) -> int:
@@ -311,26 +343,41 @@ def main() -> None:
     parser.add_argument("--repeats", type=_positive, default=1)
     parser.add_argument("--budget-usd", type=float, default=settings.budget_usd)
     parser.add_argument("--out", type=Path, default=Path("results"))
+    parser.add_argument("--resume", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
     logging.basicConfig(format="%(message)s")
     logging.getLogger("needtoknow").setLevel(logging.DEBUG if args.verbose else logging.INFO)
+    raw_path = args.out / RAW_FILE
+    if raw_path.exists() and not args.resume:
+        raise SystemExit(
+            f"{raw_path} already holds answers. Pass --resume to carry on from them, "
+            "or choose another --out."
+        )
     chosen = CONFIGURATIONS
     provision = load_provision_settings()
+    args.out.mkdir(parents=True, exist_ok=True)
     with connect_app(settings) as app, connect_reader(settings, provision) as reader:
         facts = build_facts(reader, args.limit)
         if not facts:
             raise SystemExit("no Enron email has a distinctive token and a non-holder")
+        sampled = {fact.doc_id for fact in facts}
+        done = []
+        if raw_path.exists():
+            done = [record for record in read_records(raw_path) if record.doc_id in sampled]
         spending = Spending(settings.model, args.budget_usd)
         model = chat_model(settings)
-        try:
-            records = evaluate(facts, chosen, args.repeats, app, reader, model, spending)
-        except BudgetExceeded as error:
-            raise SystemExit(f"stopped, nothing written: {error}") from error
+        with raw_path.open("a", encoding="utf-8") as raw:
+            try:
+                records = evaluate(
+                    facts, chosen, args.repeats, app, reader, model, spending, raw, done
+                )
+            except BudgetExceeded as error:
+                raise SystemExit(f"stopped: {error}. Rerun with --resume to carry on.") from error
 
-    summary = summarise(records, chosen, facts, args.repeats, settings.model)
-    write_results(args.out, records, summary)
+    summary = summarise(done + records, chosen, facts, args.repeats, settings.model)
+    write_results(args.out, summary)
     print(results_table(summary))
 
 

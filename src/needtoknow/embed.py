@@ -1,7 +1,6 @@
 # Text embeddings with BAAI/bge-small-en-v1.5, run locally on the CPU through fastembed (ONNX).
 # The model is downloaded once into NEEDTOKNOW_MODEL_CACHE and loaded once per process.
 
-import os
 from functools import cache
 
 import numpy as np
@@ -15,10 +14,9 @@ DIMENSIONS = 384
 # The bge model card gives this instruction for short queries searched against passages.
 # fastembed's query_embed does not add it for this model, so it is added here.
 QUERY_INSTRUCTION = "Represent this sentence for searching relevant passages: "
-# A batch is padded to its longest passage, so on a CPU one passage at a time on half the cores
-# is the fastest setting measured on Enron.
+# A batch is padded to its longest passage, so on a CPU one passage at a time is the fastest
+# setting measured on Enron. The thread count is NEEDTOKNOW_EMBED_THREADS.
 PASSAGE_BATCH = 1
-THREADS = max(1, (os.cpu_count() or 2) // 2)
 
 Vector = NDArray[np.float32]
 
@@ -35,4 +33,5 @@ def embed_query(text: str) -> Vector:
 
 @cache
 def _model() -> TextEmbedding:
-    return TextEmbedding(MODEL, cache_dir=str(load_settings().model_cache), threads=THREADS)
+    settings = load_settings()
+    return TextEmbedding(MODEL, cache_dir=str(settings.model_cache), threads=settings.embed_threads)

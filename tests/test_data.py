@@ -2,6 +2,7 @@
 # run a second statement or write, reach another session, a slow or huge query is cut short, and
 # row-level security decides the rows of the BIRD financial database.
 
+import tracemalloc
 from collections.abc import Iterator
 from typing import Any
 
@@ -19,6 +20,7 @@ from needtoknow.data import (
     CHAR_CAP,
     DESCRIPTION_CUT,
     ROW_CAP,
+    Caps,
     QueryResult,
     describe_data,
     query_data,
@@ -124,6 +126,44 @@ def test_the_row_cap_holds(app: Connection, query: str, last_line: str) -> None:
     assert ROW_CAP == 200
     assert lines[1:-1] == [str(n) for n in range(1, ROW_CAP + 1)]
     assert lines[-1] == last_line
+
+
+def test_caps_passed_in_replace_the_default_ones(app: Connection) -> None:
+    query = "SELECT n FROM generate_series(1, 500) AS n"
+
+    lines = query_data(app, PRAGUE, query, Caps(rows=300, chars=CHAR_CAP)).text.splitlines()
+
+    assert lines[1:-1] == [str(n) for n in range(1, 301)]
+
+
+def test_a_huge_value_is_not_copied_into_the_result(app: Connection) -> None:
+    size = 5_000_000
+    tracemalloc.start()
+
+    result = query_data(app, PRAGUE, f"SELECT repeat('x', {size}) AS line, 1 AS n")
+
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert result.text.endswith("The result was cut at 0 rows. Narrow the query or aggregate.")
+    assert peak < 1.5 * size
+
+
+def test_a_query_that_is_not_valid_utf8_fails_cleanly(app: Connection) -> None:
+    result = query_data(app, PRAGUE, "SELECT '\ud800'")
+
+    assert result == QueryResult(
+        text="The query failed: the query is not valid UTF-8.", failed=True
+    )
+
+
+def test_the_tool_description_states_the_row_cap_in_force(app: Connection) -> None:
+    model = scripted(final_reply("Done."))
+    caps = Caps(rows=300, chars=CHAR_CAP)
+
+    ask("Hi.", app, PRAGUE, model, Spending("claude-haiku-5-5", 1.0), caps=caps)
+
+    query_tool = next(tool for tool in model.tools if tool["name"] == "query_data")
+    assert "returns at most 300 rows" in query_tool["description"]
 
 
 def test_a_district_user_sees_only_their_district(app: Connection) -> None:
