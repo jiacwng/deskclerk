@@ -3,17 +3,22 @@
 # only documents the token's user may read, and nothing in the body can change who is asking.
 
 import re
+import threading
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
+from typing import Any
 
 import jwt
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
+from langchain_core.callbacks import CallbackManagerForLLMRun
+from langchain_core.messages import BaseMessage
+from langchain_core.outputs import ChatResult
 from psycopg.rows import TupleRow
+from pydantic import Field
 
-from fakes import call_tool, final_reply, scripted, search_call
+from fakes import ScriptedModel, call_tool, final_reply, scripted, search_call
 from needtoknow.agent import REFUSAL
 from needtoknow.api import create_app
 from needtoknow.auth import SigningKeyLookup
@@ -228,13 +233,21 @@ def test_ask_with_an_invalid_body_is_refused(
                 "citations": [TIGER_TEAM],
                 "refused": False,
                 "queries": [],
+                "withheld": 0,
             },
             id="holder",
         ),
         pytest.param(
             "kean-s",
             REFUSAL,
-            {"user": "kean-s", "answer": REFUSAL, "citations": [], "refused": True, "queries": []},
+            {
+                "user": "kean-s",
+                "answer": REFUSAL,
+                "citations": [],
+                "refused": True,
+                "queries": [],
+                "withheld": 0,
+            },
             id="other-custodian",
         ),
     ],
@@ -280,6 +293,7 @@ def test_ask_after_opening_a_document_keeps_the_response_shape(
         "citations": [TIGER_TEAM],
         "refused": False,
         "queries": [],
+        "withheld": 0,
     }
 
 
@@ -290,7 +304,7 @@ def test_ask_with_the_budget_spent_is_unavailable(
     sign_token: Sign,
 ) -> None:
     model = scripted(final_reply(REFUSAL))
-    spent = replace(token_settings, budget_usd=0.0)
+    spent = token_settings.model_copy(update={"budget_usd": 0.0})
 
     with TestClient(create_app(spent, token_signing_key, model)) as ask_client:
         response = ask_client.post("/ask", json=ASK, headers=_kean(sign_token))
@@ -329,6 +343,45 @@ def test_concurrent_searches_each_answer_as_their_own_caller(
     assert TIGER_TEAM not in found["kean-s"]
 
 
+class _WaitingModel(ScriptedModel):
+    thinking: threading.Event = Field(default_factory=threading.Event)
+    searched: threading.Event = Field(default_factory=threading.Event)
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        self.thinking.set()
+        self.searched.wait(timeout=60)
+        return super()._generate(messages, stop, run_manager, **kwargs)
+
+
+def test_a_search_is_served_while_an_answer_waits_on_the_model(
+    owner: psycopg.Connection[TupleRow],
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    sign_token: Sign,
+) -> None:
+    model = _WaitingModel(messages=iter([search_call(QUESTION), final_reply(REFUSAL)]))
+    settings = token_settings.model_copy(update={"pool_size": 1})
+    headers = _kean(sign_token)
+
+    with (
+        TestClient(create_app(settings, token_signing_key, model)) as client,
+        ThreadPoolExecutor(max_workers=1) as executor,
+    ):
+        answer = executor.submit(client.post, "/ask", json=ASK, headers=headers)
+        assert model.thinking.wait(timeout=60)
+        search = client.post("/search", json=QUESTION, headers=headers)
+        model.searched.set()
+
+        assert search.status_code == 200
+        assert answer.result().status_code == 200
+
+
 def test_the_api_settings_hold_no_provisioning_password(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "NEEDTOKNOW_ADMIN_USER",
@@ -343,3 +396,20 @@ def test_the_api_settings_hold_no_provisioning_password(monkeypatch: pytest.Monk
     assert not hasattr(settings, "admin_password")
     assert not hasattr(settings, "owner_password")
     assert not hasattr(settings, "reader_password")
+
+
+def test_an_employee_over_the_quota_gets_429(
+    owner: psycopg.Connection[TupleRow],
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    sign_token: Sign,
+) -> None:
+    model = scripted(final_reply(REFUSAL))
+    one_a_minute = token_settings.model_copy(update={"requests_per_minute": 1})
+
+    with TestClient(create_app(one_a_minute, token_signing_key, model)) as ask_client:
+        first = ask_client.post("/ask", json=ASK, headers=_kean(sign_token))
+        second = ask_client.post("/ask", json=ASK, headers=_kean(sign_token))
+
+    assert first.status_code == 200
+    assert second.status_code == 429

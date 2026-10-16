@@ -15,6 +15,7 @@ from needtoknow.agent import NOT_OPEN, REFUSAL, Answer, ask
 from needtoknow.api import create_app
 from needtoknow.auth import SigningKeyLookup, principals
 from needtoknow.config import Settings
+from needtoknow.db import Pool
 from needtoknow.documents import Document
 from needtoknow.providers import Spending
 
@@ -25,8 +26,10 @@ TIGER_TEAM = "enron-770963d7e2ceeb8d22d92a1ebfaba325068dfa242524cb4a8983dc0d1165
 QUESTION = "Who is helping with the Wharton and Rice projects for the Tiger Team?"
 
 
-def _ask(app: Connection, custodian: str, model: ScriptedModel) -> Answer:
-    return ask(QUESTION, app, principals(custodian, []), model, Spending("claude-haiku-5-5", 1.0))
+def _ask(app_pool: Pool, custodian: str, model: ScriptedModel) -> Answer:
+    return ask(
+        QUESTION, app_pool, principals(custodian, []), model, Spending("claude-haiku-5-5", 1.0)
+    )
 
 
 def _tool_results(model: ScriptedModel) -> list[ToolMessage]:
@@ -38,12 +41,12 @@ def _tagged_ids(result: ToolMessage) -> set[str]:
 
 
 def test_the_holder_gets_the_email_and_its_citation(
-    app: Connection, emails: dict[str, Document]
+    app_pool: Pool, emails: dict[str, Document]
 ) -> None:
     reply = f"Two people in Vince Kaminski's group help with them [{TIGER_TEAM}]."
     model = scripted(search_call({"query": QUESTION}), final_reply(reply))
 
-    answer = _ask(app, "kaminski-v", model)
+    answer = _ask(app_pool, "kaminski-v", model)
 
     (result,) = _tool_results(model)
     assert TIGER_TEAM in _tagged_ids(result)
@@ -53,11 +56,11 @@ def test_the_holder_gets_the_email_and_its_citation(
 
 
 def test_another_custodian_is_shown_none_of_it_and_its_citation_is_dropped(
-    app: Connection, emails: dict[str, Document]
+    app_pool: Pool, emails: dict[str, Document]
 ) -> None:
     model = scripted(search_call({"query": QUESTION}), final_reply(f"See [{TIGER_TEAM}]."))
 
-    answer = _ask(app, "kean-s", model)
+    answer = _ask(app_pool, "kean-s", model)
 
     (result,) = _tool_results(model)
     returned = _tagged_ids(result)
@@ -69,10 +72,10 @@ def test_another_custodian_is_shown_none_of_it_and_its_citation_is_dropped(
     assert answer.dropped_citations == (TIGER_TEAM,)
 
 
-def test_another_custodians_email_does_not_open(app: Connection) -> None:
+def test_another_custodians_email_does_not_open(app_pool: Pool) -> None:
     model = scripted(call_tool("open_document", {"doc_id": TIGER_TEAM}), final_reply(REFUSAL))
 
-    _ask(app, "dasovich-j", model)
+    _ask(app_pool, "dasovich-j", model)
 
     (result,) = _tool_results(model)
     assert result.text == NOT_OPEN

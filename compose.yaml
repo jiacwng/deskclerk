@@ -68,6 +68,8 @@ services:
       # the key lookup uses the address that resolves inside this network.
       NEEDTOKNOW_JWKS_URL: http://keycloak:8080/realms/needtoknow/protocol/openid-connect/certs
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
+      NEEDTOKNOW_SCREEN: ${NEEDTOKNOW_SCREEN:-true}
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
@@ -83,6 +85,8 @@ services:
       NEEDTOKNOW_DB_HOST: db
       NEEDTOKNOW_JWKS_URL: http://keycloak:8080/realms/needtoknow/protocol/openid-connect/certs
       NEEDTOKNOW_MCP_HOST: 0.0.0.0
+      TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
+      NEEDTOKNOW_SCREEN: ${NEEDTOKNOW_SCREEN:-true}
     ports:
       - "127.0.0.1:8001:8001"
     depends_on:

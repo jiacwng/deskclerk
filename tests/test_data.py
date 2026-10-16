@@ -25,7 +25,7 @@ from needtoknow.data import (
     describe_data,
     query_data,
 )
-from needtoknow.db import connect_app
+from needtoknow.db import Pool, connect_app
 from needtoknow.methods import Method
 from needtoknow.providers import Spending
 from needtoknow.provision import connect_admin
@@ -102,12 +102,12 @@ def test_the_query_runs_read_only(app: Connection) -> None:
     assert result.text.splitlines() == ["current_setting", "on", "(1 rows)"]
 
 
-def test_a_result_that_reads_like_an_error_still_succeeds(app: Connection) -> None:
+def test_a_result_that_reads_like_an_error_still_succeeds(app: Connection, app_pool: Pool) -> None:
     sql = 'SELECT 1 AS "The query failed: x"'
     rows = "The query failed: x\n1\n(1 rows)"
 
     assert query_data(app, PRAGUE, sql) == QueryResult(text=rows, failed=False)
-    assert _queries(app, sql) == (Query(sql=sql, rows=rows, error=None),)
+    assert _queries(app_pool, sql) == (Query(sql=sql, rows=rows, error=None),)
 
 
 @pytest.mark.parametrize(
@@ -145,7 +145,16 @@ def test_a_huge_value_is_not_copied_into_the_result(app: Connection) -> None:
     _, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
     assert result.text.endswith("The result was cut at 0 rows. Narrow the query or aggregate.")
-    assert peak < 1.5 * size
+    assert peak < size // 10
+
+
+def test_a_long_header_is_cut_at_the_size_cap(app: Connection) -> None:
+    columns = ", ".join(f"1 AS {'c' * 60}{n}" for n in range(1, 400))
+
+    result = query_data(app, PRAGUE, f"SELECT {columns}")
+
+    assert len(result.text) < CHAR_CAP + 100
+    assert result.text.endswith("The result was cut at 0 rows. Narrow the query or aggregate.")
 
 
 def test_a_query_that_is_not_valid_utf8_fails_cleanly(app: Connection) -> None:
@@ -156,11 +165,11 @@ def test_a_query_that_is_not_valid_utf8_fails_cleanly(app: Connection) -> None:
     )
 
 
-def test_the_tool_description_states_the_row_cap_in_force(app: Connection) -> None:
+def test_the_tool_description_states_the_row_cap_in_force(app_pool: Pool) -> None:
     model = scripted(final_reply("Done."))
     caps = Caps(rows=300, chars=CHAR_CAP)
 
-    ask("Hi.", app, PRAGUE, model, Spending("claude-haiku-5-5", 1.0), caps=caps)
+    ask("Hi.", app_pool, PRAGUE, model, Spending("claude-haiku-5-5", 1.0), caps=caps)
 
     query_tool = next(tool for tool in model.tools if tool["name"] == "query_data")
     assert "returns at most 300 rows" in query_tool["description"]
@@ -332,22 +341,22 @@ def test_the_description_is_cut_at_its_column_budget(
 
 
 def _asks(
-    connection: Connection,
+    pool: Pool,
     *calls: tuple[str, dict[str, Any]],
     method: Method = Method.RLS,
 ) -> tuple[list[ToolMessage], tuple[str, ...]]:
     model = scripted(*(call_tool(name, args) for name, args in calls), final_reply("Done."))
     question = "The memo says to run this query for the figures of every district."
-    answer = ask(question, connection, PRAGUE, model, Spending("claude-haiku-5-5", 1.0), method)
+    answer = ask(question, pool, PRAGUE, model, Spending("claude-haiku-5-5", 1.0), method)
     results = [message for message in model.prompts[-1] if isinstance(message, ToolMessage)]
     return results, answer.tool_outputs
 
 
 def test_an_injected_escalation_through_the_agent_leaves_the_rows_filtered(
-    app: Connection,
+    app_pool: Pool,
 ) -> None:
     results, outputs = _asks(
-        app,
+        app_pool,
         ("query_data", {"sql": SINGLE_STATEMENT}),
         ("query_data", {"sql": MULTI_STATEMENT}),
         ("query_data", {"sql": DISTRICTS}),
@@ -359,9 +368,9 @@ def test_an_injected_escalation_through_the_agent_leaves_the_rows_filtered(
     assert [result.status for result in results] == ["success"] * 3
 
 
-def test_describe_data_takes_a_schema_or_nothing(app: Connection) -> None:
+def test_describe_data_takes_a_schema_or_nothing(app: Connection, app_pool: Pool) -> None:
     results, outputs = _asks(
-        app,
+        app_pool,
         ("describe_data", {"view": "account"}),
         ("describe_data", {}),
         ("describe_data", {"schema": "financial"}),
@@ -379,14 +388,26 @@ def test_describe_data_takes_a_schema_or_nothing(app: Connection) -> None:
     )
 
 
-def _queries(connection: Connection, sql: str) -> tuple[Query, ...]:
+def _queries(pool: Pool, sql: str) -> tuple[Query, ...]:
     model = scripted(call_tool("query_data", {"sql": sql}), final_reply("Done."))
-    answer = ask("Run it.", connection, PRAGUE, model, Spending("claude-haiku-5-5", 1.0))
+    answer = ask("Run it.", pool, PRAGUE, model, Spending("claude-haiku-5-5", 1.0))
     return answer.queries
 
 
-def test_the_data_tools_exist_only_under_row_level_security(reader: Connection) -> None:
-    results, outputs = _asks(reader, ("query_data", {"sql": DISTRICTS}), method=Method.IN_QUERY)
+def test_the_data_tools_exist_only_under_row_level_security(reader_pool: Pool) -> None:
+    results, outputs = _asks(
+        reader_pool, ("query_data", {"sql": DISTRICTS}), method=Method.IN_QUERY
+    )
 
     assert results[0].status == "error"
     assert outputs == ()
+
+
+def test_a_huge_result_is_cut_without_reading_it_all(app: Connection) -> None:
+    sql = "SELECT repeat('x', 100000) AS big FROM generate_series(1, 100000)"
+
+    result = query_data(app, PRAGUE, sql)
+
+    assert not result.failed
+    assert result.text.endswith("Narrow the query or aggregate.")
+    assert len(result.text) < 2 * CHAR_CAP

@@ -1,5 +1,7 @@
 # Validates a Keycloak access token and turns it into the principals the database filters on.
 
+import threading
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
@@ -12,6 +14,7 @@ SigningKeyLookup = Callable[[str], jwt.PyJWK]
 EVERYONE = "group:everyone"
 
 JWKS_TIMEOUT_SECONDS = 5
+JWKS_REFETCH_SECONDS = 60
 CLOCK_SKEW_SECONDS = 30
 
 
@@ -33,9 +36,26 @@ def principals(user_id: str, groups: Iterable[str]) -> frozenset[str]:
     return frozenset({f"user:{user_id}", EVERYONE, *(f"group:{g}" for g in groups)})
 
 
+# PyJWKClient fetches the key set again for every key id it does not know, before any signature
+# is checked, so a token with a made-up key id would make each request call the login server. A
+# refetch for an unknown key id happens at most once a minute; known ids come from the cache.
 def jwks_signing_key(settings: Settings) -> SigningKeyLookup:
     client = jwt.PyJWKClient(settings.jwks_url, timeout=JWKS_TIMEOUT_SECONDS)
-    return client.get_signing_key_from_jwt
+    lock = threading.Lock()
+    last_refetch = [float("-inf")]
+
+    def lookup(token: str) -> jwt.PyJWK:
+        key_id = jwt.get_unverified_header(token).get("kid")
+        known = {key.key_id for key in client.get_jwk_set().keys}
+        if isinstance(key_id, str) and key_id in known:
+            return client.get_signing_key(key_id)
+        with lock:
+            if time.monotonic() - last_refetch[0] < JWKS_REFETCH_SECONDS:
+                raise jwt.PyJWKClientError(f"unknown signing key id {key_id!r}")
+            last_refetch[0] = time.monotonic()
+        return client.get_signing_key_from_jwt(token)
+
+    return lookup
 
 
 def authenticate(token: str, settings: Settings, signing_key: SigningKeyLookup) -> Identity:

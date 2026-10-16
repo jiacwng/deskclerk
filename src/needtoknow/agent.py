@@ -11,7 +11,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Annotated, Any, TypedDict
 
-import psycopg
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.messages.tool import ToolCall
@@ -21,12 +20,24 @@ from langgraph.graph.state import CompiledStateGraph
 
 from needtoknow import auth, data, retrieval
 from needtoknow.config import load_settings
-from needtoknow.db import connect_app
+from needtoknow.db import Pool, app_pool
+from needtoknow.jev import JevError
 from needtoknow.methods import Method, Results, search
 from needtoknow.providers import Spending, chat_model
+from needtoknow.screen import (
+    PART_CHARS,
+    SCREEN_DOWN,
+    WITHHELD,
+    Screen,
+    screen_from_settings,
+    shown,
+)
 
 REFUSAL = "I found nothing you have access to on this."
+EXHAUSTED = "I ran out of steps before I could answer. Try a narrower question."
 NOT_OPEN = "No document with that id is open to you."
+# A document longer than one screened part is cut, so one open cannot fill the context.
+DOCUMENT_CHARS = PART_CHARS
 MAX_TOOL_ROUNDS = 5
 SEARCH_RESULTS = 5
 
@@ -125,10 +136,12 @@ class Answer:
     citations: tuple[str, ...]
     dropped_citations: tuple[str, ...]
     refused: bool
+    exhausted: bool
     input_tokens: int
     output_tokens: int
     cost_usd: float
     queries: tuple[Query, ...]
+    withheld: int
     # Every tool result the model was shown. The system prompt and the question are the rest of
     # its input, so a fact absent from these never reached the model.
     tool_outputs: tuple[str, ...] = field(repr=False)
@@ -143,47 +156,80 @@ class AgentState(TypedDict):
 
 def ask(
     question: str,
-    connection: psycopg.Connection[Any],
+    pool: Pool,
     principals: frozenset[str],
     model: BaseChatModel,
     spending: Spending,
     method: Method = Method.RLS,
     filter_forgotten: bool = False,
     caps: data.Caps = data.DEFAULT_CAPS,
+    screen: Screen | None = None,
 ) -> Answer:
     returned: set[str] = set()
     outputs: list[str] = []
     queries: list[Query] = []
+    withheld: list[str] = []
 
     # The principals are fixed here, outside the model's reach: each tool takes only one string.
     def search_documents(query: str) -> str:
-        results = search(connection, principals, query, SEARCH_RESULTS, method, filter_forgotten)
+        with pool.connection() as connection:
+            results = search(
+                connection, principals, query, SEARCH_RESULTS, method, filter_forgotten
+            )
+        note = ""
+        if screen is not None:
+            try:
+                flags = screen.flagged([hit.text for hit in results.hits])
+            except JevError:
+                outputs.append(SCREEN_DOWN)
+                return outputs[-1]
+            pairs = list(zip(results.hits, flags, strict=True))
+            kept = [hit for hit, flag in pairs if not flag]
+            withheld.extend(hit.doc_id for hit, flag in pairs if flag)
+            if len(kept) < len(results.hits):
+                note = f"\n\n{len(results.hits) - len(kept)} passage(s) {WITHHELD}."
+            results = Results(kept, results.dropped, results.readers)
         returned.update(hit.doc_id for hit in results.hits)
-        outputs.append(_format_hits(results))
+        outputs.append(_format_hits(results) + note)
         return outputs[-1]
 
+    def screened(text: str, label: str) -> str:
+        visible, was_withheld = shown(screen, text, label)
+        if was_withheld:
+            withheld.append(label)
+        return visible
+
     def open_document(doc_id: str) -> str:
-        document = retrieval.open_document(connection, principals, doc_id)
+        with pool.connection() as connection:
+            document = retrieval.open_document(connection, principals, doc_id)
         if document is None:
             outputs.append(NOT_OPEN)
-        else:
+            return outputs[-1]
+        title, body = document
+        body = body.strip()
+        if len(body) > DOCUMENT_CHARS:
+            body = body[:DOCUMENT_CHARS] + f"\n[cut at {DOCUMENT_CHARS} characters]"
+        text = f"[{doc_id}]\n{title}\n\n{body}"
+        outputs.append(screened(text, f"[{doc_id}]"))
+        if outputs[-1] == text:
             returned.add(doc_id)
-            title, body = document
-            outputs.append(f"[{doc_id}]\n{title}\n\n{body.strip()}")
         return outputs[-1]
 
     def describe_data(schema: str | None = None) -> str:
-        outputs.append(data.describe_data(connection, schema))
+        with pool.connection() as connection:
+            description = data.describe_data(connection, schema)
+        outputs.append(screened(description, "The data description"))
         return outputs[-1]
 
     def query_data(sql: str) -> str:
-        result = data.query_data(connection, principals, sql, caps)
+        with pool.connection() as connection:
+            result = data.query_data(connection, principals, sql, caps)
         if result.failed:
             queries.append(Query(sql=sql, rows=None, error=result.text))
         else:
             queries.append(Query(sql=sql, rows=result.text, error=None))
-        outputs.append(result.text)
-        return result.text
+        outputs.append(screened(result.text, "The query result"))
+        return outputs[-1]
 
     tools: Tools = {
         "search_documents": ("query", False, search_documents),
@@ -204,7 +250,7 @@ def ask(
             "output_tokens": 0,
         }
     )
-    return _answer(final, returned, tuple(outputs), tuple(queries), spending)
+    return _answer(final, returned, tuple(outputs), tuple(queries), len(withheld), spending)
 
 
 def _system_prompt(method: Method, principals: frozenset[str]) -> str:
@@ -291,6 +337,7 @@ def _answer(
     returned: set[str],
     tool_outputs: tuple[str, ...],
     queries: tuple[Query, ...],
+    withheld: int,
     spending: Spending,
 ) -> Answer:
     input_tokens = final["input_tokens"]
@@ -298,13 +345,14 @@ def _answer(
     cost_usd = spending.price.cost(input_tokens, output_tokens)
 
     reply = final["messages"][-1]
-    text = ""
-    if isinstance(reply, AIMessage) and not reply.tool_calls:
-        text = reply.text.strip()
-    refused = not text or text == REFUSAL
+    exhausted = isinstance(reply, AIMessage) and bool(reply.tool_calls)
+    text = "" if exhausted else reply.text.strip()
+    refused = not exhausted and (not text or text == REFUSAL)
     citations: tuple[str, ...] = ()
     dropped: tuple[str, ...] = ()
-    if refused:
+    if exhausted:
+        text = EXHAUSTED
+    elif refused:
         text = REFUSAL
     else:
         text, citations, dropped = _check_citations(text, returned)
@@ -315,10 +363,12 @@ def _answer(
         citations=citations,
         dropped_citations=dropped,
         refused=refused,
+        exhausted=exhausted,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cost_usd=cost_usd,
         queries=queries,
+        withheld=withheld,
         tool_outputs=tool_outputs,
     )
 
@@ -354,8 +404,9 @@ def main() -> None:
     settings = load_settings()
     spending = Spending(settings.model, settings.budget_usd)
     principals = auth.principals(args.user, args.group)
-    with connect_app(settings) as app:
-        answer = ask(args.question, app, principals, chat_model(settings), spending)
+    with app_pool(settings, size=1) as pool:
+        screen = screen_from_settings(settings)
+        answer = ask(args.question, pool, principals, chat_model(settings), spending, screen=screen)
 
     print(answer.text)
     print(f"citations: {', '.join(answer.citations) or 'none'}")

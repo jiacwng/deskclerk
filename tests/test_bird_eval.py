@@ -30,6 +30,7 @@ from needtoknow.bird_eval import (
     summarise,
     write_results,
 )
+from needtoknow.db import Pool
 from needtoknow.providers import Spending
 
 Connection = psycopg.Connection[TupleRow]
@@ -70,7 +71,7 @@ def test_execution_match_is_order_insensitive_and_catches_a_wrong_result(
     assert not execution_match(rows, rows[:-1])
 
 
-def test_the_runner_scores_the_agent_and_the_baseline(app: Connection, tmp_path) -> None:  # type: ignore[no-untyped-def]
+def test_the_runner_scores_the_agent_and_the_baseline(app_pool: Pool, tmp_path) -> None:  # type: ignore[no-untyped-def]
     def agent_then_wrong_baseline(gold: str, db_id: str, wrong: str) -> list:  # type: ignore[type-arg]
         return [
             call_tool("describe_data", {}),
@@ -95,7 +96,7 @@ def test_the_runner_scores_the_agent_and_the_baseline(app: Connection, tmp_path)
 
     raw_path = tmp_path / "bird_raw.jsonl"
     with raw_path.open("w", encoding="utf-8") as raw:
-        records, unscorable = score([FINANCIAL, SCHOOLS], app, model, spending, raw)
+        records, unscorable = score([FINANCIAL, SCHOOLS], app_pool, model, spending, raw)
 
     assert unscorable == []
     summary = summarise(records, "claude-haiku-5-5")
@@ -107,24 +108,26 @@ def test_the_runner_scores_the_agent_and_the_baseline(app: Connection, tmp_path)
     write_results(tmp_path, summary)
     table = (tmp_path / "bird.md").read_text(encoding="utf-8")
     assert "# BIRD execution accuracy" in table
+    assert "Only the agent got 2 questions right and only the baseline 0" in table
+    assert "so the difference is not significant at the 5% level" in table
     assert read_records(raw_path) == records
 
 
-def test_both_sides_are_asked_for_exactly_the_columns_in_the_question(app: Connection) -> None:
+def test_both_sides_are_asked_for_exactly_the_columns_in_the_question(app_pool: Pool) -> None:
     model = scripted(final_reply("No query."), sql_reply(DISTRICTS_SQL))
 
-    score([FINANCIAL], app, model, Spending("claude-haiku-5-5", 2.0), io.StringIO())
+    score([FINANCIAL], app_pool, model, Spending("claude-haiku-5-5", 2.0), io.StringIO())
 
     agent_prompt, baseline_prompt = model.prompts
     assert OUTPUT_CONTRACT in agent_prompt[-1].text
     assert OUTPUT_CONTRACT in baseline_prompt[0].text
 
 
-def test_the_agent_reads_every_row_of_a_long_gold_answer(app: Connection) -> None:
+def test_the_agent_reads_every_row_of_a_long_gold_answer(app_pool: Pool) -> None:
     many = "SELECT n FROM generate_series(1, 500) AS n"
     model = scripted(call_tool("query_data", {"sql": many}), final_reply("Done."))
 
-    agent_prediction(FINANCIAL, app, model, Spending("claude-haiku-5-5", 2.0))
+    agent_prediction(FINANCIAL, app_pool, model, Spending("claude-haiku-5-5", 2.0))
 
     rows_shown = model.prompts[-1][-1].text
     assert rows_shown.endswith("(500 rows)")
@@ -141,17 +144,19 @@ def test_the_agent_reads_every_row_of_a_long_gold_answer(app: Connection) -> Non
     ids=["probe-then-answer", "answer-then-failure", "every-query-failed", "no-query"],
 )
 def test_the_scored_query_is_the_last_that_ran_else_the_last_sent(
-    app: Connection, queries: list[str], scored: str | None
+    app_pool: Pool, queries: list[str], scored: str | None
 ) -> None:
     calls = [call_tool("query_data", {"sql": query}) for query in queries]
     model = scripted(*calls, final_reply("Done."))
 
-    predicted, _, _ = agent_prediction(FINANCIAL, app, model, Spending("claude-haiku-5-5", 2.0))
+    predicted, _, _ = agent_prediction(
+        FINANCIAL, app_pool, model, Spending("claude-haiku-5-5", 2.0)
+    )
 
     assert predicted == scored
 
 
-def test_an_array_answer_is_scored_instead_of_crashing(app: Connection) -> None:
+def test_an_array_answer_is_scored_instead_of_crashing(app_pool: Pool) -> None:
     pair = "SELECT ARRAY[1, 2] AS pair"
     question = Question(
         question_id=3,
@@ -163,7 +168,9 @@ def test_an_array_answer_is_scored_instead_of_crashing(app: Connection) -> None:
     )
     model = scripted(call_tool("query_data", {"sql": pair}), final_reply("Done."), sql_reply(pair))
 
-    records, _ = score([question], app, model, Spending("claude-haiku-5-5", 2.0), io.StringIO())
+    records, _ = score(
+        [question], app_pool, model, Spending("claude-haiku-5-5", 2.0), io.StringIO()
+    )
 
     assert records[0].agent.outcome == "correct"
     assert records[0].baseline.outcome == "correct"
@@ -187,7 +194,7 @@ def test_scored_questions_are_kept_only_when_resuming(tmp_path: Path) -> None:
     assert previous_records(raw_path, resume=True) == [record]
 
 
-def test_the_agent_is_scored_on_the_query_its_answer_shows(app: Connection) -> None:
+def test_the_agent_is_scored_on_the_query_its_answer_shows(app_pool: Pool) -> None:
     probe = "SELECT DISTINCT frequency FROM financial.account"
     model = scripted(
         call_tool("query_data", {"sql": DISTRICTS_SQL}),
@@ -195,7 +202,9 @@ def test_the_agent_is_scored_on_the_query_its_answer_shows(app: Connection) -> N
         final_reply(f"The districts:\n\n```sql\n{DISTRICTS_SQL};\n```"),
     )
 
-    predicted, _, _ = agent_prediction(FINANCIAL, app, model, Spending("claude-haiku-5-5", 2.0))
+    predicted, _, _ = agent_prediction(
+        FINANCIAL, app_pool, model, Spending("claude-haiku-5-5", 2.0)
+    )
 
     assert predicted == DISTRICTS_SQL
 
@@ -210,20 +219,24 @@ def test_the_agent_is_scored_on_the_query_its_answer_shows(app: Connection) -> N
     ids=["structured", "prose", "empty"],
 )
 def test_the_baseline_is_scored_only_on_the_sql_field_of_its_reply(
-    app: Connection, reply: str, outcome: str
+    app_pool: Pool, reply: str, outcome: str
 ) -> None:
     model = scripted(final_reply("No query."), final_reply(reply))
 
-    records, _ = score([FINANCIAL], app, model, Spending("claude-haiku-5-5", 2.0), io.StringIO())
+    records, _ = score(
+        [FINANCIAL], app_pool, model, Spending("claude-haiku-5-5", 2.0), io.StringIO()
+    )
 
     assert model.options[-1]["output_config"] == {"format": SQL_REPLY_FORMAT}
     assert records[0].baseline.outcome == outcome
 
 
-def test_an_agent_that_runs_no_query_scores_an_sql_error(app: Connection) -> None:
+def test_an_agent_that_runs_no_query_scores_an_sql_error(app_pool: Pool) -> None:
     model = scripted(final_reply("I cannot answer that."), sql_reply(DISTRICTS_SQL))
 
-    records, _ = score([FINANCIAL], app, model, Spending("claude-haiku-5-5", 2.0), io.StringIO())
+    records, _ = score(
+        [FINANCIAL], app_pool, model, Spending("claude-haiku-5-5", 2.0), io.StringIO()
+    )
 
     assert records[0].agent.outcome == "sql_error"
     summary = summarise(records, "claude-haiku-5-5")

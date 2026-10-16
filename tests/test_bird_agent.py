@@ -14,6 +14,7 @@ from needtoknow.api import create_app
 from needtoknow.auth import SigningKeyLookup, principals
 from needtoknow.config import Settings
 from needtoknow.data import describe_data
+from needtoknow.db import Pool
 from needtoknow.providers import Spending
 
 Connection = psycopg.Connection[TupleRow]
@@ -44,11 +45,11 @@ def _district_1_accounts(owner: Connection) -> int:
 
 
 def test_a_district_user_gets_both_queries_and_only_their_rows(
-    app: Connection, owner: Connection
+    app: Connection, app_pool: Pool, owner: Connection
 ) -> None:
     asker = principals("district-1", ["district:1"])
 
-    answer = ask(QUESTION, app, asker, _model(), Spending("claude-haiku-5-5", 1.0))
+    answer = ask(QUESTION, app_pool, asker, _model(), Spending("claude-haiku-5-5", 1.0))
 
     assert answer.text == REPLY
     assert answer.tool_outputs[:2] == (
@@ -69,11 +70,11 @@ def test_a_district_user_gets_both_queries_and_only_their_rows(
     )
 
 
-def test_the_data_loop_and_a_document_search_fit_in_the_round_cap(app: Connection) -> None:
+def test_the_data_loop_and_a_document_search_fit_in_the_round_cap(app_pool: Pool) -> None:
     asker = principals("district-1", ["district:1"])
     model = scripted(*DATA_CALLS, search_call({"query": QUESTION}), final_reply(REPLY))
 
-    answer = ask(QUESTION, app, asker, model, Spending("claude-haiku-5-5", 1.0))
+    answer = ask(QUESTION, app_pool, asker, model, Spending("claude-haiku-5-5", 1.0))
 
     assert MAX_TOOL_ROUNDS == len(DATA_CALLS) + 1
     assert len(model.prompts) == MAX_TOOL_ROUNDS + 1

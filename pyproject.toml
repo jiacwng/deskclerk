@@ -19,7 +19,14 @@ dependencies = [
     "langchain-core>=1.6",
     "langchain-anthropic>=1.7",
     "mcp>=2.3",
+    "typesafe-sdk>=0.7",
+    "pydantic-settings>=2.16",
+    "psycopg-pool>=3.3",
+    "limits>=5.8",
 ]
+
+[project.optional-dependencies]
+eval = ["scipy>=1.18", "thefuzz>=0.22"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -36,14 +43,21 @@ src = ["src", "tests"]
 select = ["E", "W", "F", "I", "UP", "B", "S"]
 
 [tool.ruff.lint.per-file-ignores]
-# assert is the pytest idiom
-"tests/**" = ["S101"]
+# assert and throwaway passwords are the pytest idiom
+"tests/**" = ["S101", "S105", "S106"]
+# the development passwords from compose.yaml
+"src/needtoknow/config.py" = ["S105"]
 
 [tool.mypy]
 files = ["src", "tests"]
 mypy_path = "src"
 strict = true
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+# thefuzz ships no type information
+module = ["thefuzz"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -81,11 +81,20 @@ def nearest_chunks(
     limit: int,
     principals: Collection[str] | None = None,
 ) -> list[Hit]:
+    query, parameters = prepare_nearest_chunks(connection, embedding, limit, principals)
+    rows = connection.execute(query, parameters).fetchall()
+    return [Hit(doc_id=row[0], title=row[1], text=row[2], distance=row[3]) for row in rows]
+
+
+def prepare_nearest_chunks(
+    connection: psycopg.Connection[Any],
+    embedding: Vector,
+    limit: int,
+    principals: Collection[str] | None = None,
+) -> tuple[sql.Composed, dict[str, Any]]:
     # The HNSW index hands over at most hnsw.ef_search candidates before row-level security or
     # the WHERE clause filters them. Iterative scan keeps reading the index until limit rows pass.
     connection.execute("SET LOCAL hnsw.iterative_scan = strict_order")
     permitted = sql.SQL(_PERMITTED) if principals is not None else sql.SQL("")
     query = sql.SQL(_NEAREST_CHUNKS).format(permitted=permitted)
-    parameters = {"query": embedding, "limit": limit, "principals": sorted(principals or [])}
-    rows = connection.execute(query, parameters).fetchall()
-    return [Hit(doc_id=row[0], title=row[1], text=row[2], distance=row[3]) for row in rows]
+    return query, {"query": embedding, "limit": limit, "principals": sorted(principals or [])}

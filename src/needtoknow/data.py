@@ -104,9 +104,11 @@ class QueryResult:
     failed: bool
 
 
-# The newlines keep a trailing -- comment from swallowing the closing parenthesis. A prepared
-# statement goes through the extended query protocol, which refuses more than one statement even
-# when the SQL closes the parenthesis itself.
+# The newlines keep a trailing -- comment from swallowing the closing parenthesis. Both
+# statements go through the extended query protocol, which refuses more than one statement even
+# when the SQL closes the parenthesis itself. The first reads only the column names; the second
+# renames the columns by position and cuts every value inside PostgreSQL, and streams one row at
+# a time, so neither a long result nor one huge value is ever held in memory.
 def query_data(
     app: psycopg.Connection[Any],
     principals: Iterable[str],
@@ -115,36 +117,49 @@ def query_data(
 ) -> QueryResult:
     if app.info.user != APP_ROLE:
         raise ValueError(f"query_data runs as {APP_ROLE}, not as {app.info.user}")
-    wrapped = sql.SQL("SELECT * FROM (\n{}\n) AS q LIMIT {}").format(
-        sql.SQL(query), sql.Literal(caps.rows + 1)
-    )
+    columns = sql.SQL("SELECT * FROM (\n{}\n) AS q LIMIT 0").format(sql.SQL(query))
+    lines: list[str] = []
+    cut = False
     try:
         with as_user(app, principals), app.cursor() as cursor:
             app.execute("SET TRANSACTION READ ONLY")
             app.execute(f"SET LOCAL statement_timeout = {TIMEOUT_MS}")
-            rows = cursor.execute(wrapped, prepare=True).fetchall()
-            columns = [column.name for column in cursor.description or []]
+            cursor.execute(columns, prepare=True)
+            names = [column.name for column in cursor.description or []]
+            lines.append(" | ".join(names)[: caps.chars])
+            size = len(lines[0])
+            for row in cursor.stream(_cut_values(query, len(names), caps)):
+                room = caps.chars - size
+                line = " | ".join(_text(value)[: room + 1] for value in row)
+                size += len(line) + 1
+                if len(lines) > caps.rows or size > caps.chars:
+                    cut = True
+                    break
+                lines.append(line)
     except psycopg.Error as error:
         message = error.diag.message_primary or "the database refused it"
         return QueryResult(text=f"The query failed: {message}", failed=True)
     except UnicodeEncodeError:
         return QueryResult(text="The query failed: the query is not valid UTF-8.", failed=True)
 
-    lines = [" | ".join(columns)]
-    size = len(lines[0])
-    for row in rows[: caps.rows]:
-        room = caps.chars - size
-        line = " | ".join(_text(value)[: room + 1] for value in row)
-        size += len(line) + 1
-        if size > caps.chars:
-            break
-        lines.append(line)
     shown = len(lines) - 1
-    if shown < len(rows):
+    if cut:
         lines.append(f"The result was cut at {shown} rows. Narrow the query or aggregate.")
     else:
         lines.append(f"({shown} rows)")
     return QueryResult(text="\n".join(lines), failed=False)
+
+
+def _cut_values(query: str, width: int, caps: Caps) -> sql.Composed:
+    aliases = [sql.Identifier(f"c{index}") for index in range(1, width + 1)]
+    values = [
+        sql.SQL("left({}::text, {})").format(alias, sql.Literal(caps.chars + 1))
+        for alias in aliases
+    ]
+    renamed = sql.SQL("({})").format(sql.SQL(", ").join(aliases)) if aliases else sql.SQL("")
+    return sql.SQL("SELECT {} FROM (\n{}\n) AS q{} LIMIT {}").format(
+        sql.SQL(", ").join(values), sql.SQL(query), renamed, sql.Literal(caps.rows + 1)
+    )
 
 
 def _text(value: object) -> str:

@@ -3,15 +3,13 @@
 # model sees, and the round cap, the budget and the price table stop runaway or unpriced calls.
 
 import re
-from dataclasses import replace
 
-import psycopg
 import pytest
 from langchain_core.messages import ToolMessage
-from psycopg.rows import TupleRow
 
 from fakes import USAGE, ScriptedModel, call_tool, final_reply, scripted, search_call
 from needtoknow.agent import (
+    EXHAUSTED,
     MAX_TOOL_ROUNDS,
     NOT_OPEN,
     REFUSAL,
@@ -22,11 +20,10 @@ from needtoknow.agent import (
 )
 from needtoknow.auth import principals
 from needtoknow.config import load_settings
+from needtoknow.db import Pool
 from needtoknow.documents import Document
 from needtoknow.methods import Method
 from needtoknow.providers import BudgetExceeded, Spending, chat_model, price_of
-
-Connection = psycopg.Connection[TupleRow]
 
 TIGER_TEAM = "enron-770963d7e2ceeb8d22d92a1ebfaba325068dfa242524cb4a8983dc0d1165f2ab"
 QUESTION = "Who is helping with the Wharton and Rice projects for the Tiger Team?"
@@ -37,12 +34,12 @@ MODEL = "claude-haiku-5-5"
 
 
 def _ask(
-    connection: Connection,
+    pool: Pool,
     asker: frozenset[str],
     model: ScriptedModel,
     method: Method = Method.RLS,
 ) -> Answer:
-    return ask(QUESTION, connection, asker, model, Spending(MODEL, budget_usd=1.0), method)
+    return ask(QUESTION, pool, asker, model, Spending(MODEL, budget_usd=1.0), method)
 
 
 def _tool_results(model: ScriptedModel) -> list[ToolMessage]:
@@ -53,12 +50,12 @@ def _tagged_ids(result: ToolMessage) -> set[str]:
     return set(re.findall(r"^\[([a-z0-9-]+)\]", result.text, flags=re.MULTILINE))
 
 
-def test_the_model_cannot_pass_principals_to_the_tool(app: Connection) -> None:
+def test_the_model_cannot_pass_principals_to_the_tool(app_pool: Pool) -> None:
     model = scripted(
         search_call({"query": QUESTION, "principals": ["user:kaminski-v"]}), final_reply(REFUSAL)
     )
 
-    answer = _ask(app, OTHER, model)
+    answer = _ask(app_pool, OTHER, model)
 
     (result,) = _tool_results(model)
     assert result.status == "error"
@@ -66,7 +63,7 @@ def test_the_model_cannot_pass_principals_to_the_tool(app: Connection) -> None:
     assert answer.refused
 
 
-def test_a_citation_the_search_never_returned_is_dropped(app: Connection) -> None:
+def test_a_citation_the_search_never_returned_is_dropped(app_pool: Pool) -> None:
     model = scripted(
         search_call({"query": QUESTION}),
         final_reply(
@@ -75,7 +72,7 @@ def test_a_citation_the_search_never_returned_is_dropped(app: Connection) -> Non
         ),
     )
 
-    answer = _ask(app, HOLDER, model)
+    answer = _ask(app_pool, HOLDER, model)
 
     assert answer.citations == (TIGER_TEAM,)
     assert answer.dropped_citations == ("enron-made-up", "enron-other")
@@ -85,33 +82,34 @@ def test_a_citation_the_search_never_returned_is_dropped(app: Connection) -> Non
 
 
 @pytest.mark.parametrize("text", [REFUSAL, f"  {REFUSAL}\n", ""])
-def test_the_fixed_refusal_is_recognised(app: Connection, text: str) -> None:
+def test_the_fixed_refusal_is_recognised(app_pool: Pool, text: str) -> None:
     model = scripted(search_call({"query": QUESTION}), final_reply(text))
 
-    answer = _ask(app, OTHER, model)
+    answer = _ask(app_pool, OTHER, model)
 
     assert answer.refused
     assert answer.text == REFUSAL
     assert answer.citations == ()
 
 
-def test_the_round_cap_stops_a_model_that_keeps_searching(app: Connection) -> None:
+def test_the_round_cap_stops_a_model_that_keeps_searching(app_pool: Pool) -> None:
     model = scripted(*[search_call({"query": QUESTION}) for _ in range(10)])
 
-    answer = _ask(app, HOLDER, model)
+    answer = _ask(app_pool, HOLDER, model)
 
     assert len(model.prompts) == MAX_TOOL_ROUNDS + 1
     assert len(_tool_results(model)) == MAX_TOOL_ROUNDS
-    assert answer.refused
-    assert answer.text == REFUSAL
+    assert answer.exhausted
+    assert not answer.refused
+    assert answer.text == EXHAUSTED
 
 
-def test_tokens_and_cost_are_counted_per_request_and_per_process(app: Connection) -> None:
+def test_tokens_and_cost_are_counted_per_request_and_per_process(app_pool: Pool) -> None:
     spending = Spending(MODEL, budget_usd=1.0)
 
     for _ in range(2):
         model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
-        answer = ask(QUESTION, app, HOLDER, model, spending)
+        answer = ask(QUESTION, app_pool, HOLDER, model, spending)
 
     assert answer.input_tokens == 2 * USAGE["input_tokens"]
     assert answer.output_tokens == 2 * USAGE["output_tokens"]
@@ -121,24 +119,24 @@ def test_tokens_and_cost_are_counted_per_request_and_per_process(app: Connection
     assert spending.cost_usd == pytest.approx(0.0006)
 
 
-def test_the_budget_refuses_a_call_once_it_is_spent(app: Connection) -> None:
+def test_the_budget_refuses_a_call_once_it_is_spent(app_pool: Pool) -> None:
     # One scripted call costs 0.00015 USD, so the second call finds the budget spent.
     spending = Spending(MODEL, budget_usd=0.0001)
     model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
 
     with pytest.raises(BudgetExceeded, match="budget is 0.0001 USD"):
-        ask(QUESTION, app, HOLDER, model, spending)
+        ask(QUESTION, app_pool, HOLDER, model, spending)
 
     assert len(model.prompts) == 1
     assert spending.input_tokens == USAGE["input_tokens"]
 
 
-def test_a_zero_budget_refuses_the_first_call(app: Connection) -> None:
+def test_a_zero_budget_refuses_the_first_call(app_pool: Pool) -> None:
     spending = Spending(MODEL, budget_usd=0.0)
     model = scripted(final_reply(REFUSAL))
 
     with pytest.raises(BudgetExceeded):
-        ask(QUESTION, app, HOLDER, model, spending)
+        ask(QUESTION, app_pool, HOLDER, model, spending)
 
     assert model.prompts == []
 
@@ -150,7 +148,7 @@ def test_an_unknown_model_is_refused(model_name: str) -> None:
     with pytest.raises(ValueError, match="no price for model"):
         Spending(model_name, budget_usd=1.0)
     with pytest.raises(ValueError, match="no price for model"):
-        chat_model(replace(load_settings(), model=model_name))
+        chat_model(load_settings().model_copy(update={"model": model_name}))
 
 
 def test_the_price_table_matches_the_list_prices() -> None:
@@ -161,11 +159,11 @@ def test_the_price_table_matches_the_list_prices() -> None:
 
 @pytest.mark.parametrize("method", [Method.IN_QUERY, Method.POST_FILTER])
 def test_the_application_filters_hide_denied_emails_from_the_model(
-    reader: Connection, emails: dict[str, Document], method: Method
+    reader_pool: Pool, emails: dict[str, Document], method: Method
 ) -> None:
     model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
 
-    _ask(reader, OTHER, model, method)
+    _ask(reader_pool, OTHER, model, method)
 
     (result,) = _tool_results(model)
     returned = _tagged_ids(result)
@@ -176,10 +174,10 @@ def test_the_application_filters_hide_denied_emails_from_the_model(
     assert model.prompts[0][0].text == SYSTEM_PROMPT
 
 
-def test_prompt_only_labels_every_passage_and_names_the_asker(reader: Connection) -> None:
+def test_prompt_only_labels_every_passage_and_names_the_asker(reader_pool: Pool) -> None:
     model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
 
-    _ask(reader, OTHER, model, Method.PROMPT_ONLY)
+    _ask(reader_pool, OTHER, model, Method.PROMPT_ONLY)
 
     (result,) = _tool_results(model)
     assert f"[{TIGER_TEAM}] (readers: user:kaminski-v)\n" in result.text
@@ -191,32 +189,32 @@ def test_prompt_only_labels_every_passage_and_names_the_asker(reader: Connection
     assert "Use only passages whose readers include one of those principals" in system_prompt
 
 
-def test_the_default_method_is_rls_with_unlabelled_passages(app: Connection) -> None:
+def test_the_default_method_is_rls_with_unlabelled_passages(app_pool: Pool) -> None:
     model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
 
-    _ask(app, HOLDER, model)
+    _ask(app_pool, HOLDER, model)
 
     (result,) = _tool_results(model)
     assert "(readers:" not in result.text
     assert model.prompts[0][0].text == SYSTEM_PROMPT
 
 
-def test_a_method_on_the_wrong_role_is_refused(app: Connection) -> None:
+def test_a_method_on_the_wrong_role_is_refused(app_pool: Pool) -> None:
     model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
 
     with pytest.raises(ValueError, match="prompt_only searches as needtoknow_reader"):
-        _ask(app, OTHER, model, Method.PROMPT_ONLY)
+        _ask(app_pool, OTHER, model, Method.PROMPT_ONLY)
 
 
 def test_an_opened_email_gives_its_full_text_and_counts_as_returned(
-    app: Connection, emails: dict[str, Document]
+    app_pool: Pool, emails: dict[str, Document]
 ) -> None:
     model = scripted(
         call_tool("open_document", {"doc_id": TIGER_TEAM}),
         final_reply(f"Two people help [{TIGER_TEAM}]."),
     )
 
-    answer = _ask(app, HOLDER, model)
+    answer = _ask(app_pool, HOLDER, model)
 
     (opened,) = _tool_results(model)
     email = emails[TIGER_TEAM]
@@ -227,12 +225,12 @@ def test_an_opened_email_gives_its_full_text_and_counts_as_returned(
 
 
 @pytest.mark.parametrize("doc_id", [TIGER_TEAM, "enron-no-such-email"])
-def test_a_denied_and_an_unknown_email_get_the_same_reply(app: Connection, doc_id: str) -> None:
+def test_a_denied_and_an_unknown_email_get_the_same_reply(app_pool: Pool, doc_id: str) -> None:
     model = scripted(
         call_tool("open_document", {"doc_id": doc_id}), final_reply(f"See [{doc_id}].")
     )
 
-    answer = _ask(app, OTHER, model)
+    answer = _ask(app_pool, OTHER, model)
 
     (result,) = _tool_results(model)
     assert result.status == "success"
@@ -241,10 +239,10 @@ def test_a_denied_and_an_unknown_email_get_the_same_reply(app: Connection, doc_i
     assert answer.dropped_citations == (doc_id,)
 
 
-def test_open_document_on_the_reader_role_still_hides_a_denied_email(reader: Connection) -> None:
+def test_open_document_on_the_reader_role_still_hides_a_denied_email(reader_pool: Pool) -> None:
     model = scripted(call_tool("open_document", {"doc_id": TIGER_TEAM}), final_reply(REFUSAL))
 
-    _ask(reader, OTHER, model, Method.PROMPT_ONLY)
+    _ask(reader_pool, OTHER, model, Method.PROMPT_ONLY)
 
     (result,) = _tool_results(model)
     assert result.text == NOT_OPEN
@@ -264,11 +262,11 @@ def test_open_document_on_the_reader_role_still_hides_a_denied_email(reader: Con
     ],
 )
 def test_a_tool_call_with_wrong_arguments_is_an_error(
-    app: Connection, name: str, args: dict[str, object]
+    app_pool: Pool, name: str, args: dict[str, object]
 ) -> None:
     model = scripted(call_tool(name, args), final_reply(REFUSAL))
 
-    answer = _ask(app, HOLDER, model)
+    answer = _ask(app_pool, HOLDER, model)
 
     (result,) = _tool_results(model)
     assert result.status == "error"

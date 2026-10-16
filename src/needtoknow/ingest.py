@@ -20,12 +20,17 @@ def main() -> None:
     enron.add_argument("--limit", type=_positive, help="read only the first N message files")
     bird = sources.add_parser("bird", help="the BIRD Mini-Dev databases and their descriptions")
     bird.add_argument("minidev", type=Path)
+    parser.add_argument(
+        "--evaluation",
+        action="store_true",
+        help="let the reader role log in, for the evaluation; it sees every row",
+    )
     args = parser.parse_args()
 
     settings = load_settings()
     provision = load_provision_settings()
     with connect_admin(settings, provision) as admin:
-        prepare_database(admin, settings, provision)
+        prepare_database(admin, settings, provision, args.evaluation)
 
     logging.basicConfig(format="%(message)s")
     logging.getLogger("needtoknow").setLevel(logging.INFO)

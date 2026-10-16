@@ -1,6 +1,7 @@
 # Sets up the database: the admin creates the owner, app and reader roles and takes the
 # dangerous built-ins away from them, and the owner creates the tables. Only ingestion and the
-# tests run this; the API never does.
+# tests run this; the API never does. The reader role sees every row, so it can log in only when
+# the evaluation asks for it.
 
 from importlib.resources import files
 from typing import Any
@@ -65,6 +66,16 @@ REVOKE SELECT ON pg_catalog.pg_stat_activity, pg_catalog.pg_locks,
 """
 
 
+# Every request holds one app connection, so a flood of requests or one heavy query must not
+# take the server's connections, memory or disk from everyone else.
+_APP_LIMITS = """
+ALTER ROLE needtoknow_app CONNECTION LIMIT 50;
+ALTER ROLE needtoknow_app SET idle_in_transaction_session_timeout = '10s';
+ALTER ROLE needtoknow_app SET work_mem = '16MB';
+ALTER ROLE needtoknow_app SET temp_file_limit = '256MB';
+"""
+
+
 def connect_admin(settings: Settings, provision: ProvisionSettings) -> psycopg.Connection[TupleRow]:
     return connect(settings, provision.admin_user, provision.admin_password)
 
@@ -76,21 +87,28 @@ def connect_owner(settings: Settings, provision: ProvisionSettings) -> psycopg.C
 
 
 def prepare_database(
-    admin: psycopg.Connection[Any], settings: Settings, provision: ProvisionSettings
+    admin: psycopg.Connection[Any],
+    settings: Settings,
+    provision: ProvisionSettings,
+    evaluation: bool,
 ) -> None:
+    provision.check_for(settings.db_host)
     admin.execute("CREATE EXTENSION IF NOT EXISTS vector")
     admin.execute(_CREATE_ROLES)
-    for role, password in (
-        (OWNER_ROLE, provision.owner_password),
-        (APP_ROLE, settings.app_password),
-        (READER_ROLE, provision.reader_password),
+    for role, password, login in (
+        (OWNER_ROLE, provision.owner_password, True),
+        (APP_ROLE, settings.app_password, True),
+        (READER_ROLE, provision.reader_password, evaluation),
     ):
         # ALTER ROLE takes no bind parameters, so the password is quoted by psycopg instead.
         admin.execute(
-            sql.SQL("ALTER ROLE {} LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD {}").format(
-                sql.Identifier(role), sql.Literal(password)
+            sql.SQL("ALTER ROLE {} {} NOSUPERUSER NOBYPASSRLS PASSWORD {}").format(
+                sql.Identifier(role),
+                sql.SQL("LOGIN" if login else "NOLOGIN"),
+                sql.Literal(password),
             )
         )
+    admin.execute(_APP_LIMITS)
     admin.execute(
         sql.SQL("GRANT CREATE ON DATABASE {} TO needtoknow_owner").format(
             sql.Identifier(settings.db_name)

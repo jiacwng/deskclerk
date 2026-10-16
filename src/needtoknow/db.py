@@ -9,6 +9,7 @@ import psycopg
 from pgvector.psycopg import register_vector
 from psycopg.pq import TransactionStatus
 from psycopg.rows import TupleRow
+from psycopg_pool import ConnectionPool
 
 from needtoknow.config import ProvisionSettings, Settings
 
@@ -39,6 +40,38 @@ def connect_reader(
     connection = connect(settings, READER_ROLE, provision.reader_password)
     register_vector(connection)
     return connection
+
+
+Pool = ConnectionPool[psycopg.Connection[TupleRow]]
+
+
+# The API, the MCP server and the agent's tools borrow a connection from a bounded pool for one
+# transaction at a time. A connection goes back idle, so the identity set_identity gave it has
+# already ended.
+def app_pool(settings: Settings, size: int) -> Pool:
+    return _pool(settings, APP_ROLE, settings.app_password, size)
+
+
+def reader_pool(settings: Settings, provision: ProvisionSettings, size: int) -> Pool:
+    return _pool(settings, READER_ROLE, provision.reader_password, size)
+
+
+def _pool(settings: Settings, user: str, password: str, size: int) -> Pool:
+    return ConnectionPool(
+        kwargs={
+            "host": settings.db_host,
+            "port": settings.db_port,
+            "dbname": settings.db_name,
+            "user": user,
+            "password": password,
+            "autocommit": True,
+        },
+        configure=register_vector,
+        min_size=1,
+        max_size=size,
+        check=ConnectionPool.check_connection,
+        open=True,
+    )
 
 
 @contextmanager

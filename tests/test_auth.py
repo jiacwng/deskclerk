@@ -3,12 +3,13 @@
 
 import time
 from collections.abc import Callable
-from dataclasses import replace
 
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
+from jwt.algorithms import RSAAlgorithm
 
+from conftest import TOKEN_KEY
 from needtoknow.auth import (
     AuthError,
     AuthUnavailable,
@@ -97,10 +98,11 @@ def test_real_key_client_reports_a_closed_port_as_unavailable(
     sign_token: Sign, token_settings: Settings
 ) -> None:
     # Nothing listens on port 9, so the connection is refused at once.
-    closed = replace(
-        token_settings,
-        issuer="http://127.0.0.1:9/realms/needtoknow",
-        jwks_url=f"http://127.0.0.1:9/realms/needtoknow{JWKS_PATH}",
+    closed = token_settings.model_copy(
+        update={
+            "issuer": "http://127.0.0.1:9/realms/needtoknow",
+            "jwks_url": f"http://127.0.0.1:9/realms/needtoknow{JWKS_PATH}",
+        }
     )
     with pytest.raises(AuthUnavailable):
         authenticate(sign_token({}), closed, jwks_signing_key(closed))
@@ -128,3 +130,27 @@ def test_symmetric_algorithm_is_refused(
 def test_garbage_is_refused(token_settings: Settings, token_signing_key: SigningKeyLookup) -> None:
     with pytest.raises(AuthError, match="invalid token"):
         authenticate("not-a-token", token_settings, token_signing_key)
+
+
+def test_made_up_key_ids_fetch_the_key_set_at_most_once_a_minute(
+    monkeypatch: pytest.MonkeyPatch, token_settings: Settings
+) -> None:
+    key = RSAAlgorithm.to_jwk(TOKEN_KEY.public_key(), as_dict=True) | {"kid": "real"}
+    fetches: list[str] = []
+
+    def fetch(client: jwt.PyJWKClient) -> dict[str, object]:
+        fetches.append(client.uri)
+        return {"keys": [key]}
+
+    monkeypatch.setattr(jwt.PyJWKClient, "fetch_data", fetch)
+    lookup = jwks_signing_key(token_settings)
+    claims = {"sub": "x"}
+
+    for forged in ("forged-1", "forged-2", "forged-3"):
+        token = jwt.encode(claims, TOKEN_KEY, algorithm="RS256", headers={"kid": forged})
+        with pytest.raises(jwt.PyJWTError):
+            lookup(token)
+    real = jwt.encode(claims, TOKEN_KEY, algorithm="RS256", headers={"kid": "real"})
+
+    assert lookup(real).key_id == "real"
+    assert len(fetches) == 2

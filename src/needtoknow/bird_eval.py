@@ -23,8 +23,9 @@ from needtoknow.agent import Answer, ask
 from needtoknow.auth import principals
 from needtoknow.config import load_settings
 from needtoknow.data import TIMEOUT_MS, Caps, describe_data
-from needtoknow.db import as_user, connect_app
+from needtoknow.db import Pool, app_pool, as_user
 from needtoknow.providers import BudgetExceeded, Price, Spending, chat_model, price_of
+from needtoknow.stats import mcnemar_exact
 
 ANALYST = principals("analyst", ["analyst"])
 CORRECT = "correct"
@@ -141,13 +142,13 @@ def run_sql(
 
 
 def agent_prediction(
-    question: Question, app: psycopg.Connection[Any], model: BaseChatModel, spending: Spending
+    question: Question, pool: Pool, model: BaseChatModel, spending: Spending
 ) -> tuple[str | None, int, int]:
     text = f"Using the data in the schema named {question.db_id!r}: {question.question}"
     if question.evidence:
         text += f"\n\nEvidence: {question.evidence}"
     text += f"\n\n{OUTPUT_CONTRACT}"
-    answer = ask(text, app, ANALYST, model, spending, caps=EVAL_CAPS)
+    answer = ask(text, pool, ANALYST, model, spending, caps=EVAL_CAPS)
     return _answer_query(answer), answer.input_tokens, answer.output_tokens
 
 
@@ -171,7 +172,7 @@ def baseline_prediction(
 
 def score(
     questions: Sequence[Question],
-    app: psycopg.Connection[Any],
+    pool: Pool,
     model: BaseChatModel,
     spending: Spending,
     raw: TextIO,
@@ -179,7 +180,8 @@ def score(
     records = []
     unscorable: list[int] = []
     for question in questions:
-        gold, gold_error = run_sql(app, question.db_id, ANALYST, question.gold_sql)
+        with pool.connection() as app:
+            gold, gold_error = run_sql(app, question.db_id, ANALYST, question.gold_sql)
         # A gold query that will not run scores nothing, and it must not discard the questions
         # already paid for, so it is counted and reported instead of raised.
         if gold is None:
@@ -193,11 +195,13 @@ def score(
             continue
         gold_set = _result_set(gold)
 
-        agent_sql, agent_in, agent_out = agent_prediction(question, app, model, spending)
-        agent_outcome = _outcome(app, question.db_id, agent_sql, gold_set)
-        schema = describe_data(app, question.db_id)
+        agent_sql, agent_in, agent_out = agent_prediction(question, pool, model, spending)
+        with pool.connection() as app:
+            agent_outcome = _outcome(app, question.db_id, agent_sql, gold_set)
+            schema = describe_data(app, question.db_id)
         baseline_sql, base_in, base_out = baseline_prediction(question, schema, model, spending)
-        baseline_outcome = _outcome(app, question.db_id, baseline_sql, gold_set)
+        with pool.connection() as app:
+            baseline_outcome = _outcome(app, question.db_id, baseline_sql, gold_set)
 
         record = Record(
             question_id=question.question_id,
@@ -262,7 +266,19 @@ def results_table(summary: dict[str, Any]) -> str:
             f"| {name} | {counts[CORRECT]} | {side['accuracy']:.3f} | {counts[SQL_ERROR]} "
             f"| {counts[WRONG_RESULT]} | {side['cost_usd']:.4f} |"
         )
+    agent_correct = set(summary["agent"]["correct_question_ids"])
+    baseline_correct = set(summary["baseline"]["correct_question_ids"])
+    only_agent = len(agent_correct - baseline_correct)
+    only_baseline = len(baseline_correct - agent_correct)
+    p_value = mcnemar_exact(only_agent, only_baseline)
+    significance = "is" if p_value < 0.05 else "is not"
+    cost_ratio = summary["agent"]["cost_usd"] / summary["baseline"]["cost_usd"]
     lines += [
+        "",
+        f"Only the agent got {only_agent} questions right and only the baseline {only_baseline}. "
+        f"The exact McNemar test on these paired outcomes gives p = {p_value:.3f}, so the "
+        f"difference {significance} significant at the 5% level. The agent costs "
+        f"{cost_ratio:.1f} times as much as the baseline.",
         "",
         f"Agent tokens: {summary['agent']['input_tokens']:,} input and "
         f"{summary['agent']['output_tokens']:,} output. Baseline tokens: "
@@ -389,9 +405,9 @@ def main() -> None:
     ]
     spending = Spending(settings.model, args.budget_usd)
     args.out.mkdir(parents=True, exist_ok=True)
-    with connect_app(settings) as app, raw_path.open("a", encoding="utf-8") as raw:
+    with app_pool(settings, size=1) as pool, raw_path.open("a", encoding="utf-8") as raw:
         try:
-            records, unscorable = score(questions, app, chat_model(settings), spending, raw)
+            records, unscorable = score(questions, pool, chat_model(settings), spending, raw)
         except BudgetExceeded as error:
             raise SystemExit(f"stopped: {error}. Rerun with --resume to carry on.") from error
 

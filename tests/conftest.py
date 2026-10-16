@@ -5,7 +5,6 @@
 
 import time
 from collections.abc import Callable, Iterator
-from dataclasses import replace
 from pathlib import Path
 
 import jwt
@@ -15,10 +14,11 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from jwt.algorithms import RSAAlgorithm
 from psycopg.rows import TupleRow
 
+from needtoknow import db
 from needtoknow.auth import SigningKeyLookup
 from needtoknow.bird import load_bird
 from needtoknow.config import Settings, load_provision_settings, load_settings
-from needtoknow.db import connect_app, connect_reader
+from needtoknow.db import Pool, connect_app, connect_reader
 from needtoknow.documents import Document
 from needtoknow.enron import load_enron, mail_files, parse_email
 from needtoknow.provision import connect_admin, connect_owner, create_schema, prepare_database
@@ -42,7 +42,7 @@ def owner() -> Iterator[psycopg.Connection[TupleRow]]:
             pytrace=False,
         )
     with admin:
-        prepare_database(admin, settings, provision)
+        prepare_database(admin, settings, provision, evaluation=True)
     with connect_owner(settings, provision) as connection:
         create_schema(connection)
         load_enron(connection, MAILDIR)
@@ -62,6 +62,18 @@ def reader(owner: psycopg.Connection[TupleRow]) -> Iterator[psycopg.Connection[T
         yield connection
 
 
+@pytest.fixture(scope="session")
+def app_pool(owner: psycopg.Connection[TupleRow]) -> Iterator[Pool]:
+    with db.app_pool(load_settings(), size=1) as pool:
+        yield pool
+
+
+@pytest.fixture(scope="session")
+def reader_pool(owner: psycopg.Connection[TupleRow]) -> Iterator[Pool]:
+    with db.reader_pool(load_settings(), load_provision_settings(), size=1) as pool:
+        yield pool
+
+
 # Every email of the slice once, read by the custodians whose mailbox holds a copy.
 @pytest.fixture(scope="session")
 def emails() -> dict[str, Document]:
@@ -77,8 +89,12 @@ def emails() -> dict[str, Document]:
 
 @pytest.fixture(scope="session")
 def token_settings() -> Settings:
-    return replace(
-        load_settings(), issuer="http://keycloak.test/realms/needtoknow", client_id="needtoknow-api"
+    return load_settings().model_copy(
+        update={
+            "issuer": "http://keycloak.test/realms/needtoknow",
+            "client_id": "needtoknow-api",
+            "requests_per_minute": 10_000,
+        }
     )
 
 
