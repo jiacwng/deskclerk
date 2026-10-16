@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     budget_usd: float = 2.0
     mcp_host: str = "127.0.0.1"
     mcp_port: int = 8001
+    mcp_url: str = "http://127.0.0.1:8001/mcp"
     screen: bool = True
     requests_per_minute: int = 20
     pool_size: int = 10

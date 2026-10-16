@@ -85,7 +85,9 @@ def create_app(
         if credentials is None:
             raise _unauthorized(None)
         try:
-            identity = authenticate(credentials.credentials, settings, signing_key)
+            identity = authenticate(
+                credentials.credentials, settings, signing_key, settings.client_id
+            )
         except AuthError:
             raise _unauthorized("invalid_token") from None
         except AuthUnavailable:

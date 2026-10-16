@@ -25,7 +25,9 @@ Sign = Callable[[dict[str, object]], str]
 def test_valid_token_gives_user_groups_and_everyone(
     sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup
 ) -> None:
-    identity = authenticate(sign_token({}), token_settings, token_signing_key)
+    identity = authenticate(
+        sign_token({}), token_settings, token_signing_key, token_settings.client_id
+    )
 
     assert identity.user_id == "district-1"
     assert identity.principals == {"user:district-1", "group:everyone", "group:district:1"}
@@ -34,7 +36,9 @@ def test_valid_token_gives_user_groups_and_everyone(
 def test_missing_groups_gives_user_and_everyone(
     sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup
 ) -> None:
-    identity = authenticate(sign_token({"groups": None}), token_settings, token_signing_key)
+    identity = authenticate(
+        sign_token({"groups": None}), token_settings, token_signing_key, token_settings.client_id
+    )
     assert identity.principals == {"user:district-1", "group:everyone"}
 
 
@@ -63,14 +67,52 @@ def test_bad_claims_are_refused(
     token_signing_key: SigningKeyLookup,
 ) -> None:
     with pytest.raises(AuthError, match=reason):
-        authenticate(sign_token(claims), token_settings, token_signing_key)
+        authenticate(
+            sign_token(claims), token_settings, token_signing_key, token_settings.client_id
+        )
 
 
 def test_audience_list_naming_the_api_is_accepted(
     sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup
 ) -> None:
     token = sign_token({"aud": ["account", token_settings.client_id]})
-    assert authenticate(token, token_settings, token_signing_key).user_id == "district-1"
+    identity = authenticate(token, token_settings, token_signing_key, token_settings.client_id)
+    assert identity.user_id == "district-1"
+
+
+def test_a_token_for_the_mcp_server_is_refused_by_the_api(
+    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup
+) -> None:
+    token = sign_token({"aud": token_settings.mcp_url})
+    with pytest.raises(AuthError, match="Audience doesn't match"):
+        authenticate(token, token_settings, token_signing_key, token_settings.client_id)
+
+
+def test_the_mcp_audience_accepts_any_registered_client_and_reads_the_scopes(
+    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup
+) -> None:
+    claims: dict[str, object] = {
+        "aud": token_settings.mcp_url,
+        "azp": "a-registered-client",
+        "scope": "openid profile needtoknow-mcp",
+    }
+    identity = authenticate(
+        sign_token(claims), token_settings, token_signing_key, token_settings.mcp_url
+    )
+    assert identity.user_id == "district-1"
+    assert identity.scopes == {"openid", "profile", "needtoknow-mcp"}
+
+
+def test_a_scope_that_is_not_a_string_is_refused(
+    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup
+) -> None:
+    with pytest.raises(AuthError, match="scope must be a string"):
+        authenticate(
+            sign_token({"scope": ["openid"]}),
+            token_settings,
+            token_signing_key,
+            token_settings.client_id,
+        )
 
 
 def test_clock_skew_within_thirty_seconds_is_accepted(
@@ -80,8 +122,9 @@ def test_clock_skew_within_thirty_seconds_is_accepted(
     issued_ahead = sign_token({"iat": now + 10})
     expired_just_now = sign_token({"iat": now - 300, "exp": now - 10})
 
-    assert authenticate(issued_ahead, token_settings, token_signing_key).user_id == "district-1"
-    assert authenticate(expired_just_now, token_settings, token_signing_key).user_id == "district-1"
+    for token in (issued_ahead, expired_just_now):
+        identity = authenticate(token, token_settings, token_signing_key, token_settings.client_id)
+        assert identity.user_id == "district-1"
 
 
 def test_unreachable_key_server_is_unavailable_not_invalid(
@@ -91,7 +134,7 @@ def test_unreachable_key_server_is_unavailable_not_invalid(
         raise jwt.PyJWKClientConnectionError("connection refused")
 
     with pytest.raises(AuthUnavailable, match="cannot fetch the signing keys"):
-        authenticate(sign_token({}), token_settings, signing_key)
+        authenticate(sign_token({}), token_settings, signing_key, token_settings.client_id)
 
 
 def test_real_key_client_reports_a_closed_port_as_unavailable(
@@ -105,7 +148,7 @@ def test_real_key_client_reports_a_closed_port_as_unavailable(
         }
     )
     with pytest.raises(AuthUnavailable):
-        authenticate(sign_token({}), closed, jwks_signing_key(closed))
+        authenticate(sign_token({}), closed, jwks_signing_key(closed), token_settings.client_id)
 
 
 def test_bad_signature_is_refused(
@@ -114,7 +157,7 @@ def test_bad_signature_is_refused(
     other_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     token = jwt.encode({"preferred_username": "district-1"}, other_key, algorithm="RS256")
     with pytest.raises(AuthError, match="Signature verification failed"):
-        authenticate(token, token_settings, token_signing_key)
+        authenticate(token, token_settings, token_signing_key, token_settings.client_id)
 
 
 def test_symmetric_algorithm_is_refused(
@@ -124,12 +167,12 @@ def test_symmetric_algorithm_is_refused(
         {"preferred_username": "district-1"}, "a-shared-secret-of-32-bytes-long", "HS256"
     )
     with pytest.raises(AuthError, match="invalid token"):
-        authenticate(token, token_settings, token_signing_key)
+        authenticate(token, token_settings, token_signing_key, token_settings.client_id)
 
 
 def test_garbage_is_refused(token_settings: Settings, token_signing_key: SigningKeyLookup) -> None:
     with pytest.raises(AuthError, match="invalid token"):
-        authenticate("not-a-token", token_settings, token_signing_key)
+        authenticate("not-a-token", token_settings, token_signing_key, token_settings.client_id)
 
 
 def test_made_up_key_ids_fetch_the_key_set_at_most_once_a_minute(
