@@ -25,7 +25,7 @@ from needtoknow.config import load_settings
 from needtoknow.db import Pool, app_pool
 from needtoknow.jev import JevError
 from needtoknow.methods import Method, Results, search
-from needtoknow.providers import Spending, chat_model
+from needtoknow.providers import Spending, chat_model, price_of
 from needtoknow.screen import (
     PART_CHARS,
     SCREEN_DOWN,
@@ -382,7 +382,7 @@ def main() -> None:
     args = parser.parse_args()
 
     settings = load_settings()
-    spending = Spending(settings.model, settings.budget_usd)
+    spending = Spending(price_of(settings), settings.budget_usd)
     principals = auth.principals(args.user, args.group)
     with app_pool(settings, size=1) as pool:
         screen = screen_from_settings(settings)

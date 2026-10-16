@@ -36,7 +36,9 @@ class Settings(BaseSettings):
     issuer: str = "http://localhost:8080/realms/needtoknow"
     jwks_url: str
     client_id: str = "needtoknow-api"
-    model: str = "claude-haiku-5-5"
+    model: str = "anthropic:claude-haiku-5-5"
+    price_input: float | None = None
+    price_output: float | None = None
     budget_usd: float = 2.0
     mcp_host: str = "127.0.0.1"
     mcp_port: int = 8001
@@ -58,6 +60,25 @@ class Settings(BaseSettings):
         default = type(self).model_fields["app_password"].default
         refuse_default_password(self.db_host, "NEEDTOKNOW_APP_PASSWORD", self.app_password, default)
         return self
+
+    @model_validator(mode="after")
+    def _both_prices_or_neither(self) -> "Settings":
+        if (self.price_input is None) != (self.price_output is None):
+            raise ValueError(
+                "set both NEEDTOKNOW_PRICE_INPUT and NEEDTOKNOW_PRICE_OUTPUT or neither"
+            )
+        return self
+
+    @field_validator("model")
+    @classmethod
+    def _provider_and_model(cls, value: str) -> str:
+        provider, _, name = value.partition(":")
+        if not provider or not name:
+            raise ValueError(
+                f"NEEDTOKNOW_MODEL is provider:model, such as anthropic:claude-haiku-5-5, "
+                f"not {value!r}"
+            )
+        return value
 
     @field_validator("model_cache")
     @classmethod

@@ -7,7 +7,7 @@ from pathlib import Path
 import psycopg
 from psycopg.rows import TupleRow
 
-from fakes import final_reply, scripted
+from fakes import HAIKU, final_reply, scripted
 from needtoknow.agent import SEARCH_RESULTS
 from needtoknow.db import Pool
 from needtoknow.leak_eval import build_facts
@@ -53,11 +53,11 @@ def test_answers_are_timed_and_priced(
 ) -> None:
     facts = build_facts(reader, limit=2)
     model = scripted(final_reply("one"), final_reply("two"))
-    spending = Spending("claude-haiku-5-5", 1.0)
+    spending = Spending(HAIKU, 1.0)
 
     answers = time_answers(facts, app_pool, model, spending)
     secured, unfiltered = time_searches(facts, app, reader)
-    summary = summarise(secured, unfiltered, answers, "claude-haiku-5-5")
+    summary = summarise(secured, unfiltered, answers, "anthropic:claude-haiku-5-5")
 
     assert summary["answers"] == 2
     assert summary["answer_total_cost_usd"] == round(spending.cost_usd, 6)

@@ -25,7 +25,7 @@ from needtoknow.auth import (
 )
 from needtoknow.config import Settings, load_settings
 from needtoknow.embed import embed_query
-from needtoknow.providers import BudgetExceeded, Spending, chat_model
+from needtoknow.providers import BudgetExceeded, Spending, chat_model, price_of
 from needtoknow.quota import Quota
 from needtoknow.screen import Screen, screen_from_settings
 
@@ -77,7 +77,7 @@ def create_app(
         pool.close()
 
     api = FastAPI(title="needtoknow", lifespan=lifespan)
-    spending = Spending(settings.model, settings.budget_usd)
+    spending = Spending(price_of(settings), settings.budget_usd)
 
     def current_identity(
         credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],

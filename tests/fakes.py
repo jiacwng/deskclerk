@@ -19,7 +19,9 @@ from pydantic import Field
 from typesafe_sdk import RetryPolicy, TypeSafeClient
 
 from needtoknow.jev import Jev
+from needtoknow.providers import PRICES
 
+HAIKU = PRICES["anthropic:claude-haiku-5-5"]
 USAGE: UsageMetadata = {"input_tokens": 1000, "output_tokens": 100, "total_tokens": 1100}
 
 

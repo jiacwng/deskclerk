@@ -12,7 +12,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from psycopg.rows import TupleRow
 
-from fakes import call_tool, final_reply, scripted
+from fakes import HAIKU, call_tool, final_reply, scripted
 from needtoknow.bird_eval import (
     ANALYST,
     OUTPUT_CONTRACT,
@@ -92,14 +92,14 @@ def test_the_runner_scores_the_agent_and_the_baseline(app_pool: Pool, tmp_path) 
         "SELECT county FROM california_schools.schools WHERE county = 'Nowhere'",
     )
     model = scripted(*replies)
-    spending = Spending("claude-haiku-5-5", 2.0)
+    spending = Spending(HAIKU, 2.0)
 
     raw_path = tmp_path / "bird_raw.jsonl"
     with raw_path.open("w", encoding="utf-8") as raw:
         records, unscorable = score([FINANCIAL, SCHOOLS], app_pool, model, spending, raw)
 
     assert unscorable == []
-    summary = summarise(records, "claude-haiku-5-5")
+    summary = summarise(records, "anthropic:claude-haiku-5-5", HAIKU)
     assert summary["agent"]["accuracy"] == 1.0
     assert summary["baseline"]["accuracy"] == 0.0
     assert summary["agent"]["correct_question_ids"] == [1, 2]
@@ -116,7 +116,7 @@ def test_the_runner_scores_the_agent_and_the_baseline(app_pool: Pool, tmp_path) 
 def test_both_sides_are_asked_for_exactly_the_columns_in_the_question(app_pool: Pool) -> None:
     model = scripted(final_reply("No query."), sql_reply(DISTRICTS_SQL))
 
-    score([FINANCIAL], app_pool, model, Spending("claude-haiku-5-5", 2.0), io.StringIO())
+    score([FINANCIAL], app_pool, model, Spending(HAIKU, 2.0), io.StringIO())
 
     agent_prompt, baseline_prompt = model.prompts
     assert OUTPUT_CONTRACT in agent_prompt[-1].text
@@ -127,7 +127,7 @@ def test_the_agent_reads_every_row_of_a_long_gold_answer(app_pool: Pool) -> None
     many = "SELECT n FROM generate_series(1, 500) AS n"
     model = scripted(call_tool("query_data", {"sql": many}), final_reply("Done."))
 
-    agent_prediction(FINANCIAL, app_pool, model, Spending("claude-haiku-5-5", 2.0))
+    agent_prediction(FINANCIAL, app_pool, model, Spending(HAIKU, 2.0))
 
     rows_shown = model.prompts[-1][-1].text
     assert rows_shown.endswith("(500 rows)")
@@ -149,9 +149,7 @@ def test_the_scored_query_is_the_last_that_ran_else_the_last_sent(
     calls = [call_tool("query_data", {"sql": query}) for query in queries]
     model = scripted(*calls, final_reply("Done."))
 
-    predicted, _, _ = agent_prediction(
-        FINANCIAL, app_pool, model, Spending("claude-haiku-5-5", 2.0)
-    )
+    predicted, _, _ = agent_prediction(FINANCIAL, app_pool, model, Spending(HAIKU, 2.0))
 
     assert predicted == scored
 
@@ -168,9 +166,7 @@ def test_an_array_answer_is_scored_instead_of_crashing(app_pool: Pool) -> None:
     )
     model = scripted(call_tool("query_data", {"sql": pair}), final_reply("Done."), sql_reply(pair))
 
-    records, _ = score(
-        [question], app_pool, model, Spending("claude-haiku-5-5", 2.0), io.StringIO()
-    )
+    records, _ = score([question], app_pool, model, Spending(HAIKU, 2.0), io.StringIO())
 
     assert records[0].agent.outcome == "correct"
     assert records[0].baseline.outcome == "correct"
@@ -202,9 +198,7 @@ def test_the_agent_is_scored_on_the_query_its_answer_shows(app_pool: Pool) -> No
         final_reply(f"The districts:\n\n```sql\n{DISTRICTS_SQL};\n```"),
     )
 
-    predicted, _, _ = agent_prediction(
-        FINANCIAL, app_pool, model, Spending("claude-haiku-5-5", 2.0)
-    )
+    predicted, _, _ = agent_prediction(FINANCIAL, app_pool, model, Spending(HAIKU, 2.0))
 
     assert predicted == DISTRICTS_SQL
 
@@ -223,9 +217,7 @@ def test_the_baseline_is_scored_only_on_the_sql_field_of_its_reply(
 ) -> None:
     model = scripted(final_reply("No query."), final_reply(reply))
 
-    records, _ = score(
-        [FINANCIAL], app_pool, model, Spending("claude-haiku-5-5", 2.0), io.StringIO()
-    )
+    records, _ = score([FINANCIAL], app_pool, model, Spending(HAIKU, 2.0), io.StringIO())
 
     assert model.options[-1]["output_config"] == {"format": SQL_REPLY_FORMAT}
     assert records[0].baseline.outcome == outcome
@@ -234,10 +226,8 @@ def test_the_baseline_is_scored_only_on_the_sql_field_of_its_reply(
 def test_an_agent_that_runs_no_query_scores_an_sql_error(app_pool: Pool) -> None:
     model = scripted(final_reply("I cannot answer that."), sql_reply(DISTRICTS_SQL))
 
-    records, _ = score(
-        [FINANCIAL], app_pool, model, Spending("claude-haiku-5-5", 2.0), io.StringIO()
-    )
+    records, _ = score([FINANCIAL], app_pool, model, Spending(HAIKU, 2.0), io.StringIO())
 
     assert records[0].agent.outcome == "sql_error"
-    summary = summarise(records, "claude-haiku-5-5")
+    summary = summarise(records, "anthropic:claude-haiku-5-5", HAIKU)
     assert summary["agent"]["outcomes"] == {"correct": 0, "wrong_result": 0, "sql_error": 1}

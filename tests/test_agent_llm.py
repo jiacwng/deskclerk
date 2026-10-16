@@ -10,7 +10,7 @@ from needtoknow.agent import REFUSAL, ask
 from needtoknow.auth import principals
 from needtoknow.config import load_settings
 from needtoknow.db import Pool
-from needtoknow.providers import Spending, chat_model
+from needtoknow.providers import Spending, chat_model, price_of
 
 pytestmark = pytest.mark.llm
 
@@ -21,7 +21,7 @@ QUESTION = "Who is helping with the Wharton and Rice projects for the Tiger Team
 @pytest.fixture(scope="module")
 def spending() -> Iterator[Spending]:
     settings = load_settings()
-    spending = Spending(settings.model, settings.budget_usd)
+    spending = Spending(price_of(settings), settings.budget_usd)
     yield spending
     print(
         f"\n{settings.model}: {spending.input_tokens} input and {spending.output_tokens} output "
