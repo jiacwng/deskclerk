@@ -45,9 +45,9 @@ def test_missing_groups_gives_user_and_everyone(
 @pytest.mark.parametrize(
     ("claims", "reason"),
     [
-        pytest.param({"exp": int(time.time()) - 60}, "expired", id="expired"),
+        pytest.param({"exp": -60}, "expired", id="expired"),
         pytest.param({"exp": None}, "exp", id="no-expiry"),
-        pytest.param({"iat": int(time.time()) + 60}, "not yet valid", id="issued-in-the-future"),
+        pytest.param({"iat": 60}, "not yet valid", id="issued-in-the-future"),
         pytest.param({"iss": "http://evil.test/realms/needtoknow"}, "issuer", id="wrong-issuer"),
         pytest.param({"aud": None}, '"aud"', id="no-audience"),
         pytest.param({"aud": "account"}, "Audience doesn't match", id="wrong-audience"),
@@ -66,6 +66,11 @@ def test_bad_claims_are_refused(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
 ) -> None:
+    now = int(time.time())
+    for name in ("exp", "iat"):
+        offset = claims.get(name)
+        if isinstance(offset, int):
+            claims = claims | {name: now + offset}
     with pytest.raises(AuthError, match=reason):
         authenticate(
             sign_token(claims), token_settings, token_signing_key, token_settings.client_id
