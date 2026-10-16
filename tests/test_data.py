@@ -378,9 +378,7 @@ def test_describe_data_takes_a_schema_or_nothing(app: Connection, app_pool: Pool
     )
 
     assert results[0].status == "error"
-    assert results[0].content == (
-        "wrong arguments, call describe_data with a schema only or with no arguments"
-    )
+    assert "view: Unexpected keyword argument" in results[0].text
     assert outputs == (
         describe_data(app),
         describe_data(app, "financial"),

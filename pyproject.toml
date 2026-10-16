@@ -17,6 +17,7 @@ dependencies = [
     "uvicorn>=0.54",
     "langgraph>=1.2",
     "langchain-core>=1.6",
+    "langchain-text-splitters>=1.1",
     "langchain-anthropic>=1.7",
     "mcp>=2.3",
     "typesafe-sdk>=0.7",

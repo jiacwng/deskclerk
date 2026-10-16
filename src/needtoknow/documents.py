@@ -2,19 +2,19 @@
 # the chunks are embedded, and the document, its access rows and its chunks are written in one
 # transaction.
 
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import psycopg
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from needtoknow.embed import embed_passages
 
 CHUNK_CHARS = 800
-# A paragraph too long for one chunk is split at line breaks, then sentences, then spaces, as
-# LangChain's RecursiveCharacterTextSplitter does; a run with no space left is cut.
-_SPLITS = ((r"\n", "\n"), (r"(?<=[.!?])\s+", " "), (r"\s+", " "))
+# A body is split at blank lines, then line breaks, then sentence ends, then spaces; a run with
+# no space left is cut.
+_SEPARATORS = [r"\n\s*\n", r"\n", r"(?<=[.!?])\s+", r"\s+", ""]
 
 
 @dataclass(frozen=True)
@@ -34,17 +34,14 @@ class Chunk:
 
 def split_into_chunks(document: Document) -> list[Chunk]:
     limit = max(CHUNK_CHARS - len(document.title) - 2, CHUNK_CHARS // 2)
-    groups: list[list[str]] = []
-    for paragraph in _paragraphs(document.body):
-        for piece in _fit(paragraph, limit):
-            if groups and len(_chunk_text(document.title, [*groups[-1], piece])) <= CHUNK_CHARS:
-                groups[-1].append(piece)
-            else:
-                groups.append([piece])
-    return [
-        Chunk(doc_id=document.id, position=position, text=_chunk_text(document.title, group))
-        for position, group in enumerate(groups)
-    ]
+    splitter = RecursiveCharacterTextSplitter(
+        separators=_SEPARATORS, is_separator_regex=True, chunk_size=limit, chunk_overlap=0
+    )
+    chunks = []
+    for position, body in enumerate(splitter.split_text(document.body)):
+        text = f"{document.title}\n\n{body}" if document.title else body
+        chunks.append(Chunk(doc_id=document.id, position=position, text=text))
+    return chunks
 
 
 def write_documents(owner: psycopg.Connection[Any], documents: Sequence[Document]) -> int:
@@ -68,29 +65,3 @@ def write_documents(owner: psycopg.Connection[Any], documents: Sequence[Document
             ],
         )
     return len(chunks)
-
-
-def _paragraphs(body: str) -> list[str]:
-    return [paragraph.strip() for paragraph in re.split(r"\n\s*\n", body) if paragraph.strip()]
-
-
-def _fit(text: str, limit: int, level: int = 0) -> list[str]:
-    if len(text) <= limit:
-        return [text]
-    if level == len(_SPLITS):
-        return [text[start : start + limit] for start in range(0, len(text), limit)]
-    pattern, joiner = _SPLITS[level]
-    pieces: list[str] = []
-    for part in re.split(pattern, text):
-        if not part.strip():
-            continue
-        for piece in _fit(part, limit, level + 1):
-            if pieces and len(pieces[-1]) + len(joiner) + len(piece) <= limit:
-                pieces[-1] += joiner + piece
-            else:
-                pieces.append(piece)
-    return pieces
-
-
-def _chunk_text(title: str, group: list[str]) -> str:
-    return "\n\n".join([title, *group] if title else group)

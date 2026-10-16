@@ -13,10 +13,12 @@ from typing import Annotated, Any, TypedDict
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.messages.tool import ToolCall
+from langchain_core.tools import StructuredTool
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.graph.state import CompiledStateGraph
+from langgraph.prebuilt import ToolNode, tools_condition
+from pydantic import AfterValidator, validate_call
 
 from needtoknow import auth, data, retrieval
 from needtoknow.config import load_settings
@@ -116,7 +118,13 @@ def query_data_tool(caps: data.Caps) -> dict[str, Any]:
     }
 
 
-Tools = dict[str, tuple[str, bool, Callable[..., str]]]
+def _not_blank(value: str) -> str:
+    if not value.strip():
+        raise ValueError("must be a non-empty string")
+    return value
+
+
+Text = Annotated[str, AfterValidator(_not_blank)]
 
 _CITATION = re.compile(r"( ?)\[([a-z0-9-]+(?:, *[a-z0-9-]+)*)\]")
 
@@ -147,9 +155,15 @@ class Answer:
     tool_outputs: tuple[str, ...] = field(repr=False)
 
 
+@dataclass(frozen=True)
+class _Trace:
+    returned: tuple[str, ...] = ()
+    query: Query | None = None
+    withheld: int = 0
+
+
 class AgentState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
-    tool_rounds: int
     input_tokens: Annotated[int, operator.add]
     output_tokens: Annotated[int, operator.add]
 
@@ -165,92 +179,66 @@ def ask(
     caps: data.Caps = data.DEFAULT_CAPS,
     screen: Screen | None = None,
 ) -> Answer:
-    returned: set[str] = set()
-    outputs: list[str] = []
-    queries: list[Query] = []
-    withheld: list[str] = []
-
     # The principals are fixed here, outside the model's reach: each tool takes only one string.
-    def search_documents(query: str) -> str:
+    def search_documents(query: Text) -> tuple[str, _Trace]:
         with pool.connection() as connection:
             results = search(
                 connection, principals, query, SEARCH_RESULTS, method, filter_forgotten
             )
         note = ""
+        withheld = 0
         if screen is not None:
             try:
                 flags = screen.flagged([hit.text for hit in results.hits])
             except JevError:
-                outputs.append(SCREEN_DOWN)
-                return outputs[-1]
-            pairs = list(zip(results.hits, flags, strict=True))
-            kept = [hit for hit, flag in pairs if not flag]
-            withheld.extend(hit.doc_id for hit, flag in pairs if flag)
-            if len(kept) < len(results.hits):
-                note = f"\n\n{len(results.hits) - len(kept)} passage(s) {WITHHELD}."
+                return SCREEN_DOWN, _Trace()
+            kept = [hit for hit, flag in zip(results.hits, flags, strict=True) if not flag]
+            withheld = len(results.hits) - len(kept)
+            if withheld:
+                note = f"\n\n{withheld} passage(s) {WITHHELD}."
             results = Results(kept, results.dropped, results.readers)
-        returned.update(hit.doc_id for hit in results.hits)
-        outputs.append(_format_hits(results) + note)
-        return outputs[-1]
+        returned = tuple(hit.doc_id for hit in results.hits)
+        return _format_hits(results) + note, _Trace(returned=returned, withheld=withheld)
 
-    def screened(text: str, label: str) -> str:
-        visible, was_withheld = shown(screen, text, label)
-        if was_withheld:
-            withheld.append(label)
-        return visible
-
-    def open_document(doc_id: str) -> str:
+    def open_document(doc_id: Text) -> tuple[str, _Trace]:
         with pool.connection() as connection:
             document = retrieval.open_document(connection, principals, doc_id)
         if document is None:
-            outputs.append(NOT_OPEN)
-            return outputs[-1]
+            return NOT_OPEN, _Trace()
         title, body = document
         body = body.strip()
         if len(body) > DOCUMENT_CHARS:
             body = body[:DOCUMENT_CHARS] + f"\n[cut at {DOCUMENT_CHARS} characters]"
         text = f"[{doc_id}]\n{title}\n\n{body}"
-        outputs.append(screened(text, f"[{doc_id}]"))
-        if outputs[-1] == text:
-            returned.add(doc_id)
-        return outputs[-1]
+        visible, was_withheld = shown(screen, text, f"[{doc_id}]")
+        returned = (doc_id,) if visible == text else ()
+        return visible, _Trace(returned=returned, withheld=1 if was_withheld else 0)
 
-    def describe_data(schema: str | None = None) -> str:
+    def describe_data(schema: Text | None = None) -> tuple[str, _Trace]:
         with pool.connection() as connection:
             description = data.describe_data(connection, schema)
-        outputs.append(screened(description, "The data description"))
-        return outputs[-1]
+        visible, was_withheld = shown(screen, description, "The data description")
+        return visible, _Trace(withheld=1 if was_withheld else 0)
 
-    def query_data(sql: str) -> str:
+    def query_data(sql: Text) -> tuple[str, _Trace]:
         with pool.connection() as connection:
             result = data.query_data(connection, principals, sql, caps)
         if result.failed:
-            queries.append(Query(sql=sql, rows=None, error=result.text))
+            query = Query(sql=sql, rows=None, error=result.text)
         else:
-            queries.append(Query(sql=sql, rows=result.text, error=None))
-        outputs.append(screened(result.text, "The query result"))
-        return outputs[-1]
+            query = Query(sql=sql, rows=result.text, error=None)
+        visible, was_withheld = shown(screen, result.text, "The query result")
+        return visible, _Trace(query=query, withheld=1 if was_withheld else 0)
 
-    tools: Tools = {
-        "search_documents": ("query", False, search_documents),
-        "open_document": ("doc_id", False, open_document),
-    }
+    tools = [(SEARCH_TOOL, search_documents), (OPEN_DOCUMENT_TOOL, open_document)]
     # The other methods search as the reader role, which every row is open to.
     if method is Method.RLS:
-        tools["describe_data"] = ("schema", True, describe_data)
-        tools["query_data"] = ("sql", False, query_data)
-    specs = [SEARCH_TOOL, OPEN_DOCUMENT_TOOL, DESCRIBE_DATA_TOOL, query_data_tool(caps)]
-    specs = [spec for spec in specs if spec["name"] in tools]
-    graph = _build_graph(model, _system_prompt(method, principals), specs, tools, spending)
+        tools += [(DESCRIBE_DATA_TOOL, describe_data), (query_data_tool(caps), query_data)]
+    graph = _build_graph(model, _system_prompt(method, principals), tools, spending)
     final = graph.invoke(
-        {
-            "messages": [HumanMessage(question)],
-            "tool_rounds": 0,
-            "input_tokens": 0,
-            "output_tokens": 0,
-        }
+        {"messages": [HumanMessage(question)], "input_tokens": 0, "output_tokens": 0}
     )
-    return _answer(final, returned, tuple(outputs), tuple(queries), len(withheld), spending)
+    return _answer(final, spending)
 
 
 def _system_prompt(method: Method, principals: frozenset[str]) -> str:
@@ -262,11 +250,10 @@ def _system_prompt(method: Method, principals: frozenset[str]) -> str:
 def _build_graph(
     model: BaseChatModel,
     system_prompt: str,
-    specs: list[dict[str, Any]],
-    tools: Tools,
+    tools: list[tuple[dict[str, Any], Callable[..., tuple[str, _Trace]]]],
     spending: Spending,
 ) -> CompiledStateGraph[AgentState, None, AgentState, AgentState]:
-    model_with_tools = model.bind_tools(specs, strict=True)
+    model_with_tools = model.bind_tools([spec for spec, _ in tools], strict=True)
 
     def call_model(state: AgentState) -> dict[str, Any]:
         spending.check()
@@ -278,46 +265,32 @@ def _build_graph(
         spending.record(input_tokens, output_tokens)
         return {"messages": [reply], "input_tokens": input_tokens, "output_tokens": output_tokens}
 
-    def call_tools(state: AgentState) -> dict[str, Any]:
-        reply = state["messages"][-1]
-        calls = reply.tool_calls if isinstance(reply, AIMessage) else []
-        results = [_run_tool(call, tools) for call in calls]
-        return {"messages": results, "tool_rounds": state["tool_rounds"] + 1}
-
+    # Every model reply but the last was followed by one round of tool calls.
     def after_model(state: AgentState) -> str:
-        reply = state["messages"][-1]
-        if isinstance(reply, AIMessage) and reply.tool_calls:
-            if state["tool_rounds"] < MAX_TOOL_ROUNDS:
-                return "tools"
-        return END
+        replies = [message for message in state["messages"] if isinstance(message, AIMessage)]
+        if len(replies) > MAX_TOOL_ROUNDS:
+            return END
+        return tools_condition(state["messages"])
 
     graph = StateGraph(AgentState)
     graph.add_node("model", call_model)
-    graph.add_node("tools", call_tools)
+    graph.add_node("tools", ToolNode([_tool(spec, run) for spec, run in tools]))
     graph.add_edge(START, "model")
     graph.add_conditional_edges("model", after_model, ["tools", END])
     graph.add_edge("tools", "model")
     return graph.compile()
 
 
-def _run_tool(call: ToolCall, tools: Tools) -> ToolMessage:
-    call_id = call["id"] or ""
-    if call["name"] not in tools:
-        error = f"unknown tool, call one of {', '.join(tools)}"
-        return ToolMessage(error, tool_call_id=call_id, status="error")
-    argument, optional, run = tools[call["name"]]
-    if optional and not call["args"]:
-        return ToolMessage(run(), tool_call_id=call_id)
-    if set(call["args"]) != {argument}:
-        error = f"wrong arguments, call {call['name']} with a {argument} only"
-        if optional:
-            error += " or with no arguments"
-        return ToolMessage(error, tool_call_id=call_id, status="error")
-    value = call["args"][argument]
-    if not isinstance(value, str) or not value.strip():
-        error = f"{argument} must be a non-empty string"
-        return ToolMessage(error, tool_call_id=call_id, status="error")
-    return ToolMessage(run(value), tool_call_id=call_id)
+# The model sees the spec as written; the arguments it sends are checked against the function's
+# signature, and a wrong call comes back to the model as an error message.
+def _tool(spec: dict[str, Any], run: Callable[..., tuple[str, _Trace]]) -> StructuredTool:
+    return StructuredTool(
+        name=spec["name"],
+        description=spec["description"],
+        args_schema=spec["input_schema"],
+        func=validate_call(run),
+        response_format="content_and_artifact",
+    )
 
 
 def _format_hits(results: Results) -> str:
@@ -332,14 +305,21 @@ def _format_hits(results: Results) -> str:
     return "\n\n".join(passages)
 
 
-def _answer(
-    final: dict[str, Any],
-    returned: set[str],
-    tool_outputs: tuple[str, ...],
-    queries: tuple[Query, ...],
-    withheld: int,
-    spending: Spending,
-) -> Answer:
+def _answer(final: dict[str, Any], spending: Spending) -> Answer:
+    returned: set[str] = set()
+    tool_outputs: list[str] = []
+    queries: list[Query] = []
+    withheld = 0
+    for message in final["messages"]:
+        if not isinstance(message, ToolMessage) or message.status == "error":
+            continue
+        trace: _Trace = message.artifact
+        tool_outputs.append(message.text)
+        returned.update(trace.returned)
+        if trace.query is not None:
+            queries.append(trace.query)
+        withheld += trace.withheld
+
     input_tokens = final["input_tokens"]
     output_tokens = final["output_tokens"]
     cost_usd = spending.price.cost(input_tokens, output_tokens)
@@ -367,9 +347,9 @@ def _answer(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cost_usd=cost_usd,
-        queries=queries,
+        queries=tuple(queries),
         withheld=withheld,
-        tool_outputs=tool_outputs,
+        tool_outputs=tuple(tool_outputs),
     )
 
 

@@ -5,7 +5,8 @@
 import re
 
 import pytest
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages.tool import tool_call
 
 from fakes import USAGE, ScriptedModel, call_tool, final_reply, scripted, search_call
 from needtoknow.agent import (
@@ -222,6 +223,26 @@ def test_an_opened_email_gives_its_full_text_and_counts_as_returned(
     assert opened.text == f"[{TIGER_TEAM}]\n{email.title}\n\n{email.body.strip()}"
     assert answer.citations == (TIGER_TEAM,)
     assert answer.tool_outputs == (opened.text,)
+
+
+def test_two_tool_calls_in_one_reply_both_run_in_order(app_pool: Pool) -> None:
+    calls = [
+        tool_call(name="search_documents", args={"query": QUESTION}, id="toolu_search"),
+        tool_call(name="open_document", args={"doc_id": TIGER_TEAM}, id="toolu_open"),
+    ]
+    model = scripted(
+        AIMessage(content="", tool_calls=calls, usage_metadata=USAGE),
+        final_reply(f"Two people help [{TIGER_TEAM}]."),
+    )
+
+    answer = _ask(app_pool, HOLDER, model)
+
+    searched, opened = _tool_results(model)
+    assert (searched.tool_call_id, opened.tool_call_id) == ("toolu_search", "toolu_open")
+    assert opened.text.startswith(f"[{TIGER_TEAM}]\n")
+    assert answer.tool_outputs == (searched.text, opened.text)
+    assert answer.citations == (TIGER_TEAM,)
+    assert len(model.prompts) == 2
 
 
 @pytest.mark.parametrize("doc_id", [TIGER_TEAM, "enron-no-such-email"])
