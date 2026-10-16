@@ -1,7 +1,9 @@
 # An MCP server over Streamable HTTP with three tools: search_documents, describe_data and
 # query_data. Every call runs as the employee named in the request's bearer token, so an MCP
 # client reads only the documents and rows that employee may read, and what it reads goes
-# through the injection screen first, as the agent's tools do.
+# through the injection screen first, as the agent's tools do. The server publishes its OAuth
+# protected resource metadata (RFC 9728), so a client finds Keycloak, registers itself there and
+# signs the employee in; it accepts only tokens whose audience is its own URL (RFC 8707).
 # Run locally: PYTHONPATH=src .venv/bin/python -m needtoknow.mcp_server
 
 import anyio.to_thread
@@ -19,6 +21,9 @@ from needtoknow.jev import JevError
 from needtoknow.quota import Quota
 from needtoknow.screen import SCREEN_DOWN, Screen, screen_from_settings, shown
 
+# The Keycloak client scope that puts this server's URL in the token audience.
+SCOPE = "needtoknow-mcp"
+
 
 class EmployeeToken(AccessToken):
     identity: Identity
@@ -34,14 +39,14 @@ class EmployeeTokenVerifier:
     async def verify_token(self, token: str) -> AccessToken | None:
         try:
             identity = await anyio.to_thread.run_sync(
-                authenticate, token, self.settings, self.signing_key
+                authenticate, token, self.settings, self.signing_key, self.settings.mcp_url
             )
         except AuthError:
             return None
         return EmployeeToken(
             token=token,
             client_id=self.settings.client_id,
-            scopes=[],
+            scopes=sorted(identity.scopes),
             subject=identity.user_id,
             claims={"iss": self.settings.issuer},
             identity=identity,
@@ -65,7 +70,12 @@ def create_server(
     server = MCPServer(
         name="needtoknow",
         token_verifier=EmployeeTokenVerifier(settings, signing_key),
-        auth=AuthSettings(issuer_url=AnyHttpUrl(settings.issuer), resource_server_url=None),
+        auth=AuthSettings(
+            issuer_url=AnyHttpUrl(settings.issuer),
+            resource_server_url=AnyHttpUrl(settings.mcp_url),
+            required_scopes=[SCOPE],
+            validate_token_resource=False,
+        ),
     )
 
     @server.tool(description="Search the company documents the signed-in employee may read.")
