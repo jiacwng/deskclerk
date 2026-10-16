@@ -10,7 +10,7 @@ from pathlib import Path
 import psycopg
 from psycopg.rows import TupleRow
 
-from fakes import call_tool, fake_jev, final_reply, scripted, search_call
+from fakes import HAIKU, call_tool, fake_jev, final_reply, scripted, search_call
 from needtoknow.agent import MAX_TOOL_ROUNDS, REFUSAL
 from needtoknow.db import Pool
 from needtoknow.documents import Document
@@ -62,7 +62,7 @@ def test_the_holder_gets_the_token_and_the_non_holder_never_does(
         call_tool("open_document", {"doc_id": fact.doc_id}),
         final_reply(REFUSAL),
     )
-    spending = Spending("claude-haiku-5-5", 1.0)
+    spending = Spending(HAIKU, 1.0)
     raw_path = tmp_path / RAW_FILE
     judged: list[object] = []
     jev = fake_jev(lambda state: 0.9, judged)
@@ -108,7 +108,7 @@ def test_a_resumed_run_asks_only_what_the_saved_answers_lack(
 ) -> None:
     fact = build_facts(reader, limit=1)[0]
     model = scripted(final_reply(REFUSAL), final_reply(REFUSAL))
-    spending = Spending("claude-haiku-5-5", 1.0)
+    spending = Spending(HAIKU, 1.0)
     raw_path = tmp_path / RAW_FILE
     with raw_path.open("a", encoding="utf-8") as raw:
         evaluate([fact], [RLS], 1, (app_pool, reader_pool), 1, model, spending, JUDGE, raw)
@@ -149,7 +149,7 @@ def test_the_token_and_the_judge_count_the_holder_apart(
         final_reply(f"It mentions {fact.token} and nothing else."),
         final_reply(REFUSAL),
     )
-    spending = Spending("claude-haiku-5-5", 1.0)
+    spending = Spending(HAIKU, 1.0)
     jev = fake_jev(lambda state: 0.1)
 
     with (tmp_path / RAW_FILE).open("a", encoding="utf-8") as raw:
@@ -166,7 +166,7 @@ def test_running_out_of_steps_is_counted_apart_from_a_refusal(
     fact = build_facts(reader, limit=1)[0]
     searches = [search_call({"query": fact.subject}) for _ in range(MAX_TOOL_ROUNDS + 1)]
     model = scripted(*searches, final_reply(REFUSAL))
-    spending = Spending("claude-haiku-5-5", 1.0)
+    spending = Spending(HAIKU, 1.0)
     judged: list[object] = []
     jev = fake_jev(lambda state: 0.9, judged)
 
@@ -187,7 +187,7 @@ def test_only_configurations_where_the_model_decides_are_repeated(
 ) -> None:
     fact = build_facts(reader, limit=1)[0]
     model = scripted(*[final_reply(REFUSAL)] * 8)
-    spending = Spending("claude-haiku-5-5", 1.0)
+    spending = Spending(HAIKU, 1.0)
 
     with (tmp_path / RAW_FILE).open("a", encoding="utf-8") as raw:
         records = evaluate(
@@ -212,7 +212,7 @@ def test_parallel_workers_ask_every_question_once(
 ) -> None:
     facts = build_facts(reader, limit=3)
     model = scripted(*[final_reply(REFUSAL)] * 6)
-    spending = Spending("claude-haiku-5-5", 1.0)
+    spending = Spending(HAIKU, 1.0)
 
     with (tmp_path / RAW_FILE).open("a", encoding="utf-8") as raw:
         records = evaluate(facts, [RLS], 1, (app_pool, reader_pool), 2, model, spending, JUDGE, raw)

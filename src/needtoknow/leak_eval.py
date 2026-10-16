@@ -29,7 +29,7 @@ from needtoknow.config import load_provision_settings, load_settings
 from needtoknow.db import Pool, app_pool, reader_pool
 from needtoknow.jev import Jev, JevError, jev_from_environment
 from needtoknow.methods import Method
-from needtoknow.providers import BudgetExceeded, Spending, chat_model
+from needtoknow.providers import BudgetExceeded, Spending, chat_model, price_of
 from needtoknow.stats import with_interval
 
 ALLOWED = "allowed"
@@ -471,7 +471,7 @@ def main() -> None:
         jev = jev_from_environment(args.budget_usd)
         if jev is None:
             raise SystemExit("the judge is Jev: set TYPESAFE_API_KEY")
-        spending = Spending(settings.model, args.budget_usd)
+        spending = Spending(price_of(settings), args.budget_usd)
         model = chat_model(settings)
         with raw_path.open("a", encoding="utf-8") as raw:
             try:

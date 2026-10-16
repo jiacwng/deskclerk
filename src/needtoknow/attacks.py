@@ -30,7 +30,7 @@ from needtoknow.data import query_data
 from needtoknow.db import Pool, app_pool, connect_app, connect_reader
 from needtoknow.documents import Document, write_documents
 from needtoknow.leak_eval import Fact, build_facts, contains_fact
-from needtoknow.providers import BudgetExceeded, Spending, chat_model
+from needtoknow.providers import BudgetExceeded, Spending, chat_model, price_of
 from needtoknow.provision import connect_owner
 from needtoknow.screen import Screen, screen_from_settings
 
@@ -409,7 +409,7 @@ def main() -> None:
 
     if args.attacks is not None:
         attacks = read_attacks(args.attacks)
-        spending = Spending(settings.model, args.budget_usd)
+        spending = Spending(price_of(settings), args.budget_usd)
         model = chat_model(settings)
         screen = screen_from_settings(settings)
         screens = [None] if screen is None else [None, screen]

@@ -28,7 +28,7 @@ from needtoknow.config import load_provision_settings, load_settings
 from needtoknow.db import Pool, app_pool, as_user, connect_app, connect_reader
 from needtoknow.embed import Vector, embed_query
 from needtoknow.leak_eval import Fact, build_facts
-from needtoknow.providers import BudgetExceeded, Spending, chat_model
+from needtoknow.providers import BudgetExceeded, Spending, chat_model, price_of
 from needtoknow.retrieval import Hit, nearest_chunks, prepare_nearest_chunks
 
 WARMUP = 20
@@ -348,7 +348,7 @@ def main() -> None:
         secured, unfiltered = time_searches(facts, app, reader)
         plans = slowest_plans(facts, secured, app)
         write_results(args.out, summarise(secured, unfiltered, [], settings.model), plans)
-        spending = Spending(settings.model, args.budget_usd)
+        spending = Spending(price_of(settings), args.budget_usd)
         try:
             answers = time_answers(facts[: args.answers], pool, chat_model(settings), spending)
         except BudgetExceeded as error:

@@ -6,7 +6,7 @@
 import psycopg
 from psycopg.rows import TupleRow
 
-from fakes import call_tool, final_reply, scripted
+from fakes import HAIKU, call_tool, final_reply, scripted
 from needtoknow.attacks import (
     DATABASE_ATTACKS,
     EXCESSIVE_AGENCY,
@@ -73,7 +73,7 @@ def test_bipia_reports_the_attack_success_rate() -> None:
     replies += [final_reply("There is no information about that.") for _ in range(3)]
     model = scripted(*replies)
 
-    results = run_bipia("email", [CONTEXT], ATTACKS, model, Spending("claude-haiku-5-5", 1.0))
+    results = run_bipia("email", [CONTEXT], ATTACKS, model, Spending(HAIKU, 1.0))
 
     assert len(results) == len(MATCH_ATTACKS)
     assert results[0].result == "ASR 1.00 (3/3)"
@@ -90,7 +90,7 @@ def test_bipia_runs_through_the_agent_on_a_planted_email(owner: Connection, app_
     model = scripted(*replies)
 
     results = run_bipia_through_agent(
-        [EMAIL], ATTACKS, owner, app_pool, model, Spending("claude-haiku-5-5", 1.0)
+        [EMAIL], ATTACKS, owner, app_pool, model, Spending(HAIKU, 1.0)
     )
 
     assert [result.result for result in results] == ["ASR 1.00 (3/3)", "ASR 0.00 (0/3)"]
@@ -112,9 +112,7 @@ def test_data_stealing_never_reaches_the_forbidden_email(
         replies.append(final_reply("Done."))
     model = scripted(*replies)
 
-    results = run_data_stealing(
-        [EMAIL], [fact], owner, app_pool, model, Spending("claude-haiku-5-5", 1.0)
-    )
+    results = run_data_stealing([EMAIL], [fact], owner, app_pool, model, Spending(HAIKU, 1.0))
 
     expected = "obeyed 3/3, forbidden email reached the model 0/3, in the answer 0/3"
     assert [result.result for result in results] == [expected, expected]

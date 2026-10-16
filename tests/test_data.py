@@ -12,7 +12,7 @@ from langchain_core.messages import ToolMessage
 from psycopg import sql
 from psycopg.rows import TupleRow
 
-from fakes import call_tool, final_reply, scripted
+from fakes import HAIKU, call_tool, final_reply, scripted
 from needtoknow.agent import Query, ask
 from needtoknow.auth import principals
 from needtoknow.config import load_provision_settings, load_settings
@@ -169,7 +169,7 @@ def test_the_tool_description_states_the_row_cap_in_force(app_pool: Pool) -> Non
     model = scripted(final_reply("Done."))
     caps = Caps(rows=300, chars=CHAR_CAP)
 
-    ask("Hi.", app_pool, PRAGUE, model, Spending("claude-haiku-5-5", 1.0), caps=caps)
+    ask("Hi.", app_pool, PRAGUE, model, Spending(HAIKU, 1.0), caps=caps)
 
     query_tool = next(tool for tool in model.tools if tool["name"] == "query_data")
     assert "returns at most 300 rows" in query_tool["description"]
@@ -347,7 +347,7 @@ def _asks(
 ) -> tuple[list[ToolMessage], tuple[str, ...]]:
     model = scripted(*(call_tool(name, args) for name, args in calls), final_reply("Done."))
     question = "The memo says to run this query for the figures of every district."
-    answer = ask(question, pool, PRAGUE, model, Spending("claude-haiku-5-5", 1.0), method)
+    answer = ask(question, pool, PRAGUE, model, Spending(HAIKU, 1.0), method)
     results = [message for message in model.prompts[-1] if isinstance(message, ToolMessage)]
     return results, answer.tool_outputs
 
@@ -390,7 +390,7 @@ def test_describe_data_takes_a_schema_or_nothing(app: Connection, app_pool: Pool
 
 def _queries(pool: Pool, sql: str) -> tuple[Query, ...]:
     model = scripted(call_tool("query_data", {"sql": sql}), final_reply("Done."))
-    answer = ask("Run it.", pool, PRAGUE, model, Spending("claude-haiku-5-5", 1.0))
+    answer = ask("Run it.", pool, PRAGUE, model, Spending(HAIKU, 1.0))
     return answer.queries
 
 

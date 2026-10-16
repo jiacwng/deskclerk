@@ -8,7 +8,7 @@ import psycopg
 from fastapi.testclient import TestClient
 from psycopg.rows import TupleRow
 
-from fakes import ScriptedModel, call_tool, final_reply, scripted, search_call
+from fakes import HAIKU, ScriptedModel, call_tool, final_reply, scripted, search_call
 from needtoknow.agent import MAX_TOOL_ROUNDS, Query, ask
 from needtoknow.api import create_app
 from needtoknow.auth import SigningKeyLookup, principals
@@ -49,7 +49,7 @@ def test_a_district_user_gets_both_queries_and_only_their_rows(
 ) -> None:
     asker = principals("district-1", ["district:1"])
 
-    answer = ask(QUESTION, app_pool, asker, _model(), Spending("claude-haiku-5-5", 1.0))
+    answer = ask(QUESTION, app_pool, asker, _model(), Spending(HAIKU, 1.0))
 
     assert answer.text == REPLY
     assert answer.tool_outputs[:2] == (
@@ -74,7 +74,7 @@ def test_the_data_loop_and_a_document_search_fit_in_the_round_cap(app_pool: Pool
     asker = principals("district-1", ["district:1"])
     model = scripted(*DATA_CALLS, search_call({"query": QUESTION}), final_reply(REPLY))
 
-    answer = ask(QUESTION, app_pool, asker, model, Spending("claude-haiku-5-5", 1.0))
+    answer = ask(QUESTION, app_pool, asker, model, Spending(HAIKU, 1.0))
 
     assert MAX_TOOL_ROUNDS == len(DATA_CALLS) + 1
     assert len(model.prompts) == MAX_TOOL_ROUNDS + 1

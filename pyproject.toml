@@ -16,6 +16,7 @@ dependencies = [
     "fastapi>=0.142",
     "uvicorn>=0.54",
     "langgraph>=1.2",
+    "langchain>=1.4",
     "langchain-core>=1.6",
     "langchain-anthropic>=1.7",
     "mcp>=2.3",
@@ -27,6 +28,8 @@ dependencies = [
 
 [project.optional-dependencies]
 eval = ["scipy>=1.18", "thefuzz>=0.22"]
+openai = ["langchain-openai>=1.7"]
+ollama = ["langchain-ollama>=1.1"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

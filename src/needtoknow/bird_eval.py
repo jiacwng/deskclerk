@@ -224,9 +224,8 @@ def score(
 
 
 def summarise(
-    records: Sequence[Record], model_name: str, unscorable: Sequence[int] = ()
+    records: Sequence[Record], model_name: str, price: Price, unscorable: Sequence[int] = ()
 ) -> dict[str, Any]:
-    price = price_of(model_name)
     return {
         "model": model_name,
         "questions": len(records),
@@ -403,7 +402,7 @@ def main() -> None:
         for question in read_questions(args.questions)[: args.limit]
         if question.question_id not in scored
     ]
-    spending = Spending(settings.model, args.budget_usd)
+    spending = Spending(price_of(settings), args.budget_usd)
     args.out.mkdir(parents=True, exist_ok=True)
     with app_pool(settings, size=1) as pool, raw_path.open("a", encoding="utf-8") as raw:
         try:
@@ -411,7 +410,7 @@ def main() -> None:
         except BudgetExceeded as error:
             raise SystemExit(f"stopped: {error}. Rerun with --resume to carry on.") from error
 
-    summary = summarise(done + records, settings.model, unscorable)
+    summary = summarise(done + records, settings.model, spending.price, unscorable)
     write_results(args.out, summary)
     print(results_table(summary))
 

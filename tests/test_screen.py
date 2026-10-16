@@ -6,7 +6,16 @@ import httpx2
 import pytest
 from langchain_core.messages import ToolMessage
 
-from fakes import ScriptedModel, call_tool, fake_jev, final_reply, jev_client, scripted, search_call
+from fakes import (
+    HAIKU,
+    ScriptedModel,
+    call_tool,
+    fake_jev,
+    final_reply,
+    jev_client,
+    scripted,
+    search_call,
+)
 from needtoknow.agent import REFUSAL, ask
 from needtoknow.attacks import run_bipia
 from needtoknow.auth import principals
@@ -30,7 +39,7 @@ ANALYST = principals("analyst", ["analyst"])
 
 
 def SPENDING() -> Spending:  # noqa: N802
-    return Spending("claude-haiku-5-5", 1.0)
+    return Spending(HAIKU, 1.0)
 
 
 def _tool_results(model: ScriptedModel) -> list[ToolMessage]:
@@ -45,9 +54,7 @@ def test_flagged_passages_are_withheld_from_the_model(app_pool: Pool) -> None:
     model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
     screen = Screen(fake_jev(lambda state: 0.9))
 
-    answer = ask(
-        QUESTION, app_pool, KAMINSKI, model, Spending("claude-haiku-5-5", 1.0), screen=screen
-    )
+    answer = ask(QUESTION, app_pool, KAMINSKI, model, Spending(HAIKU, 1.0), screen=screen)
 
     (result,) = _tool_results(model)
     assert "I have two persons in my group" not in result.text
@@ -59,9 +66,7 @@ def test_clean_passages_pass_the_screen(app_pool: Pool) -> None:
     model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
     screen = Screen(fake_jev(lambda state: 0.1))
 
-    answer = ask(
-        QUESTION, app_pool, KAMINSKI, model, Spending("claude-haiku-5-5", 1.0), screen=screen
-    )
+    answer = ask(QUESTION, app_pool, KAMINSKI, model, Spending(HAIKU, 1.0), screen=screen)
 
     (result,) = _tool_results(model)
     assert "I have two persons in my group" in result.text
@@ -72,9 +77,7 @@ def test_a_flagged_document_is_not_opened(app_pool: Pool) -> None:
     model = scripted(call_tool("open_document", {"doc_id": TIGER_TEAM}), final_reply(REFUSAL))
     screen = Screen(fake_jev(lambda state: 0.9))
 
-    answer = ask(
-        QUESTION, app_pool, KAMINSKI, model, Spending("claude-haiku-5-5", 1.0), screen=screen
-    )
+    answer = ask(QUESTION, app_pool, KAMINSKI, model, Spending(HAIKU, 1.0), screen=screen)
 
     (result,) = _tool_results(model)
     assert result.text == f"[{TIGER_TEAM}] {WITHHELD}."
@@ -85,7 +88,7 @@ def test_an_unavailable_screen_shows_the_model_nothing(app_pool: Pool) -> None:
     model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
     screen = Screen(_failing_jev(400))
 
-    ask(QUESTION, app_pool, KAMINSKI, model, Spending("claude-haiku-5-5", 1.0), screen=screen)
+    ask(QUESTION, app_pool, KAMINSKI, model, Spending(HAIKU, 1.0), screen=screen)
 
     (result,) = _tool_results(model)
     assert result.text == SCREEN_DOWN
@@ -112,7 +115,7 @@ def test_a_screened_bipia_context_never_reaches_the_model() -> None:
     screen = Screen(fake_jev(lambda state: 0.9))
 
     results = run_bipia(
-        "email", [context], attacks, scripted(), Spending("claude-haiku-5-5", 1.0), screen=screen
+        "email", [context], attacks, scripted(), Spending(HAIKU, 1.0), screen=screen
     )
 
     assert all(result.result.startswith("ASR 0.00") for result in results)

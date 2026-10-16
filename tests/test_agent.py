@@ -1,13 +1,13 @@
 # The agent loop with a scripted model and the Enron slice: nothing the model sends can change
 # who is asking, citations no tool returned are dropped, each enforcement method shapes what the
-# model sees, and the round cap, the budget and the price table stop runaway or unpriced calls.
+# model sees, and the round cap and the budget stop runaway calls.
 
 import re
 
 import pytest
 from langchain_core.messages import ToolMessage
 
-from fakes import USAGE, ScriptedModel, call_tool, final_reply, scripted, search_call
+from fakes import HAIKU, USAGE, ScriptedModel, call_tool, final_reply, scripted, search_call
 from needtoknow.agent import (
     EXHAUSTED,
     MAX_TOOL_ROUNDS,
@@ -19,18 +19,16 @@ from needtoknow.agent import (
     ask,
 )
 from needtoknow.auth import principals
-from needtoknow.config import load_settings
 from needtoknow.db import Pool
 from needtoknow.documents import Document
 from needtoknow.methods import Method
-from needtoknow.providers import BudgetExceeded, Spending, chat_model, price_of
+from needtoknow.providers import BudgetExceeded, Spending
 
 TIGER_TEAM = "enron-770963d7e2ceeb8d22d92a1ebfaba325068dfa242524cb4a8983dc0d1165f2ab"
 QUESTION = "Who is helping with the Wharton and Rice projects for the Tiger Team?"
 CONTENT = "I have two persons in my group"
 HOLDER = principals("kaminski-v", [])
 OTHER = principals("kean-s", [])
-MODEL = "claude-haiku-5-5"
 
 
 def _ask(
@@ -39,7 +37,7 @@ def _ask(
     model: ScriptedModel,
     method: Method = Method.RLS,
 ) -> Answer:
-    return ask(QUESTION, pool, asker, model, Spending(MODEL, budget_usd=1.0), method)
+    return ask(QUESTION, pool, asker, model, Spending(HAIKU, budget_usd=1.0), method)
 
 
 def _tool_results(model: ScriptedModel) -> list[ToolMessage]:
@@ -105,7 +103,7 @@ def test_the_round_cap_stops_a_model_that_keeps_searching(app_pool: Pool) -> Non
 
 
 def test_tokens_and_cost_are_counted_per_request_and_per_process(app_pool: Pool) -> None:
-    spending = Spending(MODEL, budget_usd=1.0)
+    spending = Spending(HAIKU, budget_usd=1.0)
 
     for _ in range(2):
         model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
@@ -121,7 +119,7 @@ def test_tokens_and_cost_are_counted_per_request_and_per_process(app_pool: Pool)
 
 def test_the_budget_refuses_a_call_once_it_is_spent(app_pool: Pool) -> None:
     # One scripted call costs 0.00015 USD, so the second call finds the budget spent.
-    spending = Spending(MODEL, budget_usd=0.0001)
+    spending = Spending(HAIKU, budget_usd=0.0001)
     model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
 
     with pytest.raises(BudgetExceeded, match="budget is 0.0001 USD"):
@@ -132,29 +130,13 @@ def test_the_budget_refuses_a_call_once_it_is_spent(app_pool: Pool) -> None:
 
 
 def test_a_zero_budget_refuses_the_first_call(app_pool: Pool) -> None:
-    spending = Spending(MODEL, budget_usd=0.0)
+    spending = Spending(HAIKU, budget_usd=0.0)
     model = scripted(final_reply(REFUSAL))
 
     with pytest.raises(BudgetExceeded):
         ask(QUESTION, app_pool, HOLDER, model, spending)
 
     assert model.prompts == []
-
-
-@pytest.mark.parametrize("model_name", ["claude-haiku-4-5", "gpt-5", ""])
-def test_an_unknown_model_is_refused(model_name: str) -> None:
-    with pytest.raises(ValueError, match="no price for model"):
-        price_of(model_name)
-    with pytest.raises(ValueError, match="no price for model"):
-        Spending(model_name, budget_usd=1.0)
-    with pytest.raises(ValueError, match="no price for model"):
-        chat_model(load_settings().model_copy(update={"model": model_name}))
-
-
-def test_the_price_table_matches_the_list_prices() -> None:
-    assert price_of("claude-haiku-5-5").cost(1_000_000, 1_000_000) == pytest.approx(0.60)
-    assert price_of("claude-sonnet-5-5").cost(1_000_000, 1_000_000) == pytest.approx(12.00)
-    assert price_of("claude-opus-5-5").cost(1_000_000, 1_000_000) == pytest.approx(24.00)
 
 
 @pytest.mark.parametrize("method", [Method.IN_QUERY, Method.POST_FILTER])
