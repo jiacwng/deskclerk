@@ -1,12 +1,12 @@
 {
-  "model": "claude-haiku-5-5",
-  "questions": 500,
+  "model": "anthropic:claude-haiku-5-5",
+  "questions": 498,
   "unscorable": [],
   "agent": {
-    "accuracy": 0.566,
+    "accuracy": 0.5662650602409639,
     "outcomes": {
-      "correct": 283,
-      "wrong_result": 217,
+      "correct": 282,
+      "wrong_result": 216,
       "sql_error": 0
     },
     "correct_question_ids": [
@@ -289,19 +289,18 @@
       136,
       137,
       138,
-      137,
       149,
       189,
       192
     ],
-    "input_tokens": 5742246,
-    "output_tokens": 365925,
-    "cost_usd": 0.757187
+    "input_tokens": 5722324,
+    "output_tokens": 364527,
+    "cost_usd": 0.754496
   },
   "baseline": {
-    "accuracy": 0.596,
+    "accuracy": 0.5943775100401606,
     "outcomes": {
-      "correct": 298,
+      "correct": 296,
       "wrong_result": 198,
       "sql_error": 4
     },
@@ -597,16 +596,14 @@
       136,
       137,
       138,
-      137,
-      138,
       149,
       152,
       173,
       189,
       192
     ],
-    "input_tokens": 1449675,
-    "output_tokens": 139082,
-    "cost_usd": 0.214508
+    "input_tokens": 1445825,
+    "output_tokens": 138713,
+    "cost_usd": 0.213939
   }
 }
