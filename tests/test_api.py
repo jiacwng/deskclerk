@@ -1,7 +1,11 @@
 # The HTTP API against the real database and embedding model, with tokens signed by the throwaway
 # key from conftest.py and a scripted chat model: no token or a bad one is refused, results are
 # only documents the token's user may read, and nothing in the body can change who is asking.
+# Each answer writes one audit line, and /ready reports the database and the login server's keys.
 
+import hashlib
+import json
+import logging
 import re
 import threading
 from collections.abc import Callable, Iterator
@@ -18,7 +22,7 @@ from langchain_core.outputs import ChatResult
 from psycopg.rows import TupleRow
 from pydantic import Field
 
-from fakes import ScriptedModel, call_tool, final_reply, scripted, search_call
+from fakes import HAIKU, ScriptedModel, call_tool, final_reply, scripted, search_call
 from needtoknow.agent import REFUSAL
 from needtoknow.api import create_app
 from needtoknow.auth import SigningKeyLookup
@@ -428,3 +432,124 @@ def test_an_employee_over_the_quota_gets_429(
 
     assert first.status_code == 200
     assert second.status_code == 429
+
+
+def _audit_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [record.getMessage() for record in caplog.records if record.name == "needtoknow.audit"]
+
+
+def _ask_as_kaminski(
+    settings: Settings, signing_key: SigningKeyLookup, token: str
+) -> dict[str, Any]:
+    reply = f"Two people in his group help [{TIGER_TEAM}]."
+    model = scripted(search_call({"query": ASK["question"]}), final_reply(reply))
+    with TestClient(create_app(settings, signing_key, model)) as ask_client:
+        response = ask_client.post("/ask", json=ASK, headers=_bearer(token))
+    assert response.status_code == 200
+    body: dict[str, Any] = response.json()
+    return body
+
+
+def test_an_answer_writes_one_audit_line_without_the_question(
+    owner: psycopg.Connection[TupleRow],
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    sign_token: Sign,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="needtoknow.audit")
+    token = sign_token({"preferred_username": "kaminski-v", "groups": []})
+
+    _ask_as_kaminski(token_settings, token_signing_key, token)
+
+    lines = _audit_lines(caplog)
+    assert len(lines) == 1
+    assert ASK["question"] not in lines[0]
+    assert token not in lines[0]
+    line = json.loads(lines[0])
+    assert set(line) == {
+        "time",
+        "user",
+        "client",
+        "entry",
+        "text_chars",
+        "text_sha256",
+        "text",
+        "documents",
+        "sql",
+        "withheld",
+        "refused",
+        "exhausted",
+        "input_tokens",
+        "output_tokens",
+        "cost_usd",
+        "latency_ms",
+    }
+    question = ASK["question"]
+    assert line["user"] == "kaminski-v"
+    assert line["client"] == token_settings.client_id
+    assert line["entry"] == "ask"
+    assert line["text_chars"] == len(question)
+    assert line["text_sha256"] == hashlib.sha256(question.encode()).hexdigest()
+    assert line["text"] is None
+    assert line["documents"] == [TIGER_TEAM]
+    assert line["sql"] == []
+    assert line["withheld"] == 0
+    assert line["refused"] is False
+    assert line["exhausted"] is False
+    assert line["input_tokens"] == 2000
+    assert line["output_tokens"] == 200
+    assert line["cost_usd"] == HAIKU.cost(2000, 200)
+    assert line["latency_ms"] >= 0
+
+
+def test_the_audit_line_holds_the_question_when_the_setting_asks(
+    owner: psycopg.Connection[TupleRow],
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    sign_token: Sign,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="needtoknow.audit")
+    with_text = token_settings.model_copy(update={"audit_text": True})
+    token = sign_token({"preferred_username": "kaminski-v", "groups": []})
+
+    _ask_as_kaminski(with_text, token_signing_key, token)
+
+    lines = _audit_lines(caplog)
+    assert len(lines) == 1
+    assert json.loads(lines[0])["text"] == ASK["question"]
+
+
+@pytest.mark.keycloak
+def test_ready_when_the_database_and_the_keys_answer(client: TestClient) -> None:
+    response = client.get("/ready")
+    assert response.status_code == 200
+    assert response.json() == {"database": "ok", "signing_keys": "ok"}
+
+
+def test_not_ready_with_the_database_down(
+    owner: psycopg.Connection[TupleRow],
+    unreachable_database: None,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+) -> None:
+    with TestClient(create_app(token_settings, token_signing_key, scripted())) as down_client:
+        response = down_client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json()["database"] == "unreachable"
+
+
+def test_not_ready_when_the_keys_cannot_be_fetched(
+    owner: psycopg.Connection[TupleRow],
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+) -> None:
+    no_keys = token_settings.model_copy(update={"jwks_url": "http://127.0.0.1:1/certs"})
+
+    with TestClient(create_app(no_keys, token_signing_key, scripted())) as down_client:
+        response = down_client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"database": "ok", "signing_keys": "unreachable"}

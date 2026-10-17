@@ -78,6 +78,16 @@ services:
       NEEDTOKNOW_SCREEN: ${NEEDTOKNOW_SCREEN:-true}
     ports:
       - "127.0.0.1:8000:8000"
+    # Ready once the database answers as the app role and the login server's keys can be fetched.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=12)
+      interval: 5s
+      timeout: 15s
+      retries: 30
     depends_on:
       keycloak:
         condition: service_healthy

@@ -6,6 +6,7 @@
 # signs the employee in; it accepts only tokens whose audience is its own URL (RFC 8707).
 # Run locally: PYTHONPATH=src .venv/bin/python -m needtoknow.mcp_server
 
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Annotated
@@ -20,6 +21,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import AnyHttpUrl, Field
 
 from needtoknow import data, db, retrieval
+from needtoknow.audit import Audit, log_to_stdout
 from needtoknow.auth import AuthError, Identity, SigningKeyLookup, authenticate, jwks_signing_key
 from needtoknow.config import Settings, load_settings
 from needtoknow.exposure import check_exposure
@@ -78,6 +80,7 @@ def create_server(
     check_exposure(settings)
     pool = db.app_pool(settings, settings.pool_size)
     quota = Quota(settings.requests_per_minute)
+    audit = Audit(settings.audit_text)
 
     def employee() -> EmployeeToken:
         token = get_access_token()
@@ -100,41 +103,61 @@ def create_server(
 
     @server.tool(description="Search the company documents the signed-in employee may read.")
     def search_documents(query: Input, k: int = 5) -> list[retrieval.Hit]:
+        started = time.monotonic()
         token = employee()
         with _reachable(), pool.connection() as connection:
             hits = retrieval.search(connection, token.identity.principals, query, k)
-        if screen is None:
-            return hits
-        try:
-            flags = screen.flagged([hit.text for hit in hits])
-        except JevError:
-            raise ToolError(SCREEN_DOWN) from None
-        return [hit for hit, flag in zip(hits, flags, strict=True) if not flag]
+        kept = hits
+        if screen is not None:
+            try:
+                flags = screen.flagged([hit.text for hit in hits])
+            except JevError:
+                raise ToolError(SCREEN_DOWN) from None
+            kept = [hit for hit, flag in zip(hits, flags, strict=True) if not flag]
+        documents = [hit.doc_id for hit in kept]
+        withheld = len(hits) - len(kept)
+        audit.served(
+            "mcp:search_documents", token.identity, query, started, documents, withheld=withheld
+        )
+        return kept
 
     @server.tool(
         description="List the schemas of the company data, or one schema's tables and columns."
     )
     def describe_data(schema: Input | None = None) -> str:
-        employee()
+        started = time.monotonic()
+        token = employee()
         with _reachable(), pool.connection() as connection:
             text = data.describe_data(connection, schema)
-        return shown(screen, text, "The data description")[0]
+        visible, was_withheld = shown(screen, text, "The data description")
+        withheld = int(was_withheld)
+        audit.served("mcp:describe_data", token.identity, schema or "", started, withheld=withheld)
+        return visible
 
     @server.tool(
         description="Run one read-only SQL query as the signed-in employee and return the rows."
     )
     def query_data(sql: Input) -> str:
+        started = time.monotonic()
         token = employee()
         with _reachable(), pool.connection() as connection:
             result = data.query_data(connection, token.identity.principals, sql)
         if result.failed:
-            raise ToolError(shown(screen, result.text, "The query error")[0])
-        return shown_rows(screen, result)[0]
+            error, was_withheld = shown(screen, result.text, "The query error")
+            withheld = int(was_withheld)
+            audit.served(
+                "mcp:query_data", token.identity, sql, started, sql=[sql], withheld=withheld
+            )
+            raise ToolError(error)
+        rows, count = shown_rows(screen, result)
+        audit.served("mcp:query_data", token.identity, sql, started, sql=[sql], withheld=count)
+        return rows
 
     return server
 
 
 def main() -> None:
+    log_to_stdout()
     settings = load_settings()
     server = create_server(settings, jwks_signing_key(settings), screen_from_settings(settings))
     server.run("streamable-http", host=settings.mcp_host, port=settings.mcp_port)

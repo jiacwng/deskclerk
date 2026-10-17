@@ -3,20 +3,24 @@
 # Run locally: docker compose up -d --wait, load the data with needtoknow.ingest, then
 # .venv/bin/uvicorn --app-dir src --factory needtoknow.api:create_default_app
 
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from importlib.resources import files
 from typing import Annotated
 
+import jwt
 import psycopg
 from fastapi import Depends, FastAPI, HTTPException, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, ConfigDict, Field
 
 from needtoknow import agent, db, retrieval
+from needtoknow.audit import Audit, log_to_stdout
 from needtoknow.auth import (
+    JWKS_TIMEOUT_SECONDS,
     AuthError,
     AuthUnavailable,
     Identity,
@@ -30,6 +34,8 @@ from needtoknow.exposure import check_exposure
 from needtoknow.providers import BudgetExceeded, Spending, chat_model, price_of
 from needtoknow.quota import Quota
 from needtoknow.screen import Screen, screen_from_settings
+
+READY_TIMEOUT_SECONDS = 5
 
 _bearer = HTTPBearer(auto_error=False)
 _CHAT_PAGE = files("needtoknow").joinpath("static/chat.html").read_text(encoding="utf-8")
@@ -71,6 +77,9 @@ def create_app(
     check_exposure(settings)
     pool = db.app_pool(settings, settings.pool_size)
     quota = Quota(settings.requests_per_minute)
+    audit = Audit(settings.audit_text)
+    # The key set is cached for five minutes, so a readiness probe rarely calls the login server.
+    signing_keys = jwt.PyJWKClient(settings.jwks_url, timeout=JWKS_TIMEOUT_SECONDS)
 
     # The first query would otherwise wait several seconds for the embedding model to load.
     @asynccontextmanager
@@ -109,6 +118,22 @@ def create_app(
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    @api.get("/ready")
+    def ready() -> JSONResponse:
+        checks = {"database": "ok", "signing_keys": "ok"}
+        try:
+            with pool.connection(timeout=READY_TIMEOUT_SECONDS) as connection:
+                connection.execute("SELECT 1")
+        except psycopg.OperationalError:
+            checks["database"] = "unreachable"
+        try:
+            signing_keys.get_jwk_set()
+        except jwt.PyJWTError:
+            checks["signing_keys"] = "unreachable"
+        ready = all(check == "ok" for check in checks.values())
+        code = status.HTTP_200_OK if ready else status.HTTP_503_SERVICE_UNAVAILABLE
+        return JSONResponse(checks, status_code=code)
+
     @api.get("/", response_class=HTMLResponse)
     def chat_page() -> str:
         return _CHAT_PAGE
@@ -124,14 +149,18 @@ def create_app(
     def search(
         request: SearchRequest, identity: Annotated[Identity, Depends(current_identity)]
     ) -> SearchResponse:
+        started = time.monotonic()
         with pool.connection() as connection:
             hits = retrieval.search(connection, identity.principals, request.query, request.k)
+        documents = [hit.doc_id for hit in hits]
+        audit.served("search", identity, request.query, started, documents=documents)
         return SearchResponse(user=identity.user_id, results=hits)
 
     @api.post("/ask")
     def ask(
         request: AskRequest, identity: Annotated[Identity, Depends(current_identity)]
     ) -> AskResponse:
+        started = time.monotonic()
         try:
             answer = agent.ask(
                 request.question, pool, identity.principals, model, spending, screen=screen
@@ -146,6 +175,7 @@ def create_app(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="the database cannot be reached",
             ) from None
+        audit.answered(identity, request.question, answer, started)
         return AskResponse(
             user=identity.user_id,
             answer=answer.text,
@@ -159,6 +189,7 @@ def create_app(
 
 
 def create_default_app() -> FastAPI:
+    log_to_stdout()
     settings = load_settings()
     screen = screen_from_settings(settings)
     return create_app(settings, jwks_signing_key(settings), chat_model(settings), screen)
