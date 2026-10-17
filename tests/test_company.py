@@ -11,7 +11,7 @@ import pytest
 from psycopg.rows import TupleRow
 
 from needtoknow.auth import EVERYONE
-from needtoknow.company import CompanyError, load_documents, read_documents
+from needtoknow.company import ID_PREFIX, CompanyError, Loaded, load_documents, read_documents
 from needtoknow.retrieval import open_document, search
 
 Connection = psycopg.Connection[TupleRow]
@@ -41,6 +41,10 @@ def _write(path: Path, *entries: dict[str, object]) -> Path:
     return path
 
 
+def _load(owner: Connection, path: Path, delete_missing: bool) -> Loaded:
+    return load_documents(owner, read_documents(path), ID_PREFIX, delete_missing)
+
+
 def _found(app: Connection, principal: str) -> tuple[list[str], tuple[str, str] | None]:
     hits = search(app, [principal], QUESTION, 5)
     return [hit.doc_id for hit in hits], open_document(app, [principal], "company-office-move")
@@ -49,14 +53,12 @@ def _found(app: Connection, principal: str) -> tuple[list[str], tuple[str, str] 
 def test_a_reader_taken_off_a_document_no_longer_finds_it(
     owner_clean: Connection, app: Connection, tmp_path: Path
 ) -> None:
-    load_documents(owner_clean, _write(tmp_path / "documents.jsonl", MOVE), delete_missing=False)
+    _load(owner_clean, _write(tmp_path / "documents.jsonl", MOVE), delete_missing=False)
 
     assert _found(app, ALICE) == (["company-office-move"], (MOVE["title"], MOVE["body"]))
 
     revoked = MOVE | {"users": ["company-test-bob"]}
-    loaded = load_documents(
-        owner_clean, _write(tmp_path / "documents.jsonl", revoked), delete_missing=False
-    )
+    loaded = _load(owner_clean, _write(tmp_path / "documents.jsonl", revoked), delete_missing=False)
 
     assert (loaded.written, loaded.regranted) == (0, 1)
     assert _found(app, ALICE) == ([], None)
@@ -67,11 +69,11 @@ def test_a_changed_body_is_split_and_embedded_again(
     owner_clean: Connection, tmp_path: Path
 ) -> None:
     path = tmp_path / "documents.jsonl"
-    load_documents(owner_clean, _write(path, MOVE), delete_missing=False)
+    _load(owner_clean, _write(path, MOVE), delete_missing=False)
     edited = MOVE | {"body": "The move is postponed to June."}
 
-    loaded = load_documents(owner_clean, _write(path, edited), delete_missing=False)
-    again = load_documents(owner_clean, path, delete_missing=False)
+    loaded = _load(owner_clean, _write(path, edited), delete_missing=False)
+    again = _load(owner_clean, path, delete_missing=False)
 
     texts = owner_clean.execute(
         "SELECT text FROM chunks WHERE doc_id = 'company-office-move'"
@@ -86,10 +88,10 @@ def test_documents_missing_from_the_file_are_deleted_only_when_asked(
 ) -> None:
     path = tmp_path / "documents.jsonl"
     other = MOVE | {"id": "parking", "title": "Parking", "body": "Parking is on level two."}
-    load_documents(owner_clean, _write(path, MOVE, other), delete_missing=False)
+    _load(owner_clean, _write(path, MOVE, other), delete_missing=False)
 
-    kept = load_documents(owner_clean, _write(path, MOVE), delete_missing=False)
-    deleted = load_documents(owner_clean, path, delete_missing=True)
+    kept = _load(owner_clean, _write(path, MOVE), delete_missing=False)
+    deleted = _load(owner_clean, path, delete_missing=True)
 
     ids = owner_clean.execute(
         "SELECT id FROM documents WHERE starts_with(id, 'company-') ORDER BY id"

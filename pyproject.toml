@@ -31,6 +31,7 @@ dependencies = [
 eval = ["scipy>=1.18", "thefuzz>=0.22", "pyarrow>=25.0"]
 openai = ["langchain-openai>=1.7"]
 ollama = ["langchain-ollama>=1.1"]
+files = ["markitdown[pdf,docx,pptx,xlsx]>=0.1.8"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -57,10 +58,12 @@ files = ["src", "tests"]
 mypy_path = "src"
 strict = true
 plugins = ["pydantic.mypy"]
+# markitdown's Word, PowerPoint and Excel converters leave __init__ unannotated
+untyped_calls_exclude = ["markitdown"]
 
 [[tool.mypy.overrides]]
-# thefuzz and pyarrow ship no type information
-module = ["thefuzz", "pyarrow", "pyarrow.*"]
+# thefuzz, pyarrow and openpyxl ship no type information
+module = ["thefuzz", "pyarrow", "pyarrow.*", "openpyxl"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
