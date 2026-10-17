@@ -1,14 +1,15 @@
 # Loads the documents and data. `python -m needtoknow.ingest enron <maildir>` loads the Enron
 # mailboxes, `python -m needtoknow.ingest bird <minidev>` the BIRD Mini-Dev databases and
-# `python -m needtoknow.ingest documents <documents.jsonl>` a company's own documents; each creates
-# the tables on first use and keeps what the others loaded.
+# `python -m needtoknow.ingest documents <documents.jsonl>` a company's own documents and
+# `python -m needtoknow.ingest files <folder> --access <access.jsonl>` a folder of its files;
+# each creates the tables on first use and keeps what the others loaded.
 
 import argparse
 import logging
 from pathlib import Path
 
 from needtoknow.bird import load_bird
-from needtoknow.company import load_documents
+from needtoknow.company import ID_PREFIX, Loaded, load_documents, read_documents
 from needtoknow.config import load_provision_settings, load_settings
 from needtoknow.enron import MAX_FILE_BYTES, load_enron
 from needtoknow.provision import connect_admin, connect_owner, create_schema, prepare_database
@@ -30,6 +31,21 @@ def main() -> None:
         "--delete-missing",
         action="store_true",
         help="delete the loaded documents this file no longer lists",
+    )
+    files = sources.add_parser(
+        "files", help="a folder of PDF, Office, HTML, Markdown and text files"
+    )
+    files.add_argument("folder", type=Path)
+    files.add_argument(
+        "--access",
+        type=Path,
+        required=True,
+        help="who may read which files, one JSON object per line with a path pattern",
+    )
+    files.add_argument(
+        "--delete-missing",
+        action="store_true",
+        help="delete the loaded files this folder no longer holds",
     )
     parser.add_argument(
         "--evaluation",
@@ -55,11 +71,19 @@ def main() -> None:
                 f"bytes, wrote {emails.emails} new emails and {emails.chunks} chunks"
             )
         elif args.source == "documents":
-            company = load_documents(owner, args.path, args.delete_missing)
+            company = load_documents(
+                owner, read_documents(args.path), ID_PREFIX, args.delete_missing
+            )
+            print(_loaded(company))
+        elif args.source == "files":
+            # markitdown comes with the files extra, so only this source needs it installed.
+            from needtoknow.files import FILE_PREFIX, read_files
+
+            found = read_files(args.folder, args.access, settings.max_file_bytes)
+            company = load_documents(owner, found.documents, FILE_PREFIX, args.delete_missing)
             print(
-                f"read {company.documents} documents, wrote {company.written} new or changed "
-                f"with {company.chunks} chunks, changed the readers of {company.regranted}, "
-                f"deleted {company.deleted}"
+                f"skipped {found.unsupported} files of other types and {found.oversized} over "
+                f"{settings.max_file_bytes} bytes, {_loaded(company)}"
             )
         else:
             loaded = load_bird(owner, args.minidev)
@@ -67,6 +91,14 @@ def main() -> None:
                 f"loaded {loaded.tables} tables with {loaded.rows} rows, "
                 f"{loaded.comments} column comments and {loaded.documents} description documents"
             )
+
+
+def _loaded(company: Loaded) -> str:
+    return (
+        f"read {company.documents} documents, wrote {company.written} new or changed "
+        f"with {company.chunks} chunks, changed the readers of {company.regranted}, "
+        f"deleted {company.deleted}"
+    )
 
 
 def _positive(value: str) -> int:

@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     app_password: str = "needtoknow_app"
     model_cache: Path = Path("~/.cache/needtoknow/models")
     embed_threads: int = DEFAULT_EMBED_THREADS
+    max_file_bytes: int = 20 * 1024 * 1024
     issuer: str = "http://localhost:8080/realms/needtoknow"
     jwks_url: str
     client_id: str = "needtoknow-api"
