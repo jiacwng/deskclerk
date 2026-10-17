@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     mcp_host: str = "127.0.0.1"
     mcp_port: int = 8001
     mcp_url: str = "http://127.0.0.1:8001/mcp"
-    screen: bool = True
+    screen: bool = False
     audit_text: bool = False
     audit_key: SecretStr | None = None
     requests_per_minute: int = 20

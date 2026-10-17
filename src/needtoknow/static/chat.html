@@ -6,12 +6,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>needtoknow</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  body { font-family: system-ui, sans-serif; max-width: 44rem; margin: 0 auto; padding: 0 1rem 3rem; color: #222; line-height: 1.5; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 0; margin-bottom: 1.5rem; border-bottom: 1px solid #ddd; }
+  h1 { margin: 0; font-size: 1.5rem; }
+  #account { display: flex; align-items: center; gap: 0.75rem; }
+  #who { margin: 0; color: #555; }
   form { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
-  input { flex: 1; padding: 0.4rem; font: inherit; }
-  button { padding: 0.4rem 0.8rem; font: inherit; }
+  input { flex: 1; padding: 0.5rem; font: inherit; border: 1px solid #bbb; border-radius: 4px; }
+  button { padding: 0.5rem 0.9rem; font: inherit; border: 1px solid #bbb; border-radius: 4px; background: #fff; cursor: pointer; }
+  button:hover:not(:disabled) { background: #eee; }
+  #suggestions { display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; margin-bottom: 1rem; }
+  #suggestions p { margin: 0; color: #555; }
+  #suggestions button { text-align: left; }
   #error { color: #b00020; }
-  .reply { border-left: 4px solid #2a7; padding: 0.5rem 1rem; margin: 1rem 0; background: #f6f6f6; }
+  .reply { border-left: 4px solid #2a7; padding: 0.5rem 1rem; margin: 1rem 0; background: #f6f6f6; border-radius: 0 4px 4px 0; }
   .reply.refused { border-left-color: #b00020; }
   .question { font-weight: bold; }
   .label { color: #b00020; font-weight: bold; }
@@ -19,11 +27,17 @@
 </style>
 </head>
 <body>
-<h1>needtoknow</h1>
+<header>
+  <h1>needtoknow</h1>
+  <div id="account">
+    <p id="who" hidden></p>
+    <button id="logout" type="button" hidden>Sign out</button>
+  </div>
+</header>
 <form id="login">
   <button>Sign in</button>
 </form>
-<p id="who" hidden></p>
+<div id="suggestions" hidden></div>
 <form id="ask" hidden>
   <input name="question" placeholder="Ask a question" maxlength="2000" required>
   <button>Ask</button>
@@ -36,11 +50,14 @@
   const who = document.getElementById("who");
   const error = document.getElementById("error");
   const replies = document.getElementById("replies");
+  const logout = document.getElementById("logout");
+  const suggestions = document.getElementById("suggestions");
   // The tokens live in these variables only, so a reload signs in again. The PKCE verifier and
   // the state survive the trip to the login page in sessionStorage (RFC 7636). The access token
   // is renewed with the refresh token shortly before it expires, and once more on a 401.
   let token = null;
   let refreshToken = null;
+  let idToken = null;
   let refreshTimer = null;
   const REFRESH_EARLY_SECONDS = 30;
   const redirectUri = location.origin + location.pathname;
@@ -48,6 +65,7 @@
   function keep(tokens) {
     token = tokens.access_token;
     refreshToken = tokens.refresh_token ?? null;
+    idToken = tokens.id_token ?? idToken;
     clearTimeout(refreshTimer);
     if (refreshToken !== null && typeof tokens.expires_in === "number") {
       const seconds = Math.max(tokens.expires_in - REFRESH_EARLY_SECONDS, 1);
@@ -80,8 +98,52 @@
     login.hidden = yes;
     ask.hidden = !yes;
     who.hidden = !yes;
-    who.textContent = "Signed in";
+    logout.hidden = !yes;
+    suggestions.hidden = !yes;
+    who.textContent = yes ? `Signed in as ${usernameOf(idToken)}` : "";
   }
+
+  function usernameOf(jwt) {
+    const payload = jwt.split(".")[1].replaceAll("-", "+").replaceAll("_", "/");
+    const bytes = Uint8Array.from(atob(payload), (character) => character.charCodeAt(0));
+    const claims = JSON.parse(new TextDecoder().decode(bytes));
+    return claims.preferred_username ?? claims.sub;
+  }
+
+  const SUGGESTED_QUESTIONS = [
+    "Who in Vince Kaminski's group helps with the Wharton and Rice projects?",
+    "What is the proposal to extend the rate freeze, and which bill was it first attached to?",
+    "Why was the signing of phase II of the Lagos State project delayed?",
+  ];
+  const hint = document.createElement("p");
+  hint.textContent = "Try asking:";
+  suggestions.append(hint);
+  for (const text of SUGGESTED_QUESTIONS) {
+    const suggestion = document.createElement("button");
+    suggestion.type = "button";
+    suggestion.textContent = text;
+    suggestion.addEventListener("click", () => {
+      ask.elements.question.value = text;
+      ask.elements.question.focus();
+    });
+    suggestions.append(suggestion);
+  }
+
+  logout.addEventListener("click", async () => {
+    const hintToken = idToken;
+    forget();
+    signedIn(false);
+    const { config, endpoints } = await provider();
+    if (!endpoints.end_session_endpoint) {
+      return;
+    }
+    const query = new URLSearchParams({
+      client_id: config.client_id,
+      id_token_hint: hintToken,
+      post_logout_redirect_uri: redirectUri,
+    });
+    location.assign(`${endpoints.end_session_endpoint}?${query}`);
+  });
 
   function randomText() {
     return base64url(crypto.getRandomValues(new Uint8Array(32)));
@@ -197,10 +259,7 @@
       response = await send(question);
     }
     if (response.status === 401) {
-      token = null;
-      refreshToken = null;
-      clearTimeout(refreshTimer);
-      conversation.length = 0;
+      forget();
       signedIn(false);
       error.textContent = "login expired, sign in again";
       return;
@@ -230,7 +289,7 @@
         } else if (message.event === "token") {
           parts.answer.textContent += message.data;
         } else if (message.event === "answer") {
-          who.textContent = `Signed in as ${message.data.user}`;
+          suggestions.hidden = true;
           finish(parts, message.data);
           conversation.push({ question, answer: message.data.answer });
           ask.reset();
@@ -240,6 +299,14 @@
         }
       }
     }
+  }
+
+  function forget() {
+    token = null;
+    refreshToken = null;
+    idToken = null;
+    clearTimeout(refreshTimer);
+    conversation.length = 0;
   }
 
   function parse(block) {
@@ -298,9 +365,10 @@
     }
     if (body.citations.length > 0) {
       const list = document.createElement("ul");
-      for (const id of body.citations) {
+      for (const source of body.citations) {
         const item = document.createElement("li");
-        item.textContent = id;
+        item.textContent = source.title === "" ? source.doc_id : source.title;
+        item.title = source.doc_id;
         list.append(item);
       }
       reply.append("Sources:", list);

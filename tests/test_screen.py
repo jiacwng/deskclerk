@@ -152,9 +152,18 @@ def test_a_flagged_row_is_withheld_and_the_other_rows_are_shown(app_pool: Pool) 
     assert answer.withheld == 1
 
 
-def test_the_screen_is_required_unless_turned_off(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_screen_is_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.delenv("NEEDTOKNOW_SCREEN", raising=False)
+
+    assert screen_from_settings(load_settings()) is None
+
+
+def test_a_turned_on_screen_refuses_to_start_without_its_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.setenv("NEEDTOKNOW_SCREEN", "true")
 
     with pytest.raises(ScreenNotConfigured):
         screen_from_settings(load_settings())
-    assert screen_from_settings(load_settings().model_copy(update={"screen": False})) is None

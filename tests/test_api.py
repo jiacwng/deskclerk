@@ -38,6 +38,7 @@ Sign = Callable[[dict[str, object]], str]
 QUESTION = {"query": "Who is helping with the Wharton and Rice projects for the Tiger Team?"}
 ASK = {"question": QUESTION["query"]}
 TIGER_TEAM = "enron-770963d7e2ceeb8d22d92a1ebfaba325068dfa242524cb4a8983dc0d1165f2ab"
+TIGER_TEAM_SOURCE = {"doc_id": TIGER_TEAM, "title": "Help with the Tiger Team"}
 TURN = {"question": "Who runs the Tiger Team?", "answer": "Vince Kaminski."}
 
 
@@ -125,6 +126,23 @@ def test_chat_page_renews_the_token_before_it_ends_the_conversation(client: Test
     assert "://" not in page
     assert "src=" not in page
     assert "<link" not in page
+
+
+def test_chat_page_signs_out_at_the_provider_and_names_the_user(client: TestClient) -> None:
+    page = client.get("/").text
+    assert 'id="logout"' in page
+    assert "location.assign(`${endpoints.end_session_endpoint}?${query}`);" in page
+    assert "id_token_hint: hintToken," in page
+    assert "post_logout_redirect_uri: redirectUri," in page
+    assert 'who.textContent = yes ? `Signed in as ${usernameOf(idToken)}` : "";' in page
+
+
+def test_chat_page_offers_three_questions_and_shows_source_titles(client: TestClient) -> None:
+    page = client.get("/").text
+    block = page[page.index("const SUGGESTED_QUESTIONS = [") :]
+    assert block[: block.index("];")].count('",\n') == 3
+    assert "suggestion.textContent = text;" in page
+    assert 'item.textContent = source.title === "" ? source.doc_id : source.title;' in page
 
 
 def test_config_gives_the_page_the_issuer_and_client(
@@ -302,7 +320,7 @@ def test_a_history_at_the_caps_reaches_the_model(
             {
                 "user": "kaminski-v",
                 "answer": f"Two people in his group help [{TIGER_TEAM}].",
-                "citations": [TIGER_TEAM],
+                "citations": [TIGER_TEAM_SOURCE],
                 "refused": False,
                 "queries": [],
                 "withheld": 0,
@@ -362,7 +380,7 @@ def test_ask_after_opening_a_document_keeps_the_response_shape(
     assert response.json() == {
         "user": "kaminski-v",
         "answer": reply,
-        "citations": [TIGER_TEAM],
+        "citations": [TIGER_TEAM_SOURCE],
         "refused": False,
         "queries": [],
         "withheld": 0,
@@ -423,7 +441,7 @@ def test_the_stream_sends_tool_calls_and_tokens_then_what_ask_returns(
     assert events[2:] == [("token", text) for text in tokens] + [
         ("answer", responses["/ask"].json())
     ]
-    assert events[-1][1]["citations"] == [TIGER_TEAM]
+    assert events[-1][1]["citations"] == [TIGER_TEAM_SOURCE]
     assert len(events[-1][1]["queries"]) == 1
 
 
@@ -461,6 +479,27 @@ def test_ask_with_the_database_down_is_unavailable(
 
     assert response.status_code == 503
     assert response.json() == {"detail": "the database cannot be reached"}
+
+
+def test_without_a_model_key_search_works_and_a_question_names_the_key(
+    owner: psycopg.Connection[TupleRow],
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    sign_token: Sign,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    missing = {"detail": "ANTHROPIC_API_KEY is not set; put it in .env"}
+
+    with TestClient(create_app(token_settings, token_signing_key, None)) as keyless_client:
+        searched = keyless_client.post("/search", json=QUESTION, headers=_kean(sign_token))
+        asked = keyless_client.post("/ask", json=ASK, headers=_kean(sign_token))
+        streamed = keyless_client.post("/ask/stream", json=ASK, headers=_kean(sign_token))
+
+    assert searched.status_code == 200
+    assert asked.status_code == 503
+    assert asked.json() == missing
+    assert _events(streamed.text) == [("error", missing)]
 
 
 class _FailingModel(ScriptedModel):

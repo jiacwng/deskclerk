@@ -1,6 +1,7 @@
-# The production stack in compose.prod.yaml and its realm template: only Caddy is published,
-# Keycloak runs in production mode, every password is required from the environment, the app
-# and the MCP server read the rest of their settings from .env, the realm holds no users and no
+# The production stack in compose.prod.yaml and its realm template: only Caddy is public and
+# Keycloak's admin console is on the loopback address, Keycloak runs in production mode, every
+# password is required from the environment, the app and the MCP server get only the settings
+# they read and none of the admin, owner or bootstrap passwords, the realm holds no users and no
 # password client, and the addresses the app checks tokens against are the ones Keycloak stamps
 # into them.
 
@@ -27,10 +28,12 @@ def _environment(service: str) -> dict[str, str]:
     return environment
 
 
-def test_only_caddy_is_published() -> None:
+def test_only_caddy_is_public_and_keycloak_is_on_the_loopback_address() -> None:
     published = [name for name, service in SERVICES.items() if "ports" in service]
-    assert published == ["caddy"]
+    assert published == ["caddy", "keycloak"]
     assert SERVICES["caddy"]["ports"] == ["80:80", "443:443", "443:443/udp"]
+    assert SERVICES["keycloak"]["ports"] == ["127.0.0.1:8080:8080"]
+    assert _environment("keycloak")["KC_HOSTNAME_ADMIN"] == "http://localhost:8080/auth"
 
 
 def test_keycloak_runs_in_production_mode_behind_the_proxy() -> None:
@@ -58,11 +61,22 @@ def test_every_password_is_required_from_the_environment() -> None:
     assert passwords == 9
 
 
-def test_the_app_and_the_mcp_server_read_their_settings_from_the_env_file() -> None:
+def test_the_app_and_the_mcp_server_get_no_admin_owner_or_bootstrap_password() -> None:
+    forbidden = ("NEEDTOKNOW_ADMIN_PASSWORD", "NEEDTOKNOW_OWNER_PASSWORD", "KC_")
     for name in ("app", "mcp"):
-        assert SERVICES[name]["env_file"] == ".env"
+        assert "env_file" not in SERVICES[name]
+        for variable in _environment(name):
+            assert not variable.startswith(forbidden)
         public = _environment(name)["NEEDTOKNOW_PUBLIC_RELATIONS"]
         assert public == "${NEEDTOKNOW_PUBLIC_RELATIONS:-}"
+    assert "ANTHROPIC_API_KEY" in _environment("app")
+    assert "ANTHROPIC_API_KEY" not in _environment("mcp")
+
+
+def test_caddy_serves_no_keycloak_admin_path() -> None:
+    caddyfile = (ROOT / "deploy" / "Caddyfile").read_text()
+    assert "@keycloak path /auth/realms/needtoknow/* /auth/resources/*" in caddyfile
+    assert "handle /auth/* {\n\t\trespond 404\n\t}" in caddyfile
 
 
 def test_the_app_and_the_mcp_server_trust_the_tokens_keycloak_issues() -> None:

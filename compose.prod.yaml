@@ -4,7 +4,9 @@
 # the only public entry and gets a TLS certificate for NEEDTOKNOW_DOMAIN; it serves the chat
 # page and API at /, the MCP server at /mcp and the Keycloak login at /auth. Every password
 # comes from the environment and the stack refuses to start without one. The app and the MCP
-# server also read .env, so any other NEEDTOKNOW_* setting and the provider keys go there.
+# server get only the settings they read, passed through from .env, so the admin and owner
+# passwords and the Keycloak bootstrap password never reach them. Keycloak's admin console is
+# published on 127.0.0.1:8080 for an SSH tunnel and is not served by Caddy.
 services:
   caddy:
     image: caddy:2.11.7
@@ -50,10 +52,13 @@ services:
       KC_DB_USERNAME: keycloak
       KC_DB_PASSWORD: ${KC_DB_PASSWORD}
       KC_HOSTNAME: https://${NEEDTOKNOW_DOMAIN}/auth
+      KC_HOSTNAME_ADMIN: http://localhost:8080/auth
       KC_HTTP_RELATIVE_PATH: /auth
       KC_HTTP_ENABLED: "true"
       KC_PROXY_HEADERS: xforwarded
       KC_HEALTH_ENABLED: "true"
+    ports:
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./deploy/realm:/opt/keycloak/data/import:ro
     healthcheck:
@@ -93,7 +98,6 @@ services:
 
   app:
     build: .
-    env_file: .env
     environment:
       NEEDTOKNOW_DB_HOST: db
       NEEDTOKNOW_APP_PASSWORD: ${NEEDTOKNOW_APP_PASSWORD}
@@ -101,6 +105,24 @@ services:
       NEEDTOKNOW_JWKS_URL: http://keycloak:8080/auth/realms/needtoknow/protocol/openid-connect/certs
       NEEDTOKNOW_MCP_URL: https://${NEEDTOKNOW_DOMAIN}/mcp
       NEEDTOKNOW_PUBLIC_RELATIONS: ${NEEDTOKNOW_PUBLIC_RELATIONS:-}
+      NEEDTOKNOW_MODEL:
+      NEEDTOKNOW_PRICE_INPUT:
+      NEEDTOKNOW_PRICE_OUTPUT:
+      NEEDTOKNOW_BUDGET_USD:
+      NEEDTOKNOW_SCREEN:
+      NEEDTOKNOW_AUDIT_TEXT:
+      NEEDTOKNOW_AUDIT_KEY:
+      NEEDTOKNOW_REQUESTS_PER_MINUTE:
+      NEEDTOKNOW_POOL_SIZE:
+      NEEDTOKNOW_USER_CLAIM:
+      NEEDTOKNOW_GROUPS_CLAIM:
+      NEEDTOKNOW_GRAPH_TENANT_ID:
+      NEEDTOKNOW_GRAPH_CLIENT_ID:
+      NEEDTOKNOW_GRAPH_CLIENT_SECRET:
+      ANTHROPIC_API_KEY:
+      OPENAI_API_KEY:
+      OLLAMA_HOST:
+      TYPESAFE_API_KEY:
     healthcheck:
       test:
         - CMD
@@ -118,7 +140,6 @@ services:
   mcp:
     build: .
     command: ["python", "-m", "needtoknow.mcp_server"]
-    env_file: .env
     environment:
       NEEDTOKNOW_DB_HOST: db
       NEEDTOKNOW_APP_PASSWORD: ${NEEDTOKNOW_APP_PASSWORD}
@@ -127,6 +148,15 @@ services:
       NEEDTOKNOW_MCP_URL: https://${NEEDTOKNOW_DOMAIN}/mcp
       NEEDTOKNOW_MCP_HOST: 0.0.0.0
       NEEDTOKNOW_PUBLIC_RELATIONS: ${NEEDTOKNOW_PUBLIC_RELATIONS:-}
+      NEEDTOKNOW_BUDGET_USD:
+      NEEDTOKNOW_SCREEN:
+      NEEDTOKNOW_AUDIT_TEXT:
+      NEEDTOKNOW_AUDIT_KEY:
+      NEEDTOKNOW_REQUESTS_PER_MINUTE:
+      NEEDTOKNOW_POOL_SIZE:
+      NEEDTOKNOW_USER_CLAIM:
+      NEEDTOKNOW_GROUPS_CLAIM:
+      TYPESAFE_API_KEY:
     restart: unless-stopped
     depends_on:
       keycloak:

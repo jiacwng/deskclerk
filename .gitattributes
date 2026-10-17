@@ -1,1 +1,2 @@
 tests/data/** -text
+*.sh text eol=lf

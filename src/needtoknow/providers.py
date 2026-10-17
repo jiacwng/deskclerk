@@ -3,6 +3,7 @@
 # token usage in its response and counted against a spending cap that holds for the whole
 # process.
 
+import os
 import threading
 from dataclasses import dataclass
 from typing import Any
@@ -15,6 +16,7 @@ from needtoknow.config import Settings
 
 MAX_TOKENS = 4096
 EXTRAS = frozenset({"openai", "ollama"})
+KEY_VARIABLES = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 
 
 class BudgetExceeded(RuntimeError):
@@ -22,6 +24,10 @@ class BudgetExceeded(RuntimeError):
 
 
 class MissingProvider(ImportError):
+    pass
+
+
+class MissingApiKey(RuntimeError):
     pass
 
 
@@ -105,9 +111,20 @@ def provider_errors() -> tuple[type[Exception], ...]:
     return (anthropic.APIError, openai.APIError)
 
 
+def missing_api_key(settings: Settings) -> str | None:
+    provider = settings.model.partition(":")[0]
+    variable = KEY_VARIABLES.get(provider)
+    if variable is not None and not os.environ.get(variable):
+        return f"{variable} is not set; put it in .env"
+    return None
+
+
 def chat_model(settings: Settings) -> BaseChatModel:
     price_of(settings)
     provider, _, name = settings.model.partition(":")
+    missing = missing_api_key(settings)
+    if missing is not None:
+        raise MissingApiKey(missing)
     try:
         model: BaseChatModel = init_chat_model(name, model_provider=provider, **_options(provider))
     except ImportError as error:

@@ -95,8 +95,8 @@ def shown_rows(screen: Screen | None, result: QueryResult) -> tuple[str, int]:
     return "\n".join(lines), withheld
 
 
-# The screen is on unless the deployment turns it off by name, so a missing key cannot switch it
-# off without anyone noticing.
+# The screen is off unless the deployment turns it on by name, and then a missing key refuses to
+# start instead of switching it off.
 def screen_from_settings(settings: Settings) -> Screen | None:
     if not settings.screen:
         return None

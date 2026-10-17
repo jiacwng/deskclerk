@@ -25,6 +25,8 @@ LIMIT %(limit)s
 
 _DOCUMENT = "SELECT title, body FROM documents WHERE id = %s"
 
+_TITLES = "SELECT id, title FROM documents WHERE id = ANY(%s)"
+
 _PERMITTED = """
 WHERE EXISTS (
     SELECT 1 FROM doc_access a
@@ -56,6 +58,14 @@ def open_document(
     with as_user(app, principals):
         row = app.execute(_DOCUMENT, [doc_id]).fetchone()
     return None if row is None else (row[0], row[1])
+
+
+def document_titles(
+    app: psycopg.Connection[Any], principals: Iterable[str], doc_ids: Iterable[str]
+) -> dict[str, str]:
+    with as_user(app, principals):
+        rows = app.execute(_TITLES, [list(doc_ids)]).fetchall()
+    return {row[0]: row[1] for row in rows}
 
 
 def check_k(k: int) -> None:
