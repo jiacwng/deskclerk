@@ -1,12 +1,14 @@
-# Loads the public data. `python -m needtoknow.ingest enron <maildir>` loads the Enron mailboxes
-# and `python -m needtoknow.ingest bird <minidev>` the BIRD Mini-Dev databases; each creates the
-# tables on first use and keeps what the other loaded.
+# Loads the documents and data. `python -m needtoknow.ingest enron <maildir>` loads the Enron
+# mailboxes, `python -m needtoknow.ingest bird <minidev>` the BIRD Mini-Dev databases and
+# `python -m needtoknow.ingest documents <documents.jsonl>` a company's own documents; each creates
+# the tables on first use and keeps what the others loaded.
 
 import argparse
 import logging
 from pathlib import Path
 
 from needtoknow.bird import load_bird
+from needtoknow.company import load_documents
 from needtoknow.config import load_provision_settings, load_settings
 from needtoknow.enron import MAX_FILE_BYTES, load_enron
 from needtoknow.provision import connect_admin, connect_owner, create_schema, prepare_database
@@ -20,6 +22,15 @@ def main() -> None:
     enron.add_argument("--limit", type=_positive, help="read only the first N message files")
     bird = sources.add_parser("bird", help="the BIRD Mini-Dev databases and their descriptions")
     bird.add_argument("minidev", type=Path)
+    documents = sources.add_parser(
+        "documents", help="a company's documents, one JSON object per line"
+    )
+    documents.add_argument("path", type=Path)
+    documents.add_argument(
+        "--delete-missing",
+        action="store_true",
+        help="delete the loaded documents this file no longer lists",
+    )
     parser.add_argument(
         "--evaluation",
         action="store_true",
@@ -42,6 +53,13 @@ def main() -> None:
             print(
                 f"read {emails.files} files, skipped {emails.skipped} over {MAX_FILE_BYTES} "
                 f"bytes, wrote {emails.emails} new emails and {emails.chunks} chunks"
+            )
+        elif args.source == "documents":
+            company = load_documents(owner, args.path, args.delete_missing)
+            print(
+                f"read {company.documents} documents, wrote {company.written} new or changed "
+                f"with {company.chunks} chunks, changed the readers of {company.regranted}, "
+                f"deleted {company.deleted}"
             )
         else:
             loaded = load_bird(owner, args.minidev)

@@ -6,10 +6,10 @@
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # The signing keys sit under the issuer, except where the API reaches the login server by a
 # different address than the one stamped into the tokens, as it does inside a container.
@@ -18,6 +18,24 @@ JWKS_PATH = "/protocol/openid-connect/certs"
 # Half the cores embeds as fast as all of them on a mixed corpus and leaves the machine usable.
 # A bulk load that owns the machine raises it.
 DEFAULT_EMBED_THREADS = max(1, (os.cpu_count() or 2) // 2)
+
+# The schemas and relations every employee may read in full, so the startup check lets the app
+# role read them without row-level security: the nine BIRD databases that carry no policy and
+# financial.district, the list of districts.
+PUBLIC_RELATIONS = frozenset(
+    {
+        "card_games",
+        "codebase_community",
+        "debit_card_specializing",
+        "european_football_2",
+        "financial.district",
+        "formula_1",
+        "student_club",
+        "superhero",
+        "thrombosis_prediction",
+        "toxicology",
+    }
+)
 
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "db"})
 
@@ -46,6 +64,7 @@ class Settings(BaseSettings):
     screen: bool = True
     requests_per_minute: int = 20
     pool_size: int = 10
+    public_relations: Annotated[frozenset[str], NoDecode] = PUBLIC_RELATIONS
 
     @model_validator(mode="before")
     @classmethod
@@ -79,6 +98,19 @@ class Settings(BaseSettings):
                 f"not {value!r}"
             )
         return value
+
+    @field_validator("public_relations", mode="before")
+    @classmethod
+    def _comma_list(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        names = frozenset(name.strip() for name in value.split(",") if name.strip())
+        for name in names:
+            if name.count(".") > 1:
+                raise ValueError(
+                    f"NEEDTOKNOW_PUBLIC_RELATIONS takes schema or schema.relation, not {name!r}"
+                )
+        return names
 
     @field_validator("model_cache")
     @classmethod
