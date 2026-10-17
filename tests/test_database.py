@@ -74,6 +74,7 @@ def test_every_table_has_row_level_security(owner: Connection) -> None:
         ("chunks", OWNER_ROLE, True),
         ("doc_access", OWNER_ROLE, True),
         ("documents", OWNER_ROLE, True),
+        ("schema_info", OWNER_ROLE, True),
     ]
 
 

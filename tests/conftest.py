@@ -45,7 +45,7 @@ def owner() -> Iterator[psycopg.Connection[TupleRow]]:
     with admin:
         prepare_database(admin, settings, provision, evaluation=True)
     with connect_owner(settings, provision) as connection:
-        create_schema(connection)
+        create_schema(connection, replace=True)
         load_enron(connection, MAILDIR)
         load_bird(connection, MINIDEV)
         yield connection

@@ -14,6 +14,7 @@ from psycopg.rows import TupleRow
 
 from needtoknow.config import ProvisionSettings, Settings
 from needtoknow.db import APP_ROLE, READER_ROLE, connect
+from needtoknow.schema import SchemaMismatch, built_with, current
 
 OWNER_ROLE = "needtoknow_owner"
 SCHEMA = files("needtoknow").joinpath("sql/schema.sql")
@@ -145,6 +146,32 @@ def prepare_database(
     )
 
 
-def create_schema(owner: psycopg.Connection[Any]) -> None:
+# The tables are created on first use and kept while their version matches the code's. Older
+# tables that hold documents are dropped only when replace says so.
+def create_schema(owner: psycopg.Connection[Any], replace: bool) -> None:
+    built = built_with(owner)
+    code = current()
+    if not replace:
+        if built is not None and built.version == code.version:
+            return
+        stored = _stored_documents(owner)
+        if stored:
+            found = "no version" if built is None else f"schema version {built.version}"
+            raise SchemaMismatch(
+                f"the database holds {stored} documents in tables with {found}, and this code "
+                f"needs schema version {code.version}; --replace-schema drops them and creates "
+                "the tables again"
+            )
     with owner.transaction():
         owner.execute(SCHEMA.read_text(encoding="utf-8"))
+        owner.execute(
+            "INSERT INTO schema_info (version, embedding_model, chunk_chars) VALUES (%s, %s, %s)",
+            [code.version, code.embedding_model, code.chunk_chars],
+        )
+
+
+def _stored_documents(owner: psycopg.Connection[Any]) -> int:
+    if owner.execute("SELECT to_regclass('public.documents')").fetchone() == (None,):
+        return 0
+    row = owner.execute("SELECT count(*) FROM documents").fetchone()
+    return 0 if row is None else int(row[0])

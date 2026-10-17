@@ -91,7 +91,10 @@ def test_the_loaded_data_passes_with_the_shipped_public_list(app: Connection) ->
 
 
 def test_the_public_list_is_what_the_bird_data_needs(app: Connection) -> None:
-    assert find_exposures(app, set()) == ["financial.district: row-level security is off"]
+    assert find_exposures(app, set()) == [
+        "financial.district: row-level security is off",
+        "public.schema_info: a policy lets the app role read every row",
+    ]
 
 
 def test_a_table_without_row_level_security_is_reported(app: Connection, admin: Connection) -> None:
