@@ -310,6 +310,8 @@ def results_table(summary: dict[str, Any]) -> str:
         "the email without the token.",
         "Out of steps: answers, holder and non-holder together, where the agent used every tool "
         "round without answering.",
+        "Under rls the database applies the rule, so forgetting the application's filter changes "
+        "nothing; that row shows it.",
         "Configurations where a filter keeps the email from the model ran once, because a rerun "
         "cannot change their leak counts; their holder count comes from that one run. Changed "
         "between runs: emails where any of the four outcomes differed across runs.",

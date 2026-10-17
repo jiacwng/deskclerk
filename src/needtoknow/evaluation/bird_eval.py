@@ -303,7 +303,8 @@ def results_table(summary: dict[str, Any]) -> str:
         f"Only the agent got {only_agent} questions right and only the baseline {only_baseline}. "
         f"The exact McNemar test on these paired outcomes gives p = {p_value:.3f}, so the "
         f"difference {significance} significant at the 5% level. The agent costs "
-        f"{cost_ratio:.1f} times as much as the baseline.",
+        f"{cost_ratio:.1f} times as much as the baseline. The agent is there to answer under "
+        "each employee's permissions; BIRD checks that its SQL stays as accurate as one prompt.",
         "",
         f"Agent tokens: {summary['agent']['input_tokens']:,} input and "
         f"{summary['agent']['output_tokens']:,} output. Baseline tokens: "

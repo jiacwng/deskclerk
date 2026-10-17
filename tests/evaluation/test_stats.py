@@ -15,6 +15,7 @@ def test_the_wilson_interval_of_zero_leaks_in_195() -> None:
 
 def test_a_count_is_printed_with_its_interval() -> None:
     assert with_interval(0, 195) == "0 (0.0% to 1.9%)"
+    assert with_interval(0, 254_544) == "0 (0.0% to 0.0015%)"
 
 
 def test_the_exact_mcnemar_test() -> None:

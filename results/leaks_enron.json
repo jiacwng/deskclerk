@@ -1,42 +1,42 @@
 {
-  "model": "claude-haiku-5-5",
+  "model": "anthropic:claude-haiku-5-5",
   "emails": 200,
   "repeats": 3,
-  "input_tokens": 26635320,
-  "output_tokens": 2983232,
-  "cost_usd": 4.155148,
+  "input_tokens": 26464109,
+  "output_tokens": 2970300,
+  "cost_usd": 4.131561,
   "configurations": [
     {
       "method": "rls",
       "filter_forgotten": false,
       "runs": 1,
       "counts": {
-        "answered": 31,
-        "judged": 143,
+        "answered": 33,
+        "judged": 148,
         "reached_model": 0,
         "in_answer": 0,
         "exhausted": 0
       },
       "changed_between_runs": null,
-      "input_tokens": 2803554,
-      "output_tokens": 213542,
-      "cost_usd": 0.387126
+      "input_tokens": 2778109,
+      "output_tokens": 213351,
+      "cost_usd": 0.384486
     },
     {
       "method": "rls",
       "filter_forgotten": true,
       "runs": 1,
       "counts": {
-        "answered": 33,
+        "answered": 34,
         "judged": 147,
         "reached_model": 0,
         "in_answer": 0,
         "exhausted": 0
       },
       "changed_between_runs": null,
-      "input_tokens": 2840626,
-      "output_tokens": 216932,
-      "cost_usd": 0.392529
+      "input_tokens": 2784811,
+      "output_tokens": 211547,
+      "cost_usd": 0.384255
     },
     {
       "method": "in_query",
@@ -50,73 +50,73 @@
         "exhausted": 0
       },
       "changed_between_runs": null,
-      "input_tokens": 2462229,
-      "output_tokens": 225081,
-      "cost_usd": 0.358763
+      "input_tokens": 2443425,
+      "output_tokens": 222915,
+      "cost_usd": 0.3558
     },
     {
       "method": "in_query",
       "filter_forgotten": true,
       "runs": 3,
       "counts": {
-        "answered": 27,
-        "judged": 132,
-        "reached_model": 85,
-        "in_answer": 26,
+        "answered": 31,
+        "judged": 134,
+        "reached_model": 84,
+        "in_answer": 23,
         "exhausted": 0
       },
-      "changed_between_runs": 29,
-      "input_tokens": 6041907,
-      "output_tokens": 851125,
-      "cost_usd": 1.029753
+      "changed_between_runs": 37,
+      "input_tokens": 6005839,
+      "output_tokens": 847267,
+      "cost_usd": 1.024217
     },
     {
       "method": "post_filter",
       "filter_forgotten": false,
       "runs": 1,
       "counts": {
-        "answered": 30,
+        "answered": 28,
         "judged": 139,
         "reached_model": 0,
         "in_answer": 0,
         "exhausted": 0
       },
       "changed_between_runs": null,
-      "input_tokens": 1447077,
-      "output_tokens": 176432,
-      "cost_usd": 0.232924
+      "input_tokens": 1462736,
+      "output_tokens": 171838,
+      "cost_usd": 0.232193
     },
     {
       "method": "post_filter",
       "filter_forgotten": true,
       "runs": 3,
       "counts": {
-        "answered": 30,
-        "judged": 133,
-        "reached_model": 83,
-        "in_answer": 24,
+        "answered": 25,
+        "judged": 132,
+        "reached_model": 81,
+        "in_answer": 21,
         "exhausted": 0
       },
-      "changed_between_runs": 36,
-      "input_tokens": 6035400,
-      "output_tokens": 842616,
-      "cost_usd": 1.024848
+      "changed_between_runs": 37,
+      "input_tokens": 6064005,
+      "output_tokens": 851294,
+      "cost_usd": 1.032048
     },
     {
       "method": "prompt_only",
       "filter_forgotten": false,
       "runs": 3,
       "counts": {
-        "answered": 25,
-        "judged": 128,
-        "reached_model": 80,
-        "in_answer": 1,
+        "answered": 21,
+        "judged": 122,
+        "reached_model": 79,
+        "in_answer": 0,
         "exhausted": 0
       },
-      "changed_between_runs": 34,
-      "input_tokens": 5004527,
-      "output_tokens": 457504,
-      "cost_usd": 0.729205
+      "changed_between_runs": 27,
+      "input_tokens": 4925184,
+      "output_tokens": 452088,
+      "cost_usd": 0.718562
     }
   ]
 }
