@@ -1,0 +1,15 @@
+{
+  "model": "anthropic:claude-haiku-5-5",
+  "questions": 200,
+  "rows_read": 200,
+  "matched": 200,
+  "correct": 124,
+  "retrieved": 125,
+  "correct_when_retrieved": 111,
+  "refused": 12,
+  "exhausted": 5,
+  "withheld": 1,
+  "input_tokens": 2056073,
+  "output_tokens": 101981,
+  "cost_usd": 0.256598
+}
