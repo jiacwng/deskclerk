@@ -63,8 +63,8 @@ plugins = ["pydantic.mypy"]
 untyped_calls_exclude = ["markitdown"]
 
 [[tool.mypy.overrides]]
-# thefuzz, pyarrow and openpyxl ship no type information
-module = ["thefuzz", "pyarrow", "pyarrow.*", "openpyxl"]
+# thefuzz, pyarrow, openpyxl and pyyaml ship no type information
+module = ["thefuzz", "pyarrow", "pyarrow.*", "openpyxl", "yaml"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

@@ -1,0 +1,25 @@
+# The public entry of compose.prod.yaml. Only the needtoknow realm and the login page's files
+# are served from Keycloak; the admin console and the master realm stay inside the network.
+{
+	email {$NEEDTOKNOW_ACME_EMAIL}
+}
+
+{$NEEDTOKNOW_DOMAIN} {
+	@keycloak path /auth/realms/needtoknow/* /auth/resources/*
+	handle @keycloak {
+		reverse_proxy keycloak:8080
+	}
+
+	@mcp path /mcp /mcp/* /.well-known/oauth-protected-resource/*
+	handle @mcp {
+		reverse_proxy mcp:8001
+	}
+
+	handle /auth/* {
+		respond 404
+	}
+
+	handle {
+		reverse_proxy app:8000
+	}
+}
