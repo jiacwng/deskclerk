@@ -118,6 +118,7 @@ def sign_token(token_settings: Settings) -> Callable[[dict[str, object]], str]:
         base: dict[str, object] = {
             "iss": token_settings.issuer,
             "aud": token_settings.audience,
+            "azp": token_settings.client_id,
             "typ": "Bearer",
             "scope": "openid profile",
             "iat": now,
