@@ -7,12 +7,19 @@ import argparse
 import logging
 import operator
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Annotated, Any, TypedDict
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    AnyMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.tools import StructuredTool
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
@@ -161,6 +168,23 @@ class Answer:
 
 
 @dataclass(frozen=True)
+class Turn:
+    question: str
+    answer: str
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    name: str
+    sql: str | None
+
+
+@dataclass(frozen=True)
+class Token:
+    text: str
+
+
+@dataclass(frozen=True)
 class _Trace:
     returned: tuple[str, ...] = ()
     query: Query | None = None
@@ -183,7 +207,65 @@ def ask(
     filter_forgotten: bool = False,
     caps: data.Caps = data.DEFAULT_CAPS,
     screen: Screen | None = None,
+    history: Sequence[Turn] = (),
 ) -> Answer:
+    tools = _tools(pool, principals, method, filter_forgotten, caps, screen)
+    graph = _build_graph(model, _system_prompt(method, principals), tools, spending)
+    final = graph.invoke(_start(question, history))
+    return _answer(final, spending)
+
+
+# Yields each tool call as the model makes it and each piece of answer text as it arrives, then
+# the checked Answer. Text from a reply that also calls tools streams too, so a client shows
+# the final Answer's text in place of what it streamed.
+def ask_stream(
+    question: str,
+    pool: Pool,
+    principals: frozenset[str],
+    model: BaseChatModel,
+    spending: Spending,
+    screen: Screen | None = None,
+    history: Sequence[Turn] = (),
+) -> Iterator[ToolCall | Token | Answer]:
+    tools = _tools(pool, principals, Method.RLS, False, data.DEFAULT_CAPS, screen)
+    graph = _build_graph(model, _system_prompt(Method.RLS, principals), tools, spending)
+    final = _start(question, history)
+    for part in graph.stream(final, stream_mode=["messages", "updates", "values"], version="v2"):
+        if part["type"] == "messages":
+            message, metadata = part["data"]
+            if (
+                isinstance(message, AIMessageChunk)
+                and metadata["langgraph_node"] == "model"
+                and message.text
+            ):
+                yield Token(message.text)
+        elif part["type"] == "updates" and "model" in part["data"]:
+            for reply in part["data"]["model"]["messages"]:
+                for call in reply.tool_calls:
+                    sql = call["args"].get("sql") if call["name"] == "query_data" else None
+                    yield ToolCall(name=call["name"], sql=sql)
+        elif part["type"] == "values":
+            final = part["data"]
+    yield _answer(final, spending)
+
+
+def _start(question: str, history: Sequence[Turn]) -> AgentState:
+    messages: list[AnyMessage] = []
+    for turn in history:
+        messages.append(HumanMessage(turn.question))
+        messages.append(AIMessage(turn.answer))
+    messages.append(HumanMessage(question))
+    return {"messages": messages, "input_tokens": 0, "output_tokens": 0}
+
+
+def _tools(
+    pool: Pool,
+    principals: frozenset[str],
+    method: Method,
+    filter_forgotten: bool,
+    caps: data.Caps,
+    screen: Screen | None,
+) -> list[tuple[dict[str, Any], Callable[..., tuple[str, _Trace]]]]:
     # The principals are fixed here, outside the model's reach: each tool takes only one string.
     def search_documents(query: Text) -> tuple[str, _Trace]:
         with pool.connection() as connection:
@@ -236,15 +318,14 @@ def ask(
         query = Query(sql=sql, rows=result.text, error=None)
         return visible, _Trace(query=query, withheld=withheld)
 
-    tools = [(SEARCH_TOOL, search_documents), (OPEN_DOCUMENT_TOOL, open_document)]
+    tools: list[tuple[dict[str, Any], Callable[..., tuple[str, _Trace]]]] = [
+        (SEARCH_TOOL, search_documents),
+        (OPEN_DOCUMENT_TOOL, open_document),
+    ]
     # The other methods search as the reader role, which every row is open to.
     if method is Method.RLS:
         tools += [(DESCRIBE_DATA_TOOL, describe_data), (query_data_tool(caps), query_data)]
-    graph = _build_graph(model, _system_prompt(method, principals), tools, spending)
-    final = graph.invoke(
-        {"messages": [HumanMessage(question)], "input_tokens": 0, "output_tokens": 0}
-    )
-    return _answer(final, spending)
+    return tools
 
 
 def _system_prompt(method: Method, principals: frozenset[str]) -> str:
@@ -272,8 +353,13 @@ def _build_graph(
         return {"messages": [reply], "input_tokens": input_tokens, "output_tokens": output_tokens}
 
     def after_model(state: AgentState) -> str:
-        replies = [message for message in state["messages"] if isinstance(message, AIMessage)]
-        if len(replies) > MAX_TOOL_ROUNDS:
+        replies = 0
+        for message in reversed(state["messages"]):
+            if isinstance(message, HumanMessage):
+                break
+            if isinstance(message, AIMessage):
+                replies += 1
+        if replies > MAX_TOOL_ROUNDS:
             return END
         return tools_condition(state["messages"])
 
@@ -308,7 +394,7 @@ def _format_hits(results: Results) -> str:
     return "\n\n".join(passages)
 
 
-def _answer(final: dict[str, Any], spending: Spending) -> Answer:
+def _answer(final: Mapping[str, Any], spending: Spending) -> Answer:
     returned: set[str] = set()
     tool_outputs: list[str] = []
     queries: list[Query] = []

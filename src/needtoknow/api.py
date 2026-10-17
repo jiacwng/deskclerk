@@ -4,7 +4,7 @@
 # .venv/bin/uvicorn --app-dir src --factory needtoknow.api:create_default_app
 
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from importlib.resources import files
 from typing import Annotated
@@ -14,8 +14,9 @@ import psycopg
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 from langchain_core.language_models import BaseChatModel
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from needtoknow import agent, db, retrieval
 from needtoknow.audit import Audit, log_to_stdout
@@ -39,6 +40,11 @@ from needtoknow.screen import Screen, screen_from_settings
 READY_TIMEOUT_SECONDS = 5
 
 _bearer = HTTPBearer(auto_error=False)
+BUDGET_SPENT = "the model budget for this server is spent"
+DATABASE_DOWN = "the database cannot be reached"
+# The client sends the conversation so far, so the server stores nothing between requests.
+MAX_HISTORY_TURNS = 10
+MAX_HISTORY_CHARS = MAX_HISTORY_TURNS * retrieval.MAX_INPUT_CHARS
 _CHAT_PAGE = files("needtoknow").joinpath("static/chat.html").read_text(encoding="utf-8")
 
 
@@ -54,10 +60,30 @@ class SearchResponse(BaseModel):
     results: list[retrieval.Hit]
 
 
+class Turn(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    question: str = Field(min_length=1, max_length=retrieval.MAX_INPUT_CHARS)
+    answer: str = Field(min_length=1)
+
+
 class AskRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     question: str = Field(min_length=1, max_length=retrieval.MAX_INPUT_CHARS)
+    history: list[Turn] = Field(default_factory=list, max_length=MAX_HISTORY_TURNS)
+
+    @model_validator(mode="after")
+    def _history_fits(self) -> "AskRequest":
+        chars = 0
+        for turn in self.history:
+            chars += len(turn.question) + len(turn.answer)
+        if chars > MAX_HISTORY_CHARS:
+            raise ValueError(f"the history holds more than {MAX_HISTORY_CHARS} characters")
+        return self
+
+    def turns(self) -> list[agent.Turn]:
+        return [agent.Turn(turn.question, turn.answer) for turn in self.history]
 
 
 class AskResponse(BaseModel):
@@ -169,27 +195,53 @@ def create_app(
         started = time.monotonic()
         try:
             answer = agent.ask(
-                request.question, pool, identity.principals, model, spending, screen=screen
+                request.question,
+                pool,
+                identity.principals,
+                model,
+                spending,
+                screen=screen,
+                history=request.turns(),
             )
         except BudgetExceeded:
             raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="the model budget for this server is spent",
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=BUDGET_SPENT
             ) from None
         except psycopg.OperationalError:
             raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="the database cannot be reached",
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=DATABASE_DOWN
             ) from None
         audit.answered(identity, request.question, answer, started)
-        return AskResponse(
-            user=identity.user_id,
-            answer=answer.text,
-            citations=list(answer.citations),
-            refused=answer.refused,
-            queries=list(answer.queries),
-            withheld=answer.withheld,
+        return _ask_response(identity, answer)
+
+    # The status is sent before the first event, so a failure after it arrives as an error event.
+    @api.post("/ask/stream", response_class=EventSourceResponse)
+    def ask_stream(
+        request: AskRequest, identity: Annotated[Identity, Depends(current_identity)]
+    ) -> Iterator[ServerSentEvent]:
+        started = time.monotonic()
+        events = agent.ask_stream(
+            request.question,
+            pool,
+            identity.principals,
+            model,
+            spending,
+            screen=screen,
+            history=request.turns(),
         )
+        try:
+            for event in events:
+                if isinstance(event, agent.ToolCall):
+                    yield ServerSentEvent(event="tool", data=event)
+                elif isinstance(event, agent.Token):
+                    yield ServerSentEvent(event="token", data=event.text)
+                else:
+                    audit.answered(identity, request.question, event, started)
+                    yield ServerSentEvent(event="answer", data=_ask_response(identity, event))
+        except BudgetExceeded:
+            yield ServerSentEvent(event="error", data={"detail": BUDGET_SPENT})
+        except psycopg.OperationalError:
+            yield ServerSentEvent(event="error", data={"detail": DATABASE_DOWN})
 
     return api
 
@@ -200,6 +252,17 @@ def create_default_app() -> FastAPI:
     screen = screen_from_settings(settings)
     graph = graph_from_settings(settings)
     return create_app(settings, jwks_signing_key(settings), chat_model(settings), screen, graph)
+
+
+def _ask_response(identity: Identity, answer: agent.Answer) -> AskResponse:
+    return AskResponse(
+        user=identity.user_id,
+        answer=answer.text,
+        citations=list(answer.citations),
+        refused=answer.refused,
+        queries=list(answer.queries),
+        withheld=answer.withheld,
+    )
 
 
 def _unauthorized(error: str | None) -> HTTPException:

@@ -2,17 +2,18 @@
 # answers from a function over the state, so the agent runs in tests without the paid APIs.
 
 import json
-from collections.abc import Callable, Sequence
+import re
+from collections.abc import Callable, Iterator, Sequence
 from typing import Any
 
 import httpx2
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_core.messages.ai import UsageMetadata
-from langchain_core.messages.tool import tool_call
-from langchain_core.outputs import ChatResult
+from langchain_core.messages.tool import tool_call, tool_call_chunk
+from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from pydantic import Field
@@ -56,6 +57,33 @@ class ScriptedModel(GenericFakeChatModel):
         self.prompts.append(list(messages))
         self.options.append(kwargs)
         return super()._generate(messages, stop, run_manager, **kwargs)
+
+    # Streams the text word by word, then the tool calls and the usage, as a provider does.
+    def _stream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> Iterator[ChatGenerationChunk]:
+        reply = self._generate(messages, stop, run_manager, **kwargs).generations[0].message
+        assert isinstance(reply, AIMessage)
+        for word in re.split(r"(\s)", reply.text):
+            if word:
+                yield ChatGenerationChunk(message=AIMessageChunk(content=word))
+        calls = []
+        for index, call in enumerate(reply.tool_calls):
+            arguments = json.dumps(call["args"])
+            calls.append(
+                tool_call_chunk(name=call["name"], args=arguments, id=call["id"], index=index)
+            )
+        last = AIMessageChunk(
+            content="",
+            tool_call_chunks=calls,
+            usage_metadata=reply.usage_metadata,
+            chunk_position="last",
+        )
+        yield ChatGenerationChunk(message=last)
 
 
 def scripted(*replies: AIMessage) -> ScriptedModel:

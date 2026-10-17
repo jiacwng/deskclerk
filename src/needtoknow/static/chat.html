@@ -117,47 +117,124 @@
 
   finishSignIn();
 
+  // The server keeps no conversation: the page sends the latest turns that fit the API's caps.
+  const MAX_HISTORY_TURNS = 10;
+  const MAX_HISTORY_CHARS = 20000;
+  const conversation = [];
+
+  function recentHistory() {
+    const history = [];
+    let chars = 0;
+    for (let i = conversation.length - 1; i >= 0 && history.length < MAX_HISTORY_TURNS; i--) {
+      chars += conversation[i].question.length + conversation[i].answer.length;
+      if (chars > MAX_HISTORY_CHARS) {
+        break;
+      }
+      history.unshift(conversation[i]);
+    }
+    return history;
+  }
+
   ask.addEventListener("submit", async (event) => {
     event.preventDefault();
     error.textContent = "";
     const question = new FormData(ask).get("question");
-    const response = await fetch("/ask", {
+    const button = ask.querySelector("button");
+    button.disabled = true;
+    try {
+      await stream(question);
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  async function stream(question) {
+    const response = await fetch("/ask/stream", {
       method: "POST",
       headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({ question, history: recentHistory() }),
     });
     if (response.status === 401) {
       token = null;
+      conversation.length = 0;
       signedIn(false);
       error.textContent = "login expired, sign in again";
       return;
     }
-    const body = await response.json();
     if (!response.ok) {
+      const body = await response.json();
       error.textContent = typeof body.detail === "string" ? body.detail : `error ${response.status}`;
       return;
     }
-    who.textContent = `Signed in as ${body.user}`;
-    show(question, body);
-    ask.reset();
-  });
+    const parts = start(question);
+    const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+    let buffer = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += value;
+      const blocks = buffer.split("\n\n");
+      buffer = blocks.pop();
+      for (const block of blocks) {
+        const message = parse(block);
+        if (message.event === "tool") {
+          const step = document.createElement("li");
+          step.textContent = message.data.sql === null ? message.data.name : `${message.data.name}: ${message.data.sql}`;
+          parts.steps.append(step);
+        } else if (message.event === "token") {
+          parts.answer.textContent += message.data;
+        } else if (message.event === "answer") {
+          who.textContent = `Signed in as ${message.data.user}`;
+          finish(parts, message.data);
+          conversation.push({ question, answer: message.data.answer });
+          ask.reset();
+        } else if (message.event === "error") {
+          parts.reply.remove();
+          error.textContent = message.data.detail;
+        }
+      }
+    }
+  }
 
-  function show(question, body) {
+  function parse(block) {
+    let event = "message";
+    const data = [];
+    for (const line of block.split("\n")) {
+      if (line.startsWith("event: ")) {
+        event = line.slice("event: ".length);
+      } else if (line.startsWith("data: ")) {
+        data.push(line.slice("data: ".length));
+      }
+    }
+    return { event, data: data.length > 0 ? JSON.parse(data.join("\n")) : null };
+  }
+
+  function start(question) {
     const reply = document.createElement("div");
-    reply.className = body.refused ? "reply refused" : "reply";
+    reply.className = "reply";
     const asked = document.createElement("p");
     asked.className = "question";
     asked.textContent = question;
-    reply.append(asked);
+    const steps = document.createElement("ul");
+    const answer = document.createElement("p");
+    reply.append(asked, steps, answer);
+    replies.prepend(reply);
+    return { reply, steps, answer };
+  }
+
+  function finish(parts, body) {
+    const reply = parts.reply;
+    parts.steps.remove();
+    parts.answer.textContent = body.answer;
     if (body.refused) {
+      reply.className = "reply refused";
       const label = document.createElement("p");
       label.className = "label";
       label.textContent = "Refused";
-      reply.append(label);
+      parts.answer.before(label);
     }
-    const answer = document.createElement("p");
-    answer.textContent = body.answer;
-    reply.append(answer);
     if (body.queries.length > 0) {
       const queries = document.createElement("div");
       queries.className = "queries";
@@ -184,7 +261,6 @@
       }
       reply.append("Sources:", list);
     }
-    replies.prepend(reply);
   }
 </script>
 </body>

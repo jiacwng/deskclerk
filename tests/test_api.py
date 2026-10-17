@@ -22,18 +22,20 @@ from langchain_core.outputs import ChatResult
 from psycopg.rows import TupleRow
 from pydantic import Field
 
-from fakes import HAIKU, ScriptedModel, call_tool, final_reply, scripted, search_call
+from fakes import HAIKU, USAGE, ScriptedModel, call_tool, final_reply, scripted, search_call
 from needtoknow.agent import REFUSAL
-from needtoknow.api import create_app
+from needtoknow.api import MAX_HISTORY_CHARS, MAX_HISTORY_TURNS, create_app
 from needtoknow.auth import SigningKeyLookup
 from needtoknow.config import Settings, load_settings
 from needtoknow.documents import Document
+from needtoknow.providers import price_of
 
 Sign = Callable[[dict[str, object]], str]
 
 QUESTION = {"query": "Who is helping with the Wharton and Rice projects for the Tiger Team?"}
 ASK = {"question": QUESTION["query"]}
 TIGER_TEAM = "enron-770963d7e2ceeb8d22d92a1ebfaba325068dfa242524cb4a8983dc0d1165f2ab"
+TURN = {"question": "Who runs the Tiger Team?", "answer": "Vince Kaminski."}
 
 
 @pytest.fixture(scope="module")
@@ -56,6 +58,20 @@ def _kean(sign_token: Sign) -> dict[str, str]:
     return _bearer(sign_token({"preferred_username": "kean-s", "groups": []}))
 
 
+def _events(stream: str) -> list[tuple[str, Any]]:
+    events = []
+    for block in stream.strip().split("\n\n"):
+        name = ""
+        data = []
+        for line in block.split("\n"):
+            if line.startswith("event: "):
+                name = line.removeprefix("event: ")
+            elif line.startswith("data: "):
+                data.append(line.removeprefix("data: "))
+        events.append((name, json.loads("\n".join(data))))
+    return events
+
+
 def test_health_needs_no_token(client: TestClient) -> None:
     response = client.get("/health")
     assert response.status_code == 200
@@ -75,7 +91,15 @@ def test_chat_page_shows_each_query_as_text(client: TestClient) -> None:
     assert 'label.textContent = "Queries:"' in page
     assert "for (const query of body.queries)" in page
     assert "result.textContent = query.error ?? query.rows;" in page
+    assert "parts.answer.textContent += message.data;" in page
     assert "innerHTML" not in page
+
+
+def test_chat_page_sends_the_history_the_api_accepts(client: TestClient) -> None:
+    page = client.get("/").text
+    assert f"const MAX_HISTORY_TURNS = {MAX_HISTORY_TURNS};" in page
+    assert f"const MAX_HISTORY_CHARS = {MAX_HISTORY_CHARS};" in page
+    assert "body: JSON.stringify({ question, history: recentHistory() })," in page
 
 
 def test_chat_page_calls_only_the_api_and_the_issuer(client: TestClient) -> None:
@@ -84,7 +108,7 @@ def test_chat_page_calls_only_the_api_and_the_issuer(client: TestClient) -> None
         '"/config"',
         "`${config.issuer}/.well-known/openid-configuration`",
         "endpoints.token_endpoint",
-        '"/ask"',
+        '"/ask/stream"',
     ]
     assert "://" not in page
     assert "src=" not in page
@@ -218,13 +242,43 @@ def test_ask_without_a_token_is_refused(client: TestClient) -> None:
         pytest.param({"question": ""}, id="empty-question"),
         pytest.param({"question": "x" * 2001}, id="long-question"),
         pytest.param({"question": 42}, id="question-not-a-string"),
+        pytest.param(ASK | {"history": TURN}, id="history-not-a-list"),
+        pytest.param(ASK | {"history": [TURN] * (MAX_HISTORY_TURNS + 1)}, id="too-many-turns"),
+        pytest.param(
+            ASK | {"history": [{"question": "q", "answer": "x" * MAX_HISTORY_CHARS}]},
+            id="too-many-characters",
+        ),
+        pytest.param(ASK | {"history": [TURN | {"answer": ""}]}, id="empty-answer"),
+        pytest.param(ASK | {"history": [TURN | {"question": "x" * 2001}]}, id="long-turn"),
+        pytest.param(ASK | {"history": [TURN | {"citations": [TIGER_TEAM]}]}, id="turn-extra"),
     ],
 )
+@pytest.mark.parametrize("path", ["/ask", "/ask/stream"])
 def test_ask_with_an_invalid_body_is_refused(
-    client: TestClient, sign_token: Sign, body: dict[str, object]
+    client: TestClient, sign_token: Sign, path: str, body: dict[str, object]
 ) -> None:
-    response = client.post("/ask", json=body, headers=_kean(sign_token))
+    response = client.post(path, json=body, headers=_kean(sign_token))
     assert response.status_code == 422
+
+
+def test_a_history_at_the_caps_reaches_the_model(
+    owner: psycopg.Connection[TupleRow],
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    sign_token: Sign,
+) -> None:
+    answer_chars = MAX_HISTORY_CHARS // MAX_HISTORY_TURNS - 1
+    history = [{"question": "q", "answer": "x" * answer_chars}] * MAX_HISTORY_TURNS
+    model = scripted(final_reply(REFUSAL))
+
+    with TestClient(create_app(token_settings, token_signing_key, model)) as ask_client:
+        response = ask_client.post(
+            "/ask", json=ASK | {"history": history}, headers=_kean(sign_token)
+        )
+
+    assert response.status_code == 200
+    (prompt,) = model.prompts
+    assert len(prompt) == 1 + 2 * MAX_HISTORY_TURNS + 1
 
 
 @pytest.mark.parametrize(
@@ -317,6 +371,69 @@ def test_ask_with_the_budget_spent_is_unavailable(
 
     assert response.status_code == 503
     assert model.prompts == []
+
+
+def test_the_stream_sends_tool_calls_and_tokens_then_what_ask_returns(
+    owner: psycopg.Connection[TupleRow],
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    sign_token: Sign,
+) -> None:
+    sql = "SELECT 1 AS one"
+    reply = f"Two people in his group help [{TIGER_TEAM}] [enron-made-up]."
+    body = ASK | {"history": [TURN]}
+    token = sign_token({"preferred_username": "kaminski-v", "groups": []})
+    responses = {}
+    for path in ("/ask", "/ask/stream"):
+        model = scripted(
+            search_call({"query": ASK["question"]}),
+            call_tool("query_data", {"sql": sql}),
+            final_reply(reply),
+        )
+        with TestClient(create_app(token_settings, token_signing_key, model)) as ask_client:
+            responses[path] = ask_client.post(path, json=body, headers=_bearer(token))
+        assert [message.text for message in model.prompts[0][1:]] == [
+            TURN["question"],
+            TURN["answer"],
+            ASK["question"],
+        ]
+
+    streamed = responses["/ask/stream"]
+    assert streamed.status_code == 200
+    assert streamed.headers["content-type"].startswith("text/event-stream")
+    events = _events(streamed.text)
+    tokens = [data for name, data in events if name == "token"]
+    assert events[:2] == [
+        ("tool", {"name": "search_documents", "sql": None}),
+        ("tool", {"name": "query_data", "sql": sql}),
+    ]
+    assert "".join(tokens) == reply
+    assert events[2:] == [("token", text) for text in tokens] + [
+        ("answer", responses["/ask"].json())
+    ]
+    assert events[-1][1]["citations"] == [TIGER_TEAM]
+    assert len(events[-1][1]["queries"]) == 1
+
+
+def test_a_budget_spent_mid_stream_ends_with_an_error_event(
+    owner: psycopg.Connection[TupleRow],
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    sign_token: Sign,
+) -> None:
+    model = scripted(search_call({"query": ASK["question"]}), final_reply(REFUSAL))
+    one_call = price_of(token_settings).cost(USAGE["input_tokens"], USAGE["output_tokens"])
+    half_a_call = token_settings.model_copy(update={"budget_usd": one_call / 2})
+
+    with TestClient(create_app(half_a_call, token_signing_key, model)) as ask_client:
+        response = ask_client.post("/ask/stream", json=ASK, headers=_kean(sign_token))
+
+    assert response.status_code == 200
+    assert _events(response.text) == [
+        ("tool", {"name": "search_documents", "sql": None}),
+        ("error", {"detail": "the model budget for this server is spent"}),
+    ]
+    assert len(model.prompts) == 1
 
 
 def test_ask_with_the_database_down_is_unavailable(

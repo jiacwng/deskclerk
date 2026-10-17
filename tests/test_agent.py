@@ -17,6 +17,7 @@ from needtoknow.agent import (
     SEARCH_RESULTS,
     SYSTEM_PROMPT,
     Answer,
+    Turn,
     ask,
 )
 from needtoknow.auth import principals
@@ -274,3 +275,57 @@ def test_a_tool_call_with_wrong_arguments_is_an_error(
     (result,) = _tool_results(model)
     assert result.status == "error"
     assert answer.tool_outputs == ()
+
+
+def test_history_reaches_the_model_as_prior_messages(app_pool: Pool) -> None:
+    history = [Turn("Who runs the Tiger Team?", "Vince Kaminski."), Turn("Since when?", "1999.")]
+    model = scripted(final_reply(REFUSAL))
+
+    ask(QUESTION, app_pool, HOLDER, model, Spending(HAIKU, budget_usd=1.0), history=history)
+
+    (prompt,) = model.prompts
+    assert [type(message).__name__ for message in prompt] == [
+        "SystemMessage",
+        "HumanMessage",
+        "AIMessage",
+        "HumanMessage",
+        "AIMessage",
+        "HumanMessage",
+    ]
+    assert [message.text for message in prompt[1:]] == [
+        "Who runs the Tiger Team?",
+        "Vince Kaminski.",
+        "Since when?",
+        "1999.",
+        QUESTION,
+    ]
+
+
+def test_a_citation_found_only_in_the_history_is_dropped(app_pool: Pool) -> None:
+    history = [Turn(QUESTION, f"Two people in his group help [{TIGER_TEAM}].")]
+    model = scripted(final_reply(f"As I said, two people help [{TIGER_TEAM}]."))
+
+    answer = ask(
+        "And who are they?",
+        app_pool,
+        HOLDER,
+        model,
+        Spending(HAIKU, budget_usd=1.0),
+        history=history,
+    )
+
+    assert answer.citations == ()
+    assert answer.dropped_citations == (TIGER_TEAM,)
+    assert answer.text == "As I said, two people help."
+
+
+def test_past_replies_do_not_count_against_the_round_cap(app_pool: Pool) -> None:
+    history = [Turn(f"Question {n}?", f"Answer {n}.") for n in range(MAX_TOOL_ROUNDS + 1)]
+    model = scripted(search_call({"query": QUESTION}), final_reply(f"They help [{TIGER_TEAM}]."))
+
+    answer = ask(
+        QUESTION, app_pool, HOLDER, model, Spending(HAIKU, budget_usd=1.0), history=history
+    )
+
+    assert not answer.exhausted
+    assert answer.citations == (TIGER_TEAM,)
