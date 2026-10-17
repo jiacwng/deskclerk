@@ -36,7 +36,7 @@ files = ["markitdown[pdf,docx,pptx,xlsx]>=0.1.8"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-packages = ["needtoknow"]
+packages = ["needtoknow", "needtoknow.evaluation"]
 
 [tool.setuptools.package-data]
 needtoknow = ["static/chat.html", "sql/*.sql"]

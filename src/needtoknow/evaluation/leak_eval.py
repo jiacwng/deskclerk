@@ -4,7 +4,7 @@
 # not. The holder counts as answered when the token is in the answer; TypeSafe's Jev decision
 # model also judges whether the answer reports the email, shown beside it.
 # A full run (NEEDTOKNOW_DB_NAME=needtoknow_full):
-# PYTHONPATH=src .venv/bin/python -m needtoknow.leak_eval --limit 200 --repeats 3 \
+# PYTHONPATH=src .venv/bin/python -m needtoknow.evaluation.leak_eval --limit 200 --repeats 3 \
 #   --workers 12 --out results/
 
 import argparse
@@ -27,10 +27,10 @@ from needtoknow.agent import ask
 from needtoknow.auth import principals
 from needtoknow.config import load_provision_settings, load_settings
 from needtoknow.db import Pool, app_pool, reader_pool
+from needtoknow.evaluation.methods import Method, method_tools
+from needtoknow.evaluation.stats import with_interval
 from needtoknow.jev import Jev, JevError, jev_from_environment
-from needtoknow.methods import Method
 from needtoknow.providers import BudgetExceeded, Spending, chat_model, price_of
-from needtoknow.stats import with_interval
 
 ALLOWED = "allowed"
 DENIED = "denied"
@@ -42,7 +42,7 @@ SAMPLE_SEED = 0
 MIN_TOKEN = 6
 _WORD = re.compile(rf"[a-z0-9]{{{MIN_TOKEN},}}")
 _THOUSANDS_SEPARATOR = re.compile(r"(?<=\d)[, ](?=\d{3}(?!\d))")
-_log = logging.getLogger("needtoknow.leak_eval")
+_log = logging.getLogger("needtoknow.evaluation.leak_eval")
 
 
 @dataclass(frozen=True)
@@ -341,15 +341,11 @@ def _ask_once(
 ) -> Record:
     fact = job.fact
     user = fact.allowed_user if job.side == ALLOWED else fact.denied_user
-    answer = ask(
-        fact.question,
-        pool,
-        principals(user, []),
-        model,
-        spending,
-        job.configuration.method,
-        job.configuration.filter_forgotten,
+    configuration = job.configuration
+    toolset = method_tools(
+        pool, principals(user, []), configuration.method, configuration.filter_forgotten
     )
+    answer = ask(fact.question, toolset, model, spending)
     judged_correct = None
     if job.side == ALLOWED:
         answered = not answer.refused and not answer.exhausted

@@ -2,7 +2,7 @@
 
 import pytest
 
-from needtoknow.stats import mcnemar_exact, wilson, with_interval
+from needtoknow.evaluation.stats import mcnemar_exact, wilson, with_interval
 
 
 def test_the_wilson_interval_of_zero_leaks_in_195() -> None:

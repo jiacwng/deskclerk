@@ -5,7 +5,7 @@
 # the answer with the reference answer; here the judge is TypeSafe's Jev. The injection screen
 # runs as it ships, so the table also counts the answers it withheld passages from.
 # A full run (NEEDTOKNOW_DB_NAME=needtoknow_full):
-# PYTHONPATH=src .venv/bin/python -m needtoknow.quality_eval \
+# PYTHONPATH=src .venv/bin/python -m needtoknow.evaluation.quality_eval \
 #   --enronqa ~/datasets/enronqa/test/test-00000-of-00001.parquet \
 #   --maildir ~/datasets/enron/extracted/maildir --limit 200 --workers 12 --out results/
 
@@ -24,21 +24,21 @@ import psycopg
 import pyarrow.parquet as pq
 from langchain_core.language_models import BaseChatModel
 
-from needtoknow.agent import ask
+from needtoknow.agent import ask, employee_tools
 from needtoknow.auth import principals
 from needtoknow.config import load_provision_settings, load_settings
 from needtoknow.db import Pool, app_pool, connect_reader
 from needtoknow.enron import MAX_FILE_BYTES, parse_email
+from needtoknow.evaluation.stats import with_interval
 from needtoknow.jev import Jev, JevError, jev_from_environment
 from needtoknow.providers import BudgetExceeded, Spending, chat_model, price_of
 from needtoknow.screen import Screen, screen_from_settings
-from needtoknow.stats import with_interval
 
 # The paper's judge prompt (its appendix B.6) asks whether the answer matches the gold answer.
 JUDGE_QUESTION = "Does the answer match the gold answer?"
 RAW_FILE = "answers_enron_raw.jsonl"
 SAMPLE_SEED = 0
-_log = logging.getLogger("needtoknow.quality_eval")
+_log = logging.getLogger("needtoknow.evaluation.quality_eval")
 
 
 @dataclass(frozen=True)
@@ -270,8 +270,8 @@ def _ask_once(
     jev: Jev,
     screen: Screen | None,
 ) -> Record:
-    asker = principals(question.user, [])
-    answer = ask(question.question, pool, asker, model, spending, screen=screen)
+    toolset = employee_tools(pool, principals(question.user, []), screen)
+    answer = ask(question.question, toolset, model, spending)
     answered = not answer.refused and not answer.exhausted
     label = f"[{question.doc_id}]"
     return Record(

@@ -10,15 +10,15 @@ from psycopg.rows import TupleRow
 from fakes import HAIKU, final_reply, scripted
 from needtoknow.agent import SEARCH_RESULTS
 from needtoknow.db import Pool
-from needtoknow.leak_eval import build_facts
-from needtoknow.providers import Spending
-from needtoknow.speed_eval import (
+from needtoknow.evaluation.leak_eval import build_facts
+from needtoknow.evaluation.speed_eval import (
     slowest_plans,
     summarise,
     time_answers,
     time_searches,
     write_results,
 )
+from needtoknow.providers import Spending
 
 Connection = psycopg.Connection[TupleRow]
 

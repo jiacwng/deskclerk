@@ -1,7 +1,8 @@
 # The production stack in compose.prod.yaml and its realm template: only Caddy is published,
-# Keycloak runs in production mode, every password is required from the environment, the realm
-# holds no users and no password client, and the addresses the app checks tokens against are
-# the ones Keycloak stamps into them.
+# Keycloak runs in production mode, every password is required from the environment, the app
+# and the MCP server read the rest of their settings from .env, the realm holds no users and no
+# password client, and the addresses the app checks tokens against are the ones Keycloak stamps
+# into them.
 
 import json
 import re
@@ -54,7 +55,14 @@ def test_every_password_is_required_from_the_environment() -> None:
             assert reference, f"{name}: {variable} is {value!r}"
             assert reference.group(1) in required
             passwords += 1
-    assert passwords == 10
+    assert passwords == 9
+
+
+def test_the_app_and_the_mcp_server_read_their_settings_from_the_env_file() -> None:
+    for name in ("app", "mcp"):
+        assert SERVICES[name]["env_file"] == ".env"
+        public = _environment(name)["NEEDTOKNOW_PUBLIC_RELATIONS"]
+        assert public == "${NEEDTOKNOW_PUBLIC_RELATIONS:-}"
 
 
 def test_the_app_and_the_mcp_server_trust_the_tokens_keycloak_issues() -> None:

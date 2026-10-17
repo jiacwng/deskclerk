@@ -200,12 +200,10 @@ def create_app(
         try:
             answer = agent.ask(
                 request.question,
-                pool,
-                identity.principals,
+                agent.employee_tools(pool, identity.principals, screen),
                 model,
                 spending,
-                screen=screen,
-                history=request.turns(),
+                request.turns(),
             )
         except BudgetExceeded:
             raise HTTPException(
@@ -230,12 +228,10 @@ def create_app(
         started = time.monotonic()
         events = agent.ask_stream(
             request.question,
-            pool,
-            identity.principals,
+            agent.employee_tools(pool, identity.principals, screen),
             model,
             spending,
-            screen=screen,
-            history=request.turns(),
+            request.turns(),
         )
         try:
             for event in events:

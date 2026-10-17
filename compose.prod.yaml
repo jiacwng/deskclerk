@@ -3,7 +3,8 @@
 # the MCP server exit with that load command when the database is not provisioned yet. Caddy is
 # the only public entry and gets a TLS certificate for NEEDTOKNOW_DOMAIN; it serves the chat
 # page and API at /, the MCP server at /mcp and the Keycloak login at /auth. Every password
-# comes from the environment and the stack refuses to start without one.
+# comes from the environment and the stack refuses to start without one. The app and the MCP
+# server also read .env, so any other NEEDTOKNOW_* setting and the provider keys go there.
 services:
   caddy:
     image: caddy:2.11.7
@@ -82,7 +83,6 @@ services:
       NEEDTOKNOW_DB_HOST: db
       NEEDTOKNOW_ADMIN_PASSWORD: ${NEEDTOKNOW_ADMIN_PASSWORD}
       NEEDTOKNOW_OWNER_PASSWORD: ${NEEDTOKNOW_OWNER_PASSWORD:?set NEEDTOKNOW_OWNER_PASSWORD}
-      NEEDTOKNOW_READER_PASSWORD: ${NEEDTOKNOW_READER_PASSWORD:?set NEEDTOKNOW_READER_PASSWORD}
       NEEDTOKNOW_APP_PASSWORD: ${NEEDTOKNOW_APP_PASSWORD:?set NEEDTOKNOW_APP_PASSWORD}
     volumes:
       - ./documents:/data:ro
@@ -93,20 +93,14 @@ services:
 
   app:
     build: .
+    env_file: .env
     environment:
       NEEDTOKNOW_DB_HOST: db
       NEEDTOKNOW_APP_PASSWORD: ${NEEDTOKNOW_APP_PASSWORD}
       NEEDTOKNOW_ISSUER: https://${NEEDTOKNOW_DOMAIN}/auth/realms/needtoknow
       NEEDTOKNOW_JWKS_URL: http://keycloak:8080/auth/realms/needtoknow/protocol/openid-connect/certs
       NEEDTOKNOW_MCP_URL: https://${NEEDTOKNOW_DOMAIN}/mcp
-      NEEDTOKNOW_MODEL: ${NEEDTOKNOW_MODEL:-anthropic:claude-haiku-5-5}
-      NEEDTOKNOW_PRICE_INPUT:
-      NEEDTOKNOW_PRICE_OUTPUT:
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OLLAMA_HOST: ${OLLAMA_HOST:-}
-      TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
-      NEEDTOKNOW_SCREEN: ${NEEDTOKNOW_SCREEN:-true}
+      NEEDTOKNOW_PUBLIC_RELATIONS: ${NEEDTOKNOW_PUBLIC_RELATIONS:-}
     healthcheck:
       test:
         - CMD
@@ -124,6 +118,7 @@ services:
   mcp:
     build: .
     command: ["python", "-m", "needtoknow.mcp_server"]
+    env_file: .env
     environment:
       NEEDTOKNOW_DB_HOST: db
       NEEDTOKNOW_APP_PASSWORD: ${NEEDTOKNOW_APP_PASSWORD}
@@ -131,8 +126,7 @@ services:
       NEEDTOKNOW_JWKS_URL: http://keycloak:8080/auth/realms/needtoknow/protocol/openid-connect/certs
       NEEDTOKNOW_MCP_URL: https://${NEEDTOKNOW_DOMAIN}/mcp
       NEEDTOKNOW_MCP_HOST: 0.0.0.0
-      TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
-      NEEDTOKNOW_SCREEN: ${NEEDTOKNOW_SCREEN:-true}
+      NEEDTOKNOW_PUBLIC_RELATIONS: ${NEEDTOKNOW_PUBLIC_RELATIONS:-}
     restart: unless-stopped
     depends_on:
       keycloak:

@@ -23,15 +23,7 @@ ORDER BY distance
 LIMIT %(limit)s
 """
 
-_DOCUMENT = """
-SELECT title, body
-FROM documents
-WHERE id = %(doc_id)s
-  AND EXISTS (
-    SELECT 1 FROM doc_access a
-    WHERE a.doc_id = documents.id AND a.principal = ANY(%(principals)s)
-  )
-"""
+_DOCUMENT = "SELECT title, body FROM documents WHERE id = %s"
 
 _PERMITTED = """
 WHERE EXISTS (
@@ -58,14 +50,11 @@ def search(
         return nearest_chunks(app, embedding, k)
 
 
-# The WHERE clause repeats the documents policy, because the evaluation's other methods pass the
-# reader role, whose policies let every row through.
 def open_document(
     app: psycopg.Connection[Any], principals: Iterable[str], doc_id: str
 ) -> tuple[str, str] | None:
-    names = sorted(principals)
-    with as_user(app, names):
-        row = app.execute(_DOCUMENT, {"doc_id": doc_id, "principals": names}).fetchone()
+    with as_user(app, principals):
+        row = app.execute(_DOCUMENT, [doc_id]).fetchone()
     return None if row is None else (row[0], row[1])
 
 

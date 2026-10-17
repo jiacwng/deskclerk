@@ -7,7 +7,8 @@ import psycopg
 from psycopg.rows import TupleRow
 
 from fakes import HAIKU, call_tool, final_reply, scripted
-from needtoknow.attacks import (
+from needtoknow.db import Pool
+from needtoknow.evaluation.attacks import (
     DATABASE_ATTACKS,
     EXCESSIVE_AGENCY,
     MATCH_ATTACKS,
@@ -20,8 +21,7 @@ from needtoknow.attacks import (
     run_data_stealing,
     run_database_attacks,
 )
-from needtoknow.db import Pool
-from needtoknow.leak_eval import build_facts
+from needtoknow.evaluation.leak_eval import build_facts
 from needtoknow.providers import Spending
 
 Connection = psycopg.Connection[TupleRow]

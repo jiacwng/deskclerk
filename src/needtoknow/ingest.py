@@ -60,7 +60,7 @@ def main() -> None:
     parser.add_argument(
         "--evaluation",
         action="store_true",
-        help="let the reader role log in, for the evaluation; it sees every row",
+        help="create the reader role and let it log in, for the evaluation; it sees every row",
     )
     parser.add_argument(
         "--replace-schema",
@@ -83,7 +83,7 @@ def _ingest(args: argparse.Namespace) -> None:
     logging.basicConfig(format="%(message)s")
     logging.getLogger("needtoknow").setLevel(logging.INFO)
     with connect_owner(settings, provision) as owner:
-        create_schema(owner, args.replace_schema)
+        create_schema(owner, args.replace_schema, args.evaluation)
         if args.command == "reindex":
             rebuilt = reindex(owner)
             print(

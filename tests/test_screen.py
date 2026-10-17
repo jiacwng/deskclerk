@@ -17,11 +17,11 @@ from fakes import (
     scripted,
     search_call,
 )
-from needtoknow.agent import REFUSAL, ask
-from needtoknow.attacks import run_bipia
+from needtoknow.agent import REFUSAL, ask, employee_tools
 from needtoknow.auth import principals
 from needtoknow.config import load_settings
 from needtoknow.db import Pool
+from needtoknow.evaluation.attacks import run_bipia
 from needtoknow.jev import Jev, JevError
 from needtoknow.providers import Spending
 from needtoknow.screen import (
@@ -55,7 +55,7 @@ def test_flagged_passages_are_withheld_from_the_model(app_pool: Pool) -> None:
     model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
     screen = Screen(fake_jev(lambda state: 0.9))
 
-    answer = ask(QUESTION, app_pool, KAMINSKI, model, Spending(HAIKU, 1.0), screen=screen)
+    answer = ask(QUESTION, employee_tools(app_pool, KAMINSKI, screen), model, Spending(HAIKU, 1.0))
 
     (result,) = _tool_results(model)
     assert "I have two persons in my group" not in result.text
@@ -67,7 +67,7 @@ def test_clean_passages_pass_the_screen(app_pool: Pool) -> None:
     model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
     screen = Screen(fake_jev(lambda state: 0.1))
 
-    answer = ask(QUESTION, app_pool, KAMINSKI, model, Spending(HAIKU, 1.0), screen=screen)
+    answer = ask(QUESTION, employee_tools(app_pool, KAMINSKI, screen), model, Spending(HAIKU, 1.0))
 
     (result,) = _tool_results(model)
     assert "I have two persons in my group" in result.text
@@ -78,7 +78,7 @@ def test_a_flagged_document_is_not_opened(app_pool: Pool) -> None:
     model = scripted(call_tool("open_document", {"doc_id": TIGER_TEAM}), final_reply(REFUSAL))
     screen = Screen(fake_jev(lambda state: 0.9))
 
-    answer = ask(QUESTION, app_pool, KAMINSKI, model, Spending(HAIKU, 1.0), screen=screen)
+    answer = ask(QUESTION, employee_tools(app_pool, KAMINSKI, screen), model, Spending(HAIKU, 1.0))
 
     (result,) = _tool_results(model)
     assert result.text == f"[{TIGER_TEAM}] {WITHHELD}."
@@ -89,7 +89,7 @@ def test_an_unavailable_screen_shows_the_model_nothing(app_pool: Pool) -> None:
     model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
     screen = Screen(_failing_jev(400))
 
-    ask(QUESTION, app_pool, KAMINSKI, model, Spending(HAIKU, 1.0), screen=screen)
+    ask(QUESTION, employee_tools(app_pool, KAMINSKI, screen), model, Spending(HAIKU, 1.0))
 
     (result,) = _tool_results(model)
     assert result.text == SCREEN_DOWN
@@ -128,7 +128,9 @@ def test_a_flagged_query_result_is_withheld(app_pool: Pool) -> None:
     model = scripted(call_tool("query_data", {"sql": sql}), final_reply(REFUSAL))
     screen = Screen(fake_jev(lambda state: 0.9))
 
-    answer = ask("What is in the note?", app_pool, ANALYST, model, SPENDING(), screen=screen)
+    answer = ask(
+        "What is in the note?", employee_tools(app_pool, ANALYST, screen), model, SPENDING()
+    )
 
     (result,) = _tool_results(model)
     assert result.text == f"The query result {WITHHELD}."
@@ -139,7 +141,9 @@ def test_a_flagged_row_is_withheld_and_the_other_rows_are_shown(app_pool: Pool) 
     model = scripted(call_tool("query_data", {"sql": PLANTED_ROW_SQL}), final_reply(REFUSAL))
     screen = Screen(fake_jev(lambda state: 0.9 if "ignore" in state["passage"] else 0.1))
 
-    answer = ask("What do the notes say?", app_pool, ANALYST, model, SPENDING(), screen=screen)
+    answer = ask(
+        "What do the notes say?", employee_tools(app_pool, ANALYST, screen), model, SPENDING()
+    )
 
     (result,) = _tool_results(model)
     assert result.text == (

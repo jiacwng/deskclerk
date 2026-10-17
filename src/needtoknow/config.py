@@ -145,8 +145,11 @@ class ProvisionSettings(BaseSettings):
     owner_password: str = "needtoknow_owner"
     reader_password: str = "needtoknow_reader"
 
-    def check_for(self, db_host: str) -> None:
-        for name in ("admin_password", "owner_password", "reader_password"):
+    def check_for(self, db_host: str, evaluation: bool) -> None:
+        names = ["admin_password", "owner_password"]
+        if evaluation:
+            names.append("reader_password")
+        for name in names:
             default = type(self).model_fields[name].default
             variable = f"NEEDTOKNOW_{name.upper()}"
             refuse_default_password(db_host, variable, getattr(self, name), default)

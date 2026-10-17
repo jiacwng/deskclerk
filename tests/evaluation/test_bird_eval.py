@@ -13,8 +13,10 @@ from langchain_core.messages import AIMessage
 from psycopg.rows import TupleRow
 
 from fakes import HAIKU, call_tool, final_reply, scripted
-from needtoknow.bird_eval import (
+from needtoknow.db import Pool
+from needtoknow.evaluation.bird_eval import (
     ANALYST,
+    EVAL_CAPS,
     OUTPUT_CONTRACT,
     SQL_REPLY_FORMAT,
     BirdEvalError,
@@ -30,7 +32,6 @@ from needtoknow.bird_eval import (
     summarise,
     write_results,
 )
-from needtoknow.db import Pool
 from needtoknow.providers import Spending
 
 Connection = psycopg.Connection[TupleRow]
@@ -131,6 +132,8 @@ def test_the_agent_reads_every_row_of_a_long_gold_answer(app_pool: Pool) -> None
 
     rows_shown = model.prompts[-1][-1].text
     assert rows_shown.endswith("(500 rows)")
+    query_tool = next(tool for tool in model.tools if tool["name"] == "query_data")
+    assert f"returns at most {EVAL_CAPS.rows} rows" in query_tool["description"]
 
 
 @pytest.mark.parametrize(

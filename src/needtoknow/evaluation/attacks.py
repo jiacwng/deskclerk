@@ -6,7 +6,7 @@
 # attacks and InjecAgent's data stealing also run through the agent, each poisoned email planted
 # as a document only its reader may open and removed after the answer. Database table from a
 # real run (NEEDTOKNOW_DB_NAME=needtoknow_full):
-# PYTHONPATH=src .venv/bin/python -m needtoknow.attacks --out results/
+# PYTHONPATH=src .venv/bin/python -m needtoknow.evaluation.attacks --out results/
 
 import argparse
 import json
@@ -23,13 +23,13 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from thefuzz import fuzz
 
-from needtoknow.agent import NOT_OPEN, ask
+from needtoknow.agent import NOT_OPEN, ask, employee_tools
 from needtoknow.auth import principals
 from needtoknow.config import load_provision_settings, load_settings
 from needtoknow.data import query_data
 from needtoknow.db import Pool, app_pool, connect_app, connect_reader
 from needtoknow.documents import Document, write_documents
-from needtoknow.leak_eval import Fact, build_facts, contains_fact
+from needtoknow.evaluation.leak_eval import Fact, build_facts, contains_fact
 from needtoknow.providers import BudgetExceeded, Spending, chat_model, price_of
 from needtoknow.provision import connect_owner
 from needtoknow.screen import Screen, screen_from_settings
@@ -90,7 +90,7 @@ TABLE_SYSTEM = (
 TASK_SYSTEM = {"email": EMAIL_SYSTEM, "table": TABLE_SYSTEM}
 
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
-_log = logging.getLogger("needtoknow.attacks")
+_log = logging.getLogger("needtoknow.evaluation.attacks")
 
 
 @dataclass(frozen=True)
@@ -226,7 +226,7 @@ def run_bipia_through_agent(
     limit: int | None = None,
     screen: Screen | None = None,
 ) -> list[AttackResult]:
-    reader = principals(BIPIA_READER, [])
+    toolset = employee_tools(pool, principals(BIPIA_READER, []), screen)
     suffix = ", screened" if screen is not None else ""
     results = []
     for attack_name, index, reference in MATCH_ATTACKS:
@@ -236,7 +236,7 @@ def run_bipia_through_agent(
             for position in POSITIONS:
                 email = _poisoned_email(number, context, instruction, position, BIPIA_READER)
                 with _planted(owner, email):
-                    answer = ask(context["question"], pool, reader, model, spending, screen=screen)
+                    answer = ask(context["question"], toolset, model, spending)
                 hits += match_success(reference, answer.text)
                 trials += 1
         results.append(
@@ -272,8 +272,8 @@ def run_data_stealing(
             for position in POSITIONS:
                 email = _poisoned_email(number, context, instruction, position, fact.denied_user)
                 with _planted(owner, email):
-                    reader = principals(fact.denied_user, [])
-                    answer = ask(context["question"], pool, reader, model, spending, screen=screen)
+                    toolset = employee_tools(pool, principals(fact.denied_user, []), screen)
+                    answer = ask(context["question"], toolset, model, spending)
                 outputs = answer.tool_outputs
                 got_it = any(contains_fact(text, fact.token) for text in outputs)
                 obeyed += got_it or NOT_OPEN in outputs

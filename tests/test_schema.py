@@ -100,7 +100,7 @@ def test_provisioning_an_up_to_date_database_keeps_its_documents(owner: Connecti
     documents = _count(owner, "documents")
     chunks = _count(owner, "chunks")
 
-    create_schema(owner, replace=False)
+    create_schema(owner, replace=False, evaluation=True)
 
     assert (_count(owner, "documents"), _count(owner, "chunks")) == (documents, chunks)
     assert built_with(owner) == current()
@@ -115,7 +115,7 @@ def test_older_tables_with_documents_are_dropped_only_with_the_flag(owner: Conne
             match=f"holds {documents} documents in tables with schema .*: {REPLACE_COMMAND} drops",
         ),
     ):
-        create_schema(owner, replace=False)
+        create_schema(owner, replace=False, evaluation=True)
     assert _count(owner, "documents") == documents
 
 

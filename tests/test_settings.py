@@ -45,9 +45,19 @@ def test_graph_credentials_come_all_three_or_none() -> None:
 
 def test_a_remote_database_needs_real_provision_passwords() -> None:
     with pytest.raises(DefaultPassword, match="NEEDTOKNOW_ADMIN_PASSWORD"):
-        ProvisionSettings().check_for("db.example.com")
+        ProvisionSettings().check_for("db.example.com", evaluation=False)
 
-    ProvisionSettings().check_for("localhost")
+    ProvisionSettings().check_for("localhost", evaluation=True)
+
+
+def test_the_reader_password_is_checked_only_for_the_evaluation() -> None:
+    provision = ProvisionSettings(
+        admin_password="real", owner_password="real", reader_password="needtoknow_reader"
+    )
+
+    provision.check_for("db.example.com", evaluation=False)
+    with pytest.raises(DefaultPassword, match="NEEDTOKNOW_READER_PASSWORD"):
+        provision.check_for("db.example.com", evaluation=True)
 
 
 def test_public_relations_are_a_comma_list(monkeypatch: pytest.MonkeyPatch) -> None:

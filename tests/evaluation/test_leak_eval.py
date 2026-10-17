@@ -14,7 +14,7 @@ from fakes import HAIKU, call_tool, fake_jev, final_reply, scripted, search_call
 from needtoknow.agent import MAX_TOOL_ROUNDS, REFUSAL
 from needtoknow.db import Pool
 from needtoknow.documents import Document
-from needtoknow.leak_eval import (
+from needtoknow.evaluation.leak_eval import (
     RAW_FILE,
     Configuration,
     build_facts,
@@ -25,7 +25,7 @@ from needtoknow.leak_eval import (
     summarise,
     write_results,
 )
-from needtoknow.methods import Method
+from needtoknow.evaluation.methods import Method
 from needtoknow.providers import Spending
 
 Connection = psycopg.Connection[TupleRow]

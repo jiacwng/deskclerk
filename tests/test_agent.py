@@ -1,6 +1,6 @@
 # The agent loop with a scripted model and the Enron slice: nothing the model sends can change
-# who is asking, citations no tool returned are dropped, each enforcement method shapes what the
-# model sees, and the round cap and the budget stop runaway calls.
+# who is asking, citations no tool returned are dropped, and the round cap and the budget stop
+# runaway calls.
 
 import re
 
@@ -14,17 +14,16 @@ from needtoknow.agent import (
     MAX_TOOL_ROUNDS,
     NOT_OPEN,
     REFUSAL,
-    SEARCH_RESULTS,
     SYSTEM_PROMPT,
     Answer,
     Turn,
     _check_citations,
     ask,
+    employee_tools,
 )
 from needtoknow.auth import principals
 from needtoknow.db import Pool
 from needtoknow.documents import Document
-from needtoknow.methods import Method
 from needtoknow.providers import BudgetExceeded, Spending
 
 TIGER_TEAM = "enron-770963d7e2ceeb8d22d92a1ebfaba325068dfa242524cb4a8983dc0d1165f2ab"
@@ -34,13 +33,9 @@ HOLDER = principals("kaminski-v", [])
 OTHER = principals("kean-s", [])
 
 
-def _ask(
-    pool: Pool,
-    asker: frozenset[str],
-    model: ScriptedModel,
-    method: Method = Method.RLS,
-) -> Answer:
-    return ask(QUESTION, pool, asker, model, Spending(HAIKU, budget_usd=1.0), method)
+def _ask(pool: Pool, asker: frozenset[str], model: ScriptedModel) -> Answer:
+    toolset = employee_tools(pool, asker, None)
+    return ask(QUESTION, toolset, model, Spending(HAIKU, budget_usd=1.0))
 
 
 def _tool_results(model: ScriptedModel) -> list[ToolMessage]:
@@ -126,7 +121,7 @@ def test_tokens_and_cost_are_counted_per_request_and_per_process(app_pool: Pool)
 
     for _ in range(2):
         model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
-        answer = ask(QUESTION, app_pool, HOLDER, model, spending)
+        answer = ask(QUESTION, employee_tools(app_pool, HOLDER, None), model, spending)
 
     assert answer.input_tokens == 2 * USAGE["input_tokens"]
     assert answer.output_tokens == 2 * USAGE["output_tokens"]
@@ -142,7 +137,7 @@ def test_the_budget_refuses_a_call_once_it_is_spent(app_pool: Pool) -> None:
     model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
 
     with pytest.raises(BudgetExceeded, match="budget is 0.0001 USD"):
-        ask(QUESTION, app_pool, HOLDER, model, spending)
+        ask(QUESTION, employee_tools(app_pool, HOLDER, None), model, spending)
 
     assert len(model.prompts) == 1
     assert spending.input_tokens == USAGE["input_tokens"]
@@ -153,44 +148,12 @@ def test_a_zero_budget_refuses_the_first_call(app_pool: Pool) -> None:
     model = scripted(final_reply(REFUSAL))
 
     with pytest.raises(BudgetExceeded):
-        ask(QUESTION, app_pool, HOLDER, model, spending)
+        ask(QUESTION, employee_tools(app_pool, HOLDER, None), model, spending)
 
     assert model.prompts == []
 
 
-@pytest.mark.parametrize("method", [Method.IN_QUERY, Method.POST_FILTER])
-def test_the_application_filters_hide_denied_emails_from_the_model(
-    reader_pool: Pool, emails: dict[str, Document], method: Method
-) -> None:
-    model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
-
-    _ask(reader_pool, OTHER, model, method)
-
-    (result,) = _tool_results(model)
-    returned = _tagged_ids(result)
-    assert returned
-    for doc_id in returned:
-        assert doc_id not in emails or "user:kean-s" in emails[doc_id].readers
-    assert CONTENT not in result.text
-    assert model.prompts[0][0].text == SYSTEM_PROMPT
-
-
-def test_prompt_only_labels_every_passage_and_names_the_asker(reader_pool: Pool) -> None:
-    model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
-
-    _ask(reader_pool, OTHER, model, Method.PROMPT_ONLY)
-
-    (result,) = _tool_results(model)
-    assert f"[{TIGER_TEAM}] (readers: user:kaminski-v)\n" in result.text
-    assert CONTENT in result.text
-    labels = re.findall(r"^\[[a-z0-9-]+\] \(readers: [^)]+\)$", result.text, flags=re.MULTILINE)
-    assert len(labels) == SEARCH_RESULTS
-    system_prompt = model.prompts[0][0].text
-    assert "group:everyone, user:kean-s" in system_prompt
-    assert "Use only passages whose readers include one of those principals" in system_prompt
-
-
-def test_the_default_method_is_rls_with_unlabelled_passages(app_pool: Pool) -> None:
+def test_an_employee_gets_unlabelled_passages_and_the_system_prompt(app_pool: Pool) -> None:
     model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
 
     _ask(app_pool, HOLDER, model)
@@ -198,13 +161,6 @@ def test_the_default_method_is_rls_with_unlabelled_passages(app_pool: Pool) -> N
     (result,) = _tool_results(model)
     assert "(readers:" not in result.text
     assert model.prompts[0][0].text == SYSTEM_PROMPT
-
-
-def test_a_method_on_the_wrong_role_is_refused(app_pool: Pool) -> None:
-    model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
-
-    with pytest.raises(ValueError, match="prompt_only searches as needtoknow_reader"):
-        _ask(app_pool, OTHER, model, Method.PROMPT_ONLY)
 
 
 def test_an_opened_email_gives_its_full_text_and_counts_as_returned(
@@ -260,15 +216,6 @@ def test_a_denied_and_an_unknown_email_get_the_same_reply(app_pool: Pool, doc_id
     assert answer.dropped_citations == (doc_id,)
 
 
-def test_open_document_on_the_reader_role_still_hides_a_denied_email(reader_pool: Pool) -> None:
-    model = scripted(call_tool("open_document", {"doc_id": TIGER_TEAM}), final_reply(REFUSAL))
-
-    _ask(reader_pool, OTHER, model, Method.PROMPT_ONLY)
-
-    (result,) = _tool_results(model)
-    assert result.text == NOT_OPEN
-
-
 @pytest.mark.parametrize(
     ("name", "args"),
     [
@@ -298,7 +245,13 @@ def test_history_reaches_the_model_as_prior_messages(app_pool: Pool) -> None:
     history = [Turn("Who runs the Tiger Team?", "Vince Kaminski."), Turn("Since when?", "1999.")]
     model = scripted(final_reply(REFUSAL))
 
-    ask(QUESTION, app_pool, HOLDER, model, Spending(HAIKU, budget_usd=1.0), history=history)
+    ask(
+        QUESTION,
+        employee_tools(app_pool, HOLDER, None),
+        model,
+        Spending(HAIKU, budget_usd=1.0),
+        history=history,
+    )
 
     (prompt,) = model.prompts
     assert [type(message).__name__ for message in prompt] == [
@@ -324,8 +277,7 @@ def test_a_citation_found_only_in_the_history_is_dropped(app_pool: Pool) -> None
 
     answer = ask(
         "And who are they?",
-        app_pool,
-        HOLDER,
+        employee_tools(app_pool, HOLDER, None),
         model,
         Spending(HAIKU, budget_usd=1.0),
         history=history,
@@ -341,7 +293,11 @@ def test_past_replies_do_not_count_against_the_round_cap(app_pool: Pool) -> None
     model = scripted(search_call({"query": QUESTION}), final_reply(f"They help [{TIGER_TEAM}]."))
 
     answer = ask(
-        QUESTION, app_pool, HOLDER, model, Spending(HAIKU, budget_usd=1.0), history=history
+        QUESTION,
+        employee_tools(app_pool, HOLDER, None),
+        model,
+        Spending(HAIKU, budget_usd=1.0),
+        history=history,
     )
 
     assert not answer.exhausted
