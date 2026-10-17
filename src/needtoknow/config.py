@@ -20,8 +20,8 @@ JWKS_PATH = "/protocol/openid-connect/certs"
 DEFAULT_EMBED_THREADS = max(1, (os.cpu_count() or 2) // 2)
 
 # The schemas and relations every employee may read in full, so the startup check lets the app
-# role read them without row-level security: the nine BIRD databases that carry no policy and
-# financial.district, the list of districts.
+# role read them without row-level security: the nine BIRD databases that carry no policy,
+# financial.district, the list of districts, and public.schema_info, the schema version.
 PUBLIC_RELATIONS = frozenset(
     {
         "card_games",
@@ -30,6 +30,7 @@ PUBLIC_RELATIONS = frozenset(
         "european_football_2",
         "financial.district",
         "formula_1",
+        "public.schema_info",
         "student_club",
         "superhero",
         "thrombosis_prediction",

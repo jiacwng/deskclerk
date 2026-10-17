@@ -1,7 +1,8 @@
 -- Tables, grants and row-level security policies for the documents. Run by needtoknow_owner;
--- running it again drops the tables and starts empty.
+-- running it again drops the tables and starts empty. A change here raises
+-- schema.SCHEMA_VERSION.
 
-DROP TABLE IF EXISTS chunks, doc_access, documents;
+DROP TABLE IF EXISTS schema_info, chunks, doc_access, documents;
 DROP FUNCTION IF EXISTS set_identity(TEXT);
 
 -- The only way the app and reader roles can set who is asking: provision.prepare_database takes
@@ -47,11 +48,26 @@ CREATE TABLE chunks (
 
 CREATE INDEX chunks_embedding ON chunks USING hnsw (embedding vector_cosine_ops);
 
+-- One row: the schema version and the embedding model and chunk size of the stored chunks.
+-- reindexed_through is the last document a running or stopped reindex has rebuilt.
+CREATE TABLE schema_info (
+    id                BOOLEAN PRIMARY KEY DEFAULT true CHECK (id),
+    version           INTEGER NOT NULL,
+    embedding_model   TEXT NOT NULL,
+    chunk_chars       INTEGER NOT NULL,
+    reindexed_through TEXT
+);
+
 GRANT SELECT ON documents, doc_access, chunks TO needtoknow_app, needtoknow_reader;
+GRANT SELECT ON schema_info TO needtoknow_app;
 
 ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE doc_access ENABLE ROW LEVEL SECURITY;
 ALTER TABLE chunks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE schema_info ENABLE ROW LEVEL SECURITY;
+
+-- The API and the MCP server read the record at startup, before anyone signs in.
+CREATE POLICY schema_info_read ON schema_info FOR SELECT TO needtoknow_app USING (true);
 
 -- app.principals is set per transaction by db.as_user through set_identity. When it is unset the
 -- list is NULL or empty, so no row matches.

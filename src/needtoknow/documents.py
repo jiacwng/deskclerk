@@ -71,6 +71,10 @@ def insert_documents(
         "INSERT INTO doc_access (doc_id, principal) VALUES (%s, %s)",
         [(document.id, reader) for document in documents for reader in document.readers],
     )
+    insert_chunks(cursor, embedded)
+
+
+def insert_chunks(cursor: psycopg.Cursor[Any], embedded: Sequence[tuple[Chunk, Vector]]) -> None:
     cursor.executemany(
         "INSERT INTO chunks (doc_id, position, text, embedding) VALUES (%s, %s, %s, %s)",
         [(chunk.doc_id, chunk.position, chunk.text, embedding) for chunk, embedding in embedded],

@@ -35,6 +35,7 @@ from needtoknow.exposure import check_exposure
 from needtoknow.graph import GraphGroups, graph_from_settings
 from needtoknow.providers import BudgetExceeded, Spending, chat_model, price_of
 from needtoknow.quota import Quota
+from needtoknow.schema import check_schema
 from needtoknow.screen import Screen, screen_from_settings
 
 READY_TIMEOUT_SECONDS = 5
@@ -103,6 +104,7 @@ def create_app(
     graph: GraphGroups | None = None,
 ) -> FastAPI:
     check_exposure(settings)
+    check_schema(settings)
     pool = db.app_pool(settings, settings.pool_size)
     quota = Quota(settings.requests_per_minute)
     audit = Audit(settings.audit_text)

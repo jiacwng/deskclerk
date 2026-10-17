@@ -3,27 +3,37 @@
 # `python -m needtoknow.ingest documents <documents.jsonl>` a company's own documents and
 # `python -m needtoknow.ingest files <folder> --access <access.jsonl>` a folder of its files;
 # each creates the tables on first use and keeps what the others loaded.
+# `python -m needtoknow.ingest reindex` rebuilds every chunk after the embedding model or the
+# chunk size has changed.
 
 import argparse
 import logging
+import sys
 from pathlib import Path
 
 from needtoknow.bird import load_bird
 from needtoknow.company import ID_PREFIX, Loaded, load_documents, read_documents
 from needtoknow.config import load_provision_settings, load_settings
+from needtoknow.documents import CHUNK_CHARS
+from needtoknow.embed import MODEL
 from needtoknow.enron import MAX_FILE_BYTES, load_enron
 from needtoknow.provision import connect_admin, connect_owner, create_schema, prepare_database
+from needtoknow.reindex import reindex
+from needtoknow.schema import SchemaMismatch, check_schema
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Load the documents and data.")
-    sources = parser.add_subparsers(dest="source", required=True)
-    enron = sources.add_parser("enron", help="the Enron mailboxes, one folder per custodian")
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser(
+        "reindex", help="rebuild every chunk with this code's embedding model and chunk size"
+    )
+    enron = commands.add_parser("enron", help="the Enron mailboxes, one folder per custodian")
     enron.add_argument("maildir", type=Path)
     enron.add_argument("--limit", type=_positive, help="read only the first N message files")
-    bird = sources.add_parser("bird", help="the BIRD Mini-Dev databases and their descriptions")
+    bird = commands.add_parser("bird", help="the BIRD Mini-Dev databases and their descriptions")
     bird.add_argument("minidev", type=Path)
-    documents = sources.add_parser(
+    documents = commands.add_parser(
         "documents", help="a company's documents, one JSON object per line"
     )
     documents.add_argument("path", type=Path)
@@ -32,7 +42,7 @@ def main() -> None:
         action="store_true",
         help="delete the loaded documents this file no longer lists",
     )
-    files = sources.add_parser(
+    files = commands.add_parser(
         "files", help="a folder of PDF, Office, HTML, Markdown and text files"
     )
     files.add_argument("folder", type=Path)
@@ -52,8 +62,19 @@ def main() -> None:
         action="store_true",
         help="let the reader role log in, for the evaluation; it sees every row",
     )
+    parser.add_argument(
+        "--replace-schema",
+        action="store_true",
+        help="drop the tables and everything loaded into them, then create them again",
+    )
     args = parser.parse_args()
+    try:
+        _ingest(args)
+    except SchemaMismatch as error:
+        sys.exit(str(error))
 
+
+def _ingest(args: argparse.Namespace) -> None:
     settings = load_settings()
     provision = load_provision_settings()
     with connect_admin(settings, provision) as admin:
@@ -62,20 +83,27 @@ def main() -> None:
     logging.basicConfig(format="%(message)s")
     logging.getLogger("needtoknow").setLevel(logging.INFO)
     with connect_owner(settings, provision) as owner:
-        if owner.execute("SELECT to_regclass('public.documents')").fetchone() == (None,):
-            create_schema(owner)
-        if args.source == "enron":
+        create_schema(owner, args.replace_schema)
+        if args.command == "reindex":
+            rebuilt = reindex(owner)
+            print(
+                f"rebuilt {rebuilt.documents} documents into {rebuilt.chunks} chunks "
+                f"with {MODEL} at {CHUNK_CHARS} characters"
+            )
+            return
+        check_schema(settings)
+        if args.command == "enron":
             emails = load_enron(owner, args.maildir, args.limit)
             print(
                 f"read {emails.files} files, skipped {emails.skipped} over {MAX_FILE_BYTES} "
                 f"bytes, wrote {emails.emails} new emails and {emails.chunks} chunks"
             )
-        elif args.source == "documents":
+        elif args.command == "documents":
             company = load_documents(
                 owner, read_documents(args.path), ID_PREFIX, args.delete_missing
             )
             print(_loaded(company))
-        elif args.source == "files":
+        elif args.command == "files":
             # markitdown comes with the files extra, so only this source needs it installed.
             from needtoknow.files import FILE_PREFIX, read_files
 

@@ -28,6 +28,7 @@ from needtoknow.exposure import check_exposure
 from needtoknow.graph import GraphGroups, graph_from_settings
 from needtoknow.jev import JevError
 from needtoknow.quota import Quota
+from needtoknow.schema import check_schema
 from needtoknow.screen import SCREEN_DOWN, Screen, screen_from_settings, shown, shown_rows
 
 # The Keycloak client scope that puts this server's URL in the token audience.
@@ -90,6 +91,7 @@ def create_server(
     graph: GraphGroups | None = None,
 ) -> MCPServer:
     check_exposure(settings)
+    check_schema(settings)
     pool = db.app_pool(settings, settings.pool_size)
     quota = Quota(settings.requests_per_minute)
     audit = Audit(settings.audit_text)
