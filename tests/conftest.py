@@ -93,6 +93,7 @@ def token_settings() -> Settings:
         update={
             "issuer": "http://keycloak.test/realms/needtoknow",
             "client_id": "needtoknow-api",
+            "audience": "needtoknow-api",
             "requests_per_minute": 10_000,
         }
     )
@@ -115,9 +116,9 @@ def sign_token(token_settings: Settings) -> Callable[[dict[str, object]], str]:
         now = int(time.time())
         base: dict[str, object] = {
             "iss": token_settings.issuer,
-            "aud": token_settings.client_id,
-            "azp": token_settings.client_id,
+            "aud": token_settings.audience,
             "typ": "Bearer",
+            "scope": "openid profile",
             "iat": now,
             "exp": now + 300,
             "preferred_username": "district-1",

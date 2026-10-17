@@ -78,7 +78,8 @@ def test_chat_page_calls_only_the_api_and_the_issuer(client: TestClient) -> None
     page = client.get("/").text
     assert re.findall(r"fetch\(([^,)]+)", page) == [
         '"/config"',
-        "`${config.issuer}/protocol/openid-connect/token`",
+        "`${config.issuer}/.well-known/openid-configuration`",
+        "endpoints.token_endpoint",
         '"/ask"',
     ]
     assert "://" not in page
@@ -94,6 +95,7 @@ def test_config_gives_the_page_the_issuer_and_client(
     assert response.json() == {
         "issuer": token_settings.issuer,
         "client_id": token_settings.client_id,
+        "scope": token_settings.login_scope,
     }
 
 

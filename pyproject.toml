@@ -13,6 +13,7 @@ dependencies = [
     "fastembed>=0.9",
     "pgvector>=0.5",
     "pyjwt[crypto]>=2.10",
+    "httpx>=0.28",
     "fastapi>=0.142",
     "uvicorn>=0.54",
     "langgraph>=1.2",
