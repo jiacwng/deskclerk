@@ -1,7 +1,9 @@
-# One server for a company: docker compose -f compose.prod.yaml up -d. Caddy is the only public
-# entry and gets a TLS certificate for NEEDTOKNOW_DOMAIN; it serves the chat page and API at /,
-# the MCP server at /mcp and the Keycloak login at /auth. Every password comes from the
-# environment and the stack refuses to start without one.
+# One server for a company. First load the data with docker compose -f compose.prod.yaml run
+# --rm load, then start the stack with docker compose -f compose.prod.yaml up -d; the app and
+# the MCP server exit with that load command when the database is not provisioned yet. Caddy is
+# the only public entry and gets a TLS certificate for NEEDTOKNOW_DOMAIN; it serves the chat
+# page and API at /, the MCP server at /mcp and the Keycloak login at /auth. Every password
+# comes from the environment and the stack refuses to start without one.
 services:
   caddy:
     image: caddy:2.11.7

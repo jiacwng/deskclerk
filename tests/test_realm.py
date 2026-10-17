@@ -80,7 +80,7 @@ def test_each_client_puts_the_groups_and_the_api_in_the_access_token(client_id: 
     client = _client(client_id)
     [groups] = _mappers(client, "oidc-group-membership-mapper")
     assert groups["claim.name"] == "groups"
-    assert groups["full.path"] == "false"
+    assert groups["full.path"] == "true"
     assert groups["access.token.claim"] == "true"
     [audience] = _mappers(client, "oidc-audience-mapper")
     assert audience["included.client.audience"] == "needtoknow-api"
@@ -100,7 +100,7 @@ def test_the_mcp_scope_puts_the_server_url_and_the_groups_in_the_access_token() 
     assert audience["access.token.claim"] == "true"
     [groups] = _mappers(scope, "oidc-group-membership-mapper")
     assert groups["claim.name"] == "groups"
-    assert groups["full.path"] == "false"
+    assert groups["full.path"] == "true"
     assert groups["access.token.claim"] == "true"
 
 

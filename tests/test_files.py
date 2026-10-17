@@ -16,7 +16,7 @@ from psycopg.rows import TupleRow
 
 from needtoknow.auth import EVERYONE
 from needtoknow.company import ID_PREFIX, load_documents, read_documents
-from needtoknow.files import FILE_PREFIX, FilesError, read_files
+from needtoknow.files import FILE_PREFIX, FilesError, read_files, refuse_loaded_oversized
 from needtoknow.retrieval import search
 
 Connection = psycopg.Connection[TupleRow]
@@ -165,7 +165,35 @@ def test_other_types_and_files_over_the_cap_are_skipped_and_counted(tmp_path: Pa
     found = read_files(folder, access, 100)
 
     assert [document.id for document in found.documents] == ["file-small.txt"]
-    assert (found.unsupported, found.oversized) == (2, 1)
+    assert (found.unsupported, found.oversized) == (2, ["file-large.txt"])
+
+
+def test_a_loaded_file_that_grew_over_the_cap_stops_the_load(
+    owner_clean: Connection, tmp_path: Path
+) -> None:
+    folder = tmp_path / "files"
+    folder.mkdir()
+    (folder / "policy.txt").write_text("Leave is 25 days.", encoding="utf-8")
+    (folder / "new.txt").write_text("x" * 101, encoding="utf-8")
+    access = _access(tmp_path / "access.jsonl", {"path": "*", "public": True})
+    first = read_files(folder, access, 100)
+    load_documents(owner_clean, first.documents, FILE_PREFIX, False)
+    refuse_loaded_oversized(owner_clean, first, 100)
+
+    (folder / "policy.txt").write_text("x" * 101, encoding="utf-8")
+    grown = read_files(folder, access, 100)
+
+    with pytest.raises(FilesError, match=r"^file-policy\.txt grew over 100 bytes"):
+        refuse_loaded_oversized(owner_clean, grown, 100)
+
+
+def test_an_access_line_naming_the_everyone_group_is_refused(tmp_path: Path) -> None:
+    folder = tmp_path / "files"
+    folder.mkdir()
+    access = _access(tmp_path / "access.jsonl", {"path": "*", "groups": ["everyone"]})
+
+    with pytest.raises(FilesError, match=r"(?s)line 1: .*group 'everyone' is reserved"):
+        read_files(folder, access, MAX_BYTES)
 
 
 def test_a_file_no_access_line_matches_stops_the_load_before_anything_is_written(

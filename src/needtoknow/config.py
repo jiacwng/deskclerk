@@ -11,17 +11,13 @@ from typing import Annotated, Any
 from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-# The signing keys sit under the issuer, except where the API reaches the login server by a
-# different address than the one stamped into the tokens, as it does inside a container.
-JWKS_PATH = "/protocol/openid-connect/certs"
-
 # Half the cores embeds as fast as all of them on a mixed corpus and leaves the machine usable.
 # A bulk load that owns the machine raises it.
 DEFAULT_EMBED_THREADS = max(1, (os.cpu_count() or 2) // 2)
 
 # The schemas and relations every employee may read in full, so the startup check lets the app
-# role read them without row-level security: the nine BIRD databases that carry no policy,
-# financial.district, the list of districts, and public.schema_info, the schema version.
+# role read them without row-level security: the nine BIRD databases that carry no policy and
+# financial.district, the list of districts.
 PUBLIC_RELATIONS = frozenset(
     {
         "card_games",
@@ -30,7 +26,6 @@ PUBLIC_RELATIONS = frozenset(
         "european_football_2",
         "financial.district",
         "formula_1",
-        "public.schema_info",
         "student_club",
         "superhero",
         "thrombosis_prediction",
@@ -54,7 +49,9 @@ class Settings(BaseSettings):
     embed_threads: int = DEFAULT_EMBED_THREADS
     max_file_bytes: int = 20 * 1024 * 1024
     issuer: str = "http://localhost:8080/realms/needtoknow"
-    jwks_url: str
+    # Left unset, the signing keys are found from the issuer's OpenID configuration. Set it where
+    # the API reaches the login server by another address than the issuer, as in a container.
+    jwks_url: str | None = None
     client_id: str = "needtoknow-api"
     audience: str
     login_scope: str = "openid"
@@ -74,16 +71,14 @@ class Settings(BaseSettings):
     mcp_url: str = "http://127.0.0.1:8001/mcp"
     screen: bool = True
     audit_text: bool = False
+    audit_key: SecretStr | None = None
     requests_per_minute: int = 20
     pool_size: int = 10
     public_relations: Annotated[frozenset[str], NoDecode] = PUBLIC_RELATIONS
 
     @model_validator(mode="before")
     @classmethod
-    def _jwks_under_issuer(cls, values: dict[str, Any]) -> dict[str, Any]:
-        if not values.get("jwks_url"):
-            issuer = values.get("issuer") or cls.model_fields["issuer"].default
-            values["jwks_url"] = f"{issuer}{JWKS_PATH}"
+    def _audience_is_the_client(cls, values: dict[str, Any]) -> dict[str, Any]:
         if not values.get("audience"):
             values["audience"] = values.get("client_id") or cls.model_fields["client_id"].default
         return values

@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from importlib.resources import files
 from typing import Annotated
 
+import httpx
 import jwt
 import psycopg
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -27,15 +28,15 @@ from needtoknow.auth import (
     Identity,
     SigningKeyLookup,
     authenticate,
+    discover_jwks_url,
     jwks_signing_key,
 )
 from needtoknow.config import Settings, load_settings
 from needtoknow.embed import embed_query
-from needtoknow.exposure import check_exposure
+from needtoknow.exposure import check_startup
 from needtoknow.graph import GraphGroups, graph_from_settings
-from needtoknow.providers import BudgetExceeded, Spending, chat_model, price_of
+from needtoknow.providers import BudgetExceeded, Spending, chat_model, price_of, provider_errors
 from needtoknow.quota import Quota
-from needtoknow.schema import check_schema
 from needtoknow.screen import Screen, screen_from_settings
 
 READY_TIMEOUT_SECONDS = 5
@@ -43,6 +44,7 @@ READY_TIMEOUT_SECONDS = 5
 _bearer = HTTPBearer(auto_error=False)
 BUDGET_SPENT = "the model budget for this server is spent"
 DATABASE_DOWN = "the database cannot be reached"
+PROVIDER_FAILED = "the model provider failed"
 # The client sends the conversation so far, so the server stores nothing between requests.
 MAX_HISTORY_TURNS = 10
 MAX_HISTORY_CHARS = MAX_HISTORY_TURNS * retrieval.MAX_INPUT_CHARS
@@ -103,15 +105,15 @@ def create_app(
     screen: Screen | None = None,
     graph: GraphGroups | None = None,
 ) -> FastAPI:
-    check_exposure(settings)
-    check_schema(settings)
+    check_startup(settings)
+    with httpx.Client(timeout=JWKS_TIMEOUT_SECONDS) as client:
+        jwks_url = discover_jwks_url(settings, client)
     pool = db.app_pool(settings, settings.pool_size)
     quota = Quota(settings.requests_per_minute)
-    audit = Audit(settings.audit_text)
-    # The key set is cached for five minutes, so a readiness probe rarely calls the login server.
-    signing_keys = jwt.PyJWKClient(settings.jwks_url, timeout=JWKS_TIMEOUT_SECONDS)
+    audit = Audit(settings.audit_text, settings.audit_key)
+    signing_keys = jwt.PyJWKClient(jwks_url, timeout=JWKS_TIMEOUT_SECONDS)
+    model_errors = provider_errors()
 
-    # The first query would otherwise wait several seconds for the embedding model to load.
     @asynccontextmanager
     async def lifespan(api: FastAPI) -> AsyncIterator[None]:
         embed_query("warm up")
@@ -213,6 +215,10 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=DATABASE_DOWN
             ) from None
+        except model_errors:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=PROVIDER_FAILED
+            ) from None
         audit.answered(identity, request.question, answer, started)
         return _ask_response(identity, answer)
 
@@ -244,6 +250,8 @@ def create_app(
             yield ServerSentEvent(event="error", data={"detail": BUDGET_SPENT})
         except psycopg.OperationalError:
             yield ServerSentEvent(event="error", data={"detail": DATABASE_DOWN})
+        except model_errors:
+            yield ServerSentEvent(event="error", data={"detail": PROVIDER_FAILED})
 
     return api
 
@@ -251,9 +259,13 @@ def create_app(
 def create_default_app() -> FastAPI:
     log_to_stdout()
     settings = load_settings()
+    with httpx.Client(timeout=JWKS_TIMEOUT_SECONDS) as client:
+        jwks_url = discover_jwks_url(settings, client)
+    settings = settings.model_copy(update={"jwks_url": jwks_url})
     screen = screen_from_settings(settings)
     graph = graph_from_settings(settings)
-    return create_app(settings, jwks_signing_key(settings), chat_model(settings), screen, graph)
+    signing_key = jwks_signing_key(jwks_url)
+    return create_app(settings, signing_key, chat_model(settings), screen, graph)
 
 
 def _ask_response(identity: Identity, answer: agent.Answer) -> AskResponse:

@@ -10,8 +10,9 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY src ./src
 
-# EXTRAS names the optional model providers to install, such as openai or openai,ollama.
-ARG EXTRAS=""
+# EXTRAS names the optional packages to install: files reads a folder of PDF and Office files,
+# and openai or ollama add a model provider, as in files,openai.
+ARG EXTRAS="files"
 
 # The embedding model is downloaded here, so a started container needs no network.
 RUN pip install --no-cache-dir ".${EXTRAS:+[${EXTRAS}]}" \

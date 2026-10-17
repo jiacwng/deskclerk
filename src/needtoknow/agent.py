@@ -138,7 +138,7 @@ def _not_blank(value: str) -> str:
 
 Text = Annotated[str, AfterValidator(_not_blank)]
 
-_CITATION = re.compile(r"( ?)\[([a-z0-9-]+(?:, *[a-z0-9-]+)*)\]")
+_CITATION = re.compile(r"( ?)\[([^\[\]\s,]+(?:, *[^\[\]\s,]+)*)\](?!\()")
 
 _log = logging.getLogger(__name__)
 
@@ -162,8 +162,8 @@ class Answer:
     cost_usd: float
     queries: tuple[Query, ...]
     withheld: int
-    # Every tool result the model was shown. The system prompt and the question are the rest of
-    # its input, so a fact absent from these never reached the model.
+    # Every tool result the model was shown. Beside these it read only the system prompt, the
+    # earlier turns of the conversation, the question and its own replies.
     tool_outputs: tuple[str, ...] = field(repr=False)
 
 
@@ -322,7 +322,6 @@ def _tools(
         (SEARCH_TOOL, search_documents),
         (OPEN_DOCUMENT_TOOL, open_document),
     ]
-    # The other methods search as the reader role, which every row is open to.
     if method is Method.RLS:
         tools += [(DESCRIBE_DATA_TOOL, describe_data), (query_data_tool(caps), query_data)]
     return tools

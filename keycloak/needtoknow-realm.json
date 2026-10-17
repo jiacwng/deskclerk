@@ -144,7 +144,7 @@
           "protocolMapper": "oidc-group-membership-mapper",
           "config": {
             "claim.name": "groups",
-            "full.path": "false",
+            "full.path": "true",
             "access.token.claim": "true",
             "id.token.claim": "false",
             "userinfo.token.claim": "false",
@@ -179,7 +179,7 @@
           "protocolMapper": "oidc-group-membership-mapper",
           "config": {
             "claim.name": "groups",
-            "full.path": "false",
+            "full.path": "true",
             "access.token.claim": "true",
             "id.token.claim": "false",
             "userinfo.token.claim": "false",
@@ -293,7 +293,7 @@
           "protocolMapper": "oidc-group-membership-mapper",
           "config": {
             "claim.name": "groups",
-            "full.path": "false",
+            "full.path": "true",
             "access.token.claim": "true",
             "id.token.claim": "false",
             "userinfo.token.claim": "false",

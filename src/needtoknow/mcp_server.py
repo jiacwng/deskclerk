@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from typing import Annotated
 
 import anyio.to_thread
+import httpx
 import psycopg
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken
@@ -22,13 +23,20 @@ from pydantic import AnyHttpUrl, Field
 
 from needtoknow import data, db, retrieval
 from needtoknow.audit import Audit, log_to_stdout
-from needtoknow.auth import AuthError, Identity, SigningKeyLookup, authenticate, jwks_signing_key
+from needtoknow.auth import (
+    JWKS_TIMEOUT_SECONDS,
+    AuthError,
+    Identity,
+    SigningKeyLookup,
+    authenticate,
+    discover_jwks_url,
+    jwks_signing_key,
+)
 from needtoknow.config import Settings, load_settings
-from needtoknow.exposure import check_exposure
+from needtoknow.exposure import check_startup
 from needtoknow.graph import GraphGroups, graph_from_settings
 from needtoknow.jev import JevError
 from needtoknow.quota import Quota
-from needtoknow.schema import check_schema
 from needtoknow.screen import SCREEN_DOWN, Screen, screen_from_settings, shown, shown_rows
 
 # The Keycloak client scope that puts this server's URL in the token audience.
@@ -90,11 +98,10 @@ def create_server(
     screen: Screen | None,
     graph: GraphGroups | None = None,
 ) -> MCPServer:
-    check_exposure(settings)
-    check_schema(settings)
+    check_startup(settings)
     pool = db.app_pool(settings, settings.pool_size)
     quota = Quota(settings.requests_per_minute)
-    audit = Audit(settings.audit_text)
+    audit = Audit(settings.audit_text, settings.audit_key)
 
     def employee() -> EmployeeToken:
         token = get_access_token()
@@ -173,9 +180,11 @@ def create_server(
 def main() -> None:
     log_to_stdout()
     settings = load_settings()
+    with httpx.Client(timeout=JWKS_TIMEOUT_SECONDS) as client:
+        jwks_url = discover_jwks_url(settings, client)
     server = create_server(
         settings,
-        jwks_signing_key(settings),
+        jwks_signing_key(jwks_url),
         screen_from_settings(settings),
         graph_from_settings(settings),
     )

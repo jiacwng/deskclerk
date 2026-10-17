@@ -3,6 +3,8 @@
 # up-to-date database keeps its documents, and a reindex rebuilds every chunk and resumes where
 # it stopped.
 
+import argparse
+import sys
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
@@ -13,6 +15,7 @@ from psycopg import sql
 from psycopg.rows import TupleRow
 
 from fakes import scripted
+from needtoknow import ingest
 from needtoknow.api import create_app
 from needtoknow.auth import SigningKeyLookup
 from needtoknow.config import Settings, load_settings
@@ -31,6 +34,7 @@ from needtoknow.schema import (
 )
 
 Connection = psycopg.Connection[TupleRow]
+REPLACE_COMMAND = "python -m needtoknow.ingest --replace-schema reindex"
 
 
 def _count(owner: Connection, table: str) -> int:
@@ -62,7 +66,10 @@ def test_the_api_and_the_mcp_server_refuse_another_schema_version(
     owner: Connection, token_settings: Settings, token_signing_key: SigningKeyLookup
 ) -> None:
     newer = replace(current(), version=SCHEMA_VERSION + 1)
-    message = f"schema version {SCHEMA_VERSION + 1} and this code needs schema version 1"
+    message = (
+        f"schema version {SCHEMA_VERSION + 1} and this code needs schema version 1: create the "
+        f"tables again with {REPLACE_COMMAND},"
+    )
     with _recorded(owner, newer):
         with pytest.raises(SchemaMismatch, match=message):
             create_app(token_settings, token_signing_key, scripted())
@@ -103,10 +110,26 @@ def test_older_tables_with_documents_are_dropped_only_with_the_flag(owner: Conne
     documents = _count(owner, "documents")
     with (
         _recorded(owner, replace(current(), version=0)),
-        pytest.raises(SchemaMismatch, match=f"holds {documents} documents in tables with schema"),
+        pytest.raises(
+            SchemaMismatch,
+            match=f"holds {documents} documents in tables with schema .*: {REPLACE_COMMAND} drops",
+        ),
     ):
         create_schema(owner, replace=False)
     assert _count(owner, "documents") == documents
+
+
+def test_the_command_the_messages_name_is_one_ingest_accepts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parsed: list[argparse.Namespace] = []
+    monkeypatch.setattr(ingest, "_ingest", parsed.append)
+    monkeypatch.setattr(sys, "argv", REPLACE_COMMAND.removeprefix("python -m ").split())
+
+    ingest.main()
+
+    [args] = parsed
+    assert (args.command, args.replace_schema) == ("reindex", True)
 
 
 def test_a_reindex_rebuilds_every_chunk_at_a_new_size_and_resumes(

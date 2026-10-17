@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import psycopg
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from needtoknow.auth import EVERYONE
+from needtoknow.auth import EVERYONE, EVERYONE_GROUP
 from needtoknow.documents import Chunk, Document, embed_chunks, insert_documents
 from needtoknow.embed import Vector
 
@@ -33,6 +33,13 @@ class Readers(BaseModel):
     users: list[Principal] = []
     groups: list[Principal] = []
     public: bool = False
+
+    @field_validator("groups")
+    @classmethod
+    def _no_everyone_group(cls, groups: list[str]) -> list[str]:
+        if EVERYONE_GROUP in groups:
+            raise ValueError(f"group {EVERYONE_GROUP!r} is reserved; set public to true instead")
+        return groups
 
     def principals(self) -> frozenset[str]:
         readers = {f"user:{user}" for user in self.users}

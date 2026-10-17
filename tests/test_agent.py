@@ -18,6 +18,7 @@ from needtoknow.agent import (
     SYSTEM_PROMPT,
     Answer,
     Turn,
+    _check_citations,
     ask,
 )
 from needtoknow.auth import principals
@@ -79,6 +80,22 @@ def test_a_citation_the_search_never_returned_is_dropped(app_pool: Pool) -> None
     assert answer.text == (
         f"Two people help [{TIGER_TEAM}]. They started in January [{TIGER_TEAM}]."
     )
+
+
+def test_a_file_id_is_kept_when_returned_and_dropped_when_not() -> None:
+    leave = "file-hr/leave-policy.docx"
+    text = (
+        f"Leave is 25 days [{leave}]. Parking is free [file-hr/parking.md]. "
+        "See [the portal](https://intranet.example)."
+    )
+
+    checked, kept, dropped = _check_citations(text, {leave})
+
+    assert checked == (
+        f"Leave is 25 days [{leave}]. Parking is free. See [the portal](https://intranet.example)."
+    )
+    assert kept == (leave,)
+    assert dropped == ("file-hr/parking.md",)
 
 
 @pytest.mark.parametrize("text", [REFUSAL, f"  {REFUSAL}\n", ""])

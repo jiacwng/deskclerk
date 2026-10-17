@@ -36,10 +36,45 @@
   const who = document.getElementById("who");
   const error = document.getElementById("error");
   const replies = document.getElementById("replies");
-  // The access token lives in this variable only, so a reload signs in again. The PKCE verifier
-  // and the state survive the trip to the login page in sessionStorage (RFC 7636).
+  // The tokens live in these variables only, so a reload signs in again. The PKCE verifier and
+  // the state survive the trip to the login page in sessionStorage (RFC 7636). The access token
+  // is renewed with the refresh token shortly before it expires, and once more on a 401.
   let token = null;
+  let refreshToken = null;
+  let refreshTimer = null;
+  const REFRESH_EARLY_SECONDS = 30;
   const redirectUri = location.origin + location.pathname;
+
+  function keep(tokens) {
+    token = tokens.access_token;
+    refreshToken = tokens.refresh_token ?? null;
+    clearTimeout(refreshTimer);
+    if (refreshToken !== null && typeof tokens.expires_in === "number") {
+      const seconds = Math.max(tokens.expires_in - REFRESH_EARLY_SECONDS, 1);
+      refreshTimer = setTimeout(refresh, seconds * 1000);
+    }
+  }
+
+  async function refresh() {
+    if (refreshToken === null) {
+      return false;
+    }
+    const { config, endpoints } = await provider();
+    const response = await fetch(endpoints.token_endpoint, {
+      method: "POST",
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: config.client_id,
+        refresh_token: refreshToken,
+      }),
+    });
+    if (!response.ok) {
+      refreshToken = null;
+      return false;
+    }
+    keep(await response.json());
+    return true;
+  }
 
   function signedIn(yes) {
     login.hidden = yes;
@@ -111,7 +146,7 @@
       error.textContent = "sign in failed, try again";
       return;
     }
-    token = (await response.json()).access_token;
+    keep(await response.json());
     signedIn(true);
   }
 
@@ -148,14 +183,23 @@
     }
   });
 
-  async function stream(question) {
-    const response = await fetch("/ask/stream", {
+  function send(question) {
+    return fetch("/ask/stream", {
       method: "POST",
       headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({ question, history: recentHistory() }),
     });
+  }
+
+  async function stream(question) {
+    let response = await send(question);
+    if (response.status === 401 && await refresh()) {
+      response = await send(question);
+    }
     if (response.status === 401) {
       token = null;
+      refreshToken = null;
+      clearTimeout(refreshTimer);
       conversation.length = 0;
       signedIn(false);
       error.textContent = "login expired, sign in again";

@@ -16,6 +16,8 @@ GRAPH = "https://graph.microsoft.com/v1.0"
 TIMEOUT_SECONDS = 5
 # An application token is asked for again this long before Entra says it expires.
 TOKEN_MARGIN_SECONDS = 60
+CACHE_SECONDS = 300
+CACHED_USERS = 10_000
 
 
 class GraphError(Exception):
@@ -33,8 +35,25 @@ class GraphGroups:
         self._lock = threading.Lock()
         self._token = ""
         self._token_expires = 0.0
+        self._groups: dict[str, tuple[float, tuple[str, ...]]] = {}
 
+    # Each user's groups are kept for a few minutes, as a token carries them until it expires, so
+    # a burst of requests asks Graph once. The oldest user is dropped once the cache is full.
     def groups_of(self, object_id: str) -> list[str]:
+        now = time.monotonic()
+        with self._lock:
+            cached = self._groups.get(object_id)
+            if cached is not None and now < cached[0]:
+                return list(cached[1])
+        groups = self._read_groups(object_id)
+        with self._lock:
+            self._groups.pop(object_id, None)
+            if len(self._groups) >= CACHED_USERS:
+                del self._groups[next(iter(self._groups))]
+            self._groups[object_id] = (now + CACHE_SECONDS, tuple(groups))
+        return groups
+
+    def _read_groups(self, object_id: str) -> list[str]:
         url: str | None = f"{GRAPH}/users/{object_id}/transitiveMemberOf/microsoft.graph.group"
         params: dict[str, str] | None = {"$select": "id"}
         groups: list[str] = []

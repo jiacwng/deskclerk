@@ -4,6 +4,7 @@
 import time
 from collections.abc import Callable
 
+import httpx
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
@@ -15,9 +16,10 @@ from needtoknow.auth import (
     AuthUnavailable,
     SigningKeyLookup,
     authenticate,
+    discover_jwks_url,
     jwks_signing_key,
 )
-from needtoknow.config import JWKS_PATH, Settings
+from needtoknow.config import Settings
 
 Sign = Callable[[dict[str, object]], str]
 
@@ -31,6 +33,22 @@ def test_valid_token_gives_user_groups_and_everyone(
 
     assert identity.user_id == "district-1"
     assert identity.principals == {"user:district-1", "group:everyone", "group:district:1"}
+
+
+def test_keycloak_group_paths_keep_same_named_subgroups_apart(
+    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup
+) -> None:
+    token = sign_token({"groups": ["/district:1", "/sales/managers", "/support/managers"]})
+
+    identity = authenticate(token, token_settings, token_signing_key, token_settings.audience)
+
+    assert identity.principals == {
+        "user:district-1",
+        "group:everyone",
+        "group:district:1",
+        "group:sales/managers",
+        "group:support/managers",
+    }
 
 
 def test_missing_groups_gives_user_and_everyone(
@@ -59,6 +77,8 @@ def test_missing_groups_gives_user_and_everyone(
         pytest.param({"preferred_username": "a,b"}, "comma", id="comma-in-username"),
         pytest.param({"groups": ["district:1,analyst"]}, "comma", id="comma-in-group"),
         pytest.param({"groups": "district:1"}, "groups must be a list", id="groups-not-a-list"),
+        pytest.param({"groups": ["everyone"]}, "named 'everyone'", id="everyone-group"),
+        pytest.param({"groups": ["/everyone"]}, "named 'everyone'", id="everyone-group-path"),
         pytest.param({"scope": 7}, "scope must be a string", id="scope-not-text"),
     ],
 )
@@ -148,14 +168,50 @@ def test_real_key_client_reports_a_closed_port_as_unavailable(
     sign_token: Sign, token_settings: Settings
 ) -> None:
     # Nothing listens on port 9, so the connection is refused at once.
-    closed = token_settings.model_copy(
-        update={
-            "issuer": "http://127.0.0.1:9/realms/needtoknow",
-            "jwks_url": f"http://127.0.0.1:9/realms/needtoknow{JWKS_PATH}",
-        }
-    )
+    closed = token_settings.model_copy(update={"issuer": "http://127.0.0.1:9/realms/needtoknow"})
+    lookup = jwks_signing_key(f"{closed.issuer}/protocol/openid-connect/certs")
     with pytest.raises(AuthUnavailable):
-        authenticate(sign_token({}), closed, jwks_signing_key(closed), token_settings.audience)
+        authenticate(sign_token({}), closed, lookup, token_settings.audience)
+
+
+def _discovery(requests: list[str], body: dict[str, object]) -> httpx.Client:
+    def answer(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        return httpx.Response(200, json=body)
+
+    return httpx.Client(transport=httpx.MockTransport(answer))
+
+
+def test_the_key_set_address_comes_from_the_issuer_s_openid_configuration(
+    token_settings: Settings,
+) -> None:
+    okta = token_settings.model_copy(
+        update={"issuer": "https://company.okta.com/oauth2/default", "jwks_url": None}
+    )
+    requests: list[str] = []
+    client = _discovery(requests, {"jwks_uri": "https://company.okta.com/oauth2/default/v1/keys"})
+
+    assert discover_jwks_url(okta, client) == "https://company.okta.com/oauth2/default/v1/keys"
+    assert requests == ["https://company.okta.com/oauth2/default/.well-known/openid-configuration"]
+
+
+def test_a_configured_key_set_address_is_used_without_asking_the_issuer(
+    token_settings: Settings,
+) -> None:
+    requests: list[str] = []
+    client = _discovery(requests, {"jwks_uri": "https://elsewhere.test/keys"})
+
+    assert discover_jwks_url(token_settings, client) == token_settings.jwks_url
+    assert requests == []
+
+
+def test_an_openid_configuration_without_jwks_uri_is_unavailable(token_settings: Settings) -> None:
+    unset = token_settings.model_copy(update={"jwks_url": None})
+
+    with pytest.raises(AuthUnavailable, match="gives no jwks_uri"):
+        discover_jwks_url(unset, _discovery([], {"jwks_uri": 7}))
+    with pytest.raises(AuthUnavailable, match="cannot read jwks_uri"):
+        discover_jwks_url(unset, _discovery([], {"issuer": unset.issuer}))
 
 
 def test_bad_signature_is_refused(
@@ -193,7 +249,7 @@ def test_made_up_key_ids_fetch_the_key_set_at_most_once_a_minute(
         return {"keys": [key]}
 
     monkeypatch.setattr(jwt.PyJWKClient, "fetch_data", fetch)
-    lookup = jwks_signing_key(token_settings)
+    lookup = jwks_signing_key(f"{token_settings.issuer}/protocol/openid-connect/certs")
     claims = {"sub": "x"}
 
     for forged in ("forged-1", "forged-2", "forged-3"):

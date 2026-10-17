@@ -22,6 +22,7 @@ from needtoknow.auth import (
     AuthError,
     SigningKeyLookup,
     authenticate,
+    discover_jwks_url,
     jwks_signing_key,
     principals,
 )
@@ -117,7 +118,8 @@ def signing_key() -> SigningKeyLookup:
             f"Keycloak does not answer at {discovery} ({error}). "
             "Start it with: docker compose up -d --wait keycloak"
         )
-    return jwks_signing_key(SETTINGS)
+    with httpx.Client(timeout=10) as client:
+        return jwks_signing_key(discover_jwks_url(SETTINGS, client))
 
 
 def test_the_chat_page_signs_in_with_the_code_flow_and_pkce(

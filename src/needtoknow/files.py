@@ -11,7 +11,9 @@ import stat
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
+from typing import Any
 
+import psycopg
 from markitdown import MarkItDown, MarkItDownException, StreamInfo
 from markitdown.converters import (
     DocxConverter,
@@ -43,7 +45,7 @@ class AccessLine(Readers):
 class Found:
     documents: list[Document]
     unsupported: int
-    oversized: int
+    oversized: list[str]
 
 
 def read_access(path: Path) -> list[AccessLine]:
@@ -73,14 +75,14 @@ def read_files(folder: Path, access_path: Path, max_bytes: int) -> Found:
     wanted: list[tuple[Path, str, frozenset[str]]] = []
     unmapped = []
     unsupported = 0
-    oversized = 0
+    oversized = []
     for path in _walk(root):
         relative = path.relative_to(root).as_posix()
         if path.suffix.lower() not in EXTENSIONS:
             unsupported += 1
             continue
         if path.stat().st_size > max_bytes:
-            oversized += 1
+            oversized.append(FILE_PREFIX + relative)
             continue
         readers = _readers(relative, access)
         if readers is None:
@@ -108,6 +110,20 @@ def read_files(folder: Path, access_path: Path, max_bytes: int) -> Found:
             )
         )
     return Found(documents=documents, unsupported=unsupported, oversized=oversized)
+
+
+# A loaded file that has grown over the cap would keep its old text and readers, or be deleted
+# by --delete-missing, so the load stops instead of skipping it.
+def refuse_loaded_oversized(owner: psycopg.Connection[Any], found: Found, max_bytes: int) -> None:
+    rows = owner.execute(
+        "SELECT id FROM documents WHERE id = ANY(%s) ORDER BY id", [found.oversized]
+    ).fetchall()
+    loaded = [row[0] for row in rows]
+    if loaded:
+        raise FilesError(
+            f"{', '.join(loaded)} grew over {max_bytes} bytes after it was loaded; raise "
+            "NEEDTOKNOW_MAX_FILE_BYTES or remove the file from the folder"
+        )
 
 
 def _walk(root: Path) -> list[Path]:

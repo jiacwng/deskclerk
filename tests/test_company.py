@@ -124,6 +124,7 @@ def test_users_groups_and_public_become_principals(tmp_path: Path) -> None:
         (MOVE | {"users": ["alice,bob"]}, "line 1: 1 validation error"),
         (MOVE | {"users": [""]}, "line 1: 1 validation error"),
         (MOVE | {"public": "yes"}, "line 1: 1 validation error"),
+        (MOVE | {"groups": ["everyone"]}, "group 'everyone' is reserved; set public"),
         (MOVE | {"owner": "alice"}, "line 1: 1 validation error"),
         ({"id": "office-move", "title": "Lisbon office move"}, "line 1: 1 validation error"),
         (MOVE | {"id": ""}, "line 1: 1 validation error"),

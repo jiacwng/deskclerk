@@ -90,8 +90,10 @@ def emails() -> dict[str, Document]:
 
 @pytest.fixture(scope="session")
 def token_settings() -> Settings:
-    return load_settings().model_copy(
+    settings = load_settings()
+    return settings.model_copy(
         update={
+            "jwks_url": f"{settings.issuer}/protocol/openid-connect/certs",
             "issuer": "http://keycloak.test/realms/needtoknow",
             "client_id": "needtoknow-api",
             "audience": "needtoknow-api",

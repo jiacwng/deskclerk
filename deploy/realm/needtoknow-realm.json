@@ -1,6 +1,7 @@
 {
   "realm": "needtoknow",
   "bruteForceProtected": true,
+  "accessTokenLifespan": 900,
   "displayName": "needtoknow",
   "enabled": true,
   "clients": [
@@ -28,7 +29,7 @@
           "protocolMapper": "oidc-group-membership-mapper",
           "config": {
             "claim.name": "groups",
-            "full.path": "false",
+            "full.path": "true",
             "access.token.claim": "true",
             "id.token.claim": "false",
             "userinfo.token.claim": "false",
@@ -142,7 +143,7 @@
           "protocolMapper": "oidc-group-membership-mapper",
           "config": {
             "claim.name": "groups",
-            "full.path": "false",
+            "full.path": "true",
             "access.token.claim": "true",
             "id.token.claim": "false",
             "userinfo.token.claim": "false",
@@ -196,7 +197,7 @@
         "subType": "anonymous",
         "config": {
           "max-clients": [
-            "200"
+            "50"
           ]
         }
       },

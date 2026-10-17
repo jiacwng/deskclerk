@@ -105,12 +105,13 @@ def _ingest(args: argparse.Namespace) -> None:
             print(_loaded(company))
         elif args.command == "files":
             # markitdown comes with the files extra, so only this source needs it installed.
-            from needtoknow.files import FILE_PREFIX, read_files
+            from needtoknow.files import FILE_PREFIX, read_files, refuse_loaded_oversized
 
             found = read_files(args.folder, args.access, settings.max_file_bytes)
+            refuse_loaded_oversized(owner, found, settings.max_file_bytes)
             company = load_documents(owner, found.documents, FILE_PREFIX, args.delete_missing)
             print(
-                f"skipped {found.unsupported} files of other types and {found.oversized} over "
+                f"skipped {found.unsupported} files of other types and {len(found.oversized)} over "
                 f"{settings.max_file_bytes} bytes, {_loaded(company)}"
             )
         else:

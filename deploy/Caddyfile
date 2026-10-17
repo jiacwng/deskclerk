@@ -5,6 +5,10 @@
 }
 
 {$NEEDTOKNOW_DOMAIN} {
+	request_body {
+		max_size 1MB
+	}
+
 	@keycloak path /auth/realms/needtoknow/* /auth/resources/*
 	handle @keycloak {
 		reverse_proxy keycloak:8080

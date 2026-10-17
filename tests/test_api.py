@@ -4,6 +4,7 @@
 # Each answer writes one audit line, and /ready reports the database and the login server's keys.
 
 import hashlib
+import hmac
 import json
 import logging
 import re
@@ -12,6 +13,8 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+import anthropic
+import httpx2
 import jwt
 import psycopg
 import pytest
@@ -20,7 +23,7 @@ from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.messages import BaseMessage
 from langchain_core.outputs import ChatResult
 from psycopg.rows import TupleRow
-from pydantic import Field
+from pydantic import Field, SecretStr
 
 from fakes import HAIKU, USAGE, ScriptedModel, call_tool, final_reply, scripted, search_call
 from needtoknow.agent import REFUSAL
@@ -105,11 +108,20 @@ def test_chat_page_sends_the_history_the_api_accepts(client: TestClient) -> None
 def test_chat_page_calls_only_the_api_and_the_issuer(client: TestClient) -> None:
     page = client.get("/").text
     assert re.findall(r"fetch\(([^,)]+)", page) == [
+        "endpoints.token_endpoint",
         '"/config"',
         "`${config.issuer}/.well-known/openid-configuration`",
         "endpoints.token_endpoint",
         '"/ask/stream"',
     ]
+
+
+def test_chat_page_renews_the_token_before_it_ends_the_conversation(client: TestClient) -> None:
+    page = client.get("/").text
+    assert 'grant_type: "refresh_token",' in page
+    assert "refreshTimer = setTimeout(refresh, seconds * 1000);" in page
+    retry = page.index("if (response.status === 401 && await refresh()) {")
+    assert retry < page.index("conversation.length = 0;")
     assert "://" not in page
     assert "src=" not in page
     assert "<link" not in page
@@ -451,6 +463,35 @@ def test_ask_with_the_database_down_is_unavailable(
     assert response.json() == {"detail": "the database cannot be reached"}
 
 
+class _FailingModel(ScriptedModel):
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+        raise anthropic.APIConnectionError(request=request)
+
+
+def test_a_failing_model_provider_is_unavailable_on_ask_and_an_error_event_on_stream(
+    owner: psycopg.Connection[TupleRow],
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    sign_token: Sign,
+) -> None:
+    model = _FailingModel(messages=iter([]))
+    with TestClient(create_app(token_settings, token_signing_key, model)) as ask_client:
+        asked = ask_client.post("/ask", json=ASK, headers=_kean(sign_token))
+        streamed = ask_client.post("/ask/stream", json=ASK, headers=_kean(sign_token))
+
+    assert asked.status_code == 503
+    assert asked.json() == {"detail": "the model provider failed"}
+    assert streamed.status_code == 200
+    assert _events(streamed.text) == [("error", {"detail": "the model provider failed"})]
+
+
 def test_concurrent_searches_each_answer_as_their_own_caller(
     client: TestClient, sign_token: Sign, emails: dict[str, Document]
 ) -> None:
@@ -592,7 +633,7 @@ def test_an_answer_writes_one_audit_line_without_the_question(
         "client",
         "entry",
         "text_chars",
-        "text_sha256",
+        "text_hmac",
         "text",
         "documents",
         "sql",
@@ -609,10 +650,10 @@ def test_an_answer_writes_one_audit_line_without_the_question(
     assert line["client"] == token_settings.client_id
     assert line["entry"] == "ask"
     assert line["text_chars"] == len(question)
-    assert line["text_sha256"] == hashlib.sha256(question.encode()).hexdigest()
+    assert line["text_hmac"] is None
     assert line["text"] is None
     assert line["documents"] == [TIGER_TEAM]
-    assert line["sql"] == []
+    assert line["sql"] is None
     assert line["withheld"] == 0
     assert line["refused"] is False
     assert line["exhausted"] is False
@@ -637,7 +678,29 @@ def test_the_audit_line_holds_the_question_when_the_setting_asks(
 
     lines = _audit_lines(caplog)
     assert len(lines) == 1
-    assert json.loads(lines[0])["text"] == ASK["question"]
+    line = json.loads(lines[0])
+    assert line["text"] == ASK["question"]
+    assert line["sql"] == []
+
+
+def test_the_audit_line_holds_a_keyed_hash_of_the_question_when_a_key_is_set(
+    owner: psycopg.Connection[TupleRow],
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    sign_token: Sign,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="needtoknow.audit")
+    keyed = token_settings.model_copy(update={"audit_key": SecretStr("audit-test-key")})
+    token = sign_token({"preferred_username": "kaminski-v", "groups": []})
+
+    _ask_as_kaminski(keyed, token_signing_key, token)
+
+    [line] = [json.loads(text) for text in _audit_lines(caplog)]
+    question = ASK["question"].encode()
+    assert line["text_hmac"] == hmac.new(b"audit-test-key", question, hashlib.sha256).hexdigest()
+    assert line["text_hmac"] != hashlib.sha256(question).hexdigest()
+    assert line["text"] is None
 
 
 @pytest.mark.keycloak

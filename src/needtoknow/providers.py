@@ -7,6 +7,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
+import anthropic
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 
@@ -94,6 +95,14 @@ def _options(provider: str) -> dict[str, Any]:
     if provider == "ollama":
         return {"num_predict": MAX_TOKENS}
     return {"max_tokens": MAX_TOKENS}
+
+
+def provider_errors() -> tuple[type[Exception], ...]:
+    try:
+        import openai
+    except ImportError:
+        return (anthropic.APIError,)
+    return (anthropic.APIError, openai.APIError)
 
 
 def chat_model(settings: Settings) -> BaseChatModel:

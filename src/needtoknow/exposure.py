@@ -13,6 +13,7 @@ import psycopg
 
 from needtoknow.config import Settings, load_settings
 from needtoknow.db import connect_app
+from needtoknow.schema import check_schema
 
 _RELATIONS = r"""
 SELECT c.oid, n.nspname, c.relname, c.relkind,
@@ -61,6 +62,13 @@ WHERE p.prosecdef AND n.nspname <> 'pg_catalog' AND has_function_privilege(p.oid
   AND p.oid IS DISTINCT FROM to_regprocedure('public.set_identity(text)')
 ORDER BY 1
 """
+
+
+SCHEMA_INFO = "public.schema_info"
+NOT_PROVISIONED = (
+    "the database is not provisioned or unreachable: run the load "
+    "(docker compose -f compose.prod.yaml run --rm load) first"
+)
 
 
 class Exposed(RuntimeError):
@@ -117,6 +125,14 @@ def check_exposure(settings: Settings) -> None:
         )
 
 
+def check_startup(settings: Settings) -> None:
+    try:
+        check_exposure(settings)
+        check_schema(settings)
+    except psycopg.OperationalError:
+        sys.exit(NOT_PROVISIONED)
+
+
 def _role_problems(connection: psycopg.Connection[Any]) -> list[str]:
     problems = []
     if connection.execute(_SUPERUSER).fetchone() == (True,):
@@ -134,7 +150,7 @@ def _role_problems(connection: psycopg.Connection[Any]) -> list[str]:
 
 
 def _is_public(relation: Relation, public: Collection[str]) -> bool:
-    return relation.schema in public or relation.name in public
+    return relation.name == SCHEMA_INFO or relation.schema in public or relation.name in public
 
 
 def _reasons(

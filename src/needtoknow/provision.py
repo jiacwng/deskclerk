@@ -159,8 +159,9 @@ def create_schema(owner: psycopg.Connection[Any], replace: bool) -> None:
             found = "no version" if built is None else f"schema version {built.version}"
             raise SchemaMismatch(
                 f"the database holds {stored} documents in tables with {found}, and this code "
-                f"needs schema version {code.version}; --replace-schema drops them and creates "
-                "the tables again"
+                f"needs schema version {code.version}: python -m needtoknow.ingest "
+                "--replace-schema reindex drops them and creates the tables again, then load the "
+                "documents again"
             )
     with owner.transaction():
         owner.execute(SCHEMA.read_text(encoding="utf-8"))

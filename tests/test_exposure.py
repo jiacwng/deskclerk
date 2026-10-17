@@ -91,10 +91,7 @@ def test_the_loaded_data_passes_with_the_shipped_public_list(app: Connection) ->
 
 
 def test_the_public_list_is_what_the_bird_data_needs(app: Connection) -> None:
-    assert find_exposures(app, set()) == [
-        "financial.district: row-level security is off",
-        "public.schema_info: a policy lets the app role read every row",
-    ]
+    assert find_exposures(app, set()) == ["financial.district: row-level security is off"]
 
 
 def test_a_table_without_row_level_security_is_reported(app: Connection, admin: Connection) -> None:
@@ -306,6 +303,17 @@ def test_the_api_and_the_mcp_server_refuse_to_start(
         create_app(token_settings, token_signing_key, scripted())
     with pytest.raises(Exposed, match="exposure_test.plain"):
         create_server(token_settings, token_signing_key, None)
+
+
+def test_the_api_and_the_mcp_server_name_the_load_when_the_database_cannot_be_reached(
+    token_settings: Settings, token_signing_key: SigningKeyLookup
+) -> None:
+    unreachable = token_settings.model_copy(update={"db_port": 1})
+
+    with pytest.raises(SystemExit, match=r"not provisioned or unreachable: run the load"):
+        create_app(unreachable, token_signing_key, scripted())
+    with pytest.raises(SystemExit, match=r"compose.prod.yaml run --rm load\) first$"):
+        create_server(unreachable, token_signing_key, None)
 
 
 def test_the_command_fails_while_a_relation_is_exposed(

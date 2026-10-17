@@ -1,14 +1,18 @@
 # The audit log: one JSON line per answer, search and MCP tool call, naming who asked, from which
-# client, which documents and SQL were used, and what it cost. The question or query is logged as
-# its length and SHA-256 unless NEEDTOKNOW_AUDIT_TEXT is set; tokens and document text never are.
+# client, which documents were used, and what it cost. The question or query and the SQL are
+# logged only when NEEDTOKNOW_AUDIT_TEXT is set; otherwise only the text's length, and its
+# HMAC-SHA256 when NEEDTOKNOW_AUDIT_KEY is set. Tokens and document text are never logged.
 
 import hashlib
+import hmac
 import json
 import logging
 import sys
 import time
 from collections.abc import Iterable
 from datetime import UTC, datetime
+
+from pydantic import SecretStr
 
 from needtoknow.agent import Answer
 from needtoknow.auth import Identity
@@ -17,8 +21,9 @@ _log = logging.getLogger(__name__)
 
 
 class Audit:
-    def __init__(self, include_text: bool) -> None:
+    def __init__(self, include_text: bool, key: SecretStr | None) -> None:
         self.include_text = include_text
+        self.key = key
 
     def answered(self, identity: Identity, question: str, answer: Answer, started: float) -> None:
         self._write(
@@ -69,10 +74,10 @@ class Audit:
             "client": identity.client_id,
             "entry": entry,
             "text_chars": len(text),
-            "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+            "text_hmac": self._hmac(text),
             "text": text if self.include_text else None,
             "documents": list(documents),
-            "sql": list(sql),
+            "sql": list(sql) if self.include_text else None,
             "withheld": withheld,
             "refused": refused,
             "exhausted": exhausted,
@@ -82,6 +87,12 @@ class Audit:
             "latency_ms": round((time.monotonic() - started) * 1000),
         }
         _log.info(json.dumps(line))
+
+    def _hmac(self, text: str) -> str | None:
+        if self.key is None:
+            return None
+        key = self.key.get_secret_value().encode()
+        return hmac.new(key, text.encode(), hashlib.sha256).hexdigest()
 
 
 # The server entry points call this once: the process writes its audit lines to stdout and the

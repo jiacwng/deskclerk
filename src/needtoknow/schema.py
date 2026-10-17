@@ -50,8 +50,8 @@ def check_schema(settings: Settings) -> None:
         found = "no version" if built is None else f"schema version {built.version}"
         raise SchemaMismatch(
             f"the database has {found} and this code needs schema version {code.version}: "
-            "create the tables again with python -m needtoknow.ingest --replace-schema, which "
-            "deletes what was loaded, then load the documents again"
+            "create the tables again with python -m needtoknow.ingest --replace-schema reindex, "
+            "which deletes what was loaded, then load the documents again"
         )
     if built.reindexed_through is not None:
         raise SchemaMismatch(
