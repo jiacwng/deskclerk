@@ -2,7 +2,8 @@
 # questions and reference answers were written per email of the CMU release, and each row names
 # the email's file in the maildir. A sample of rows whose email is loaded is asked by the
 # custodian whose mailbox holds it, under row-level security. As in the paper, a judge compares
-# the answer with the reference answer; here the judge is TypeSafe's Jev.
+# the answer with the reference answer; here the judge is TypeSafe's Jev. The injection screen
+# runs as it ships, so the table also counts the answers it withheld passages from.
 # A full run (NEEDTOKNOW_DB_NAME=needtoknow_full):
 # PYTHONPATH=src .venv/bin/python -m needtoknow.quality_eval \
 #   --enronqa ~/datasets/enronqa/test/test-00000-of-00001.parquet \
@@ -30,6 +31,7 @@ from needtoknow.db import Pool, app_pool, connect_reader
 from needtoknow.enron import MAX_FILE_BYTES, parse_email
 from needtoknow.jev import Jev, JevError, jev_from_environment
 from needtoknow.providers import BudgetExceeded, Spending, chat_model, price_of
+from needtoknow.screen import Screen, screen_from_settings
 from needtoknow.stats import with_interval
 
 # The paper's judge prompt (its appendix B.6) asks whether the answer matches the gold answer.
@@ -73,6 +75,7 @@ class Record:
     correct: bool
     refused: bool
     exhausted: bool
+    withheld: int
     input_tokens: int
     output_tokens: int
     cost_usd: float
@@ -146,6 +149,7 @@ def evaluate(
     jev: Jev,
     raw: TextIO,
     done: Sequence[Record] = (),
+    screen: Screen | None = None,
 ) -> list[Record]:
     asked = {record.doc_id for record in done}
     jobs = [question for question in questions if question.doc_id not in asked]
@@ -153,7 +157,7 @@ def evaluate(
     finished: list[tuple[int, Record]] = []
 
     def run(number: int, question: Question) -> None:
-        record = _ask_once(question, pool, model, spending, jev)
+        record = _ask_once(question, pool, model, spending, jev, screen)
         with writing:
             finished.append((number, record))
             raw.write(json.dumps(asdict(record)) + "\n")
@@ -205,6 +209,7 @@ def summarise(records: Sequence[Record], sample: Sample, model_name: str) -> dic
         "correct_when_retrieved": sum(record.correct for record in retrieved),
         "refused": sum(record.refused for record in records),
         "exhausted": sum(record.exhausted for record in records),
+        "withheld": sum(record.withheld > 0 for record in records),
         "input_tokens": sum(record.input_tokens for record in records),
         "output_tokens": sum(record.output_tokens for record in records),
         "cost_usd": round(sum(record.cost_usd for record in records), 6),
@@ -227,11 +232,12 @@ def results_table(summary: dict[str, Any]) -> str:
             "its custodian reads.",
             "",
             f"| Correct, judged by Jev (of {questions}) | Email reached the model (of {questions}) "
-            f"| Correct when it did (of {retrieved}) | Refused | Out of steps | Cost (USD) |",
-            "|---|---|---|---|---|---|",
+            f"| Correct when it did (of {retrieved}) | Refused | Out of steps | Screen withheld a "
+            "passage | Cost (USD) |",
+            "|---|---|---|---|---|---|---|",
             f"| {with_interval(summary['correct'], questions)} "
             f"| {with_interval(retrieved, questions)} | {when_retrieved} | {summary['refused']} "
-            f"| {summary['exhausted']} | {summary['cost_usd']:.4f} |",
+            f"| {summary['exhausted']} | {summary['withheld']} | {summary['cost_usd']:.4f} |",
             "",
             "Counts come with their 95% Wilson score interval.",
             "Correct: TypeSafe's Jev decision model, shown the email, the question, the reference "
@@ -240,7 +246,8 @@ def results_table(summary: dict[str, Any]) -> str:
             "with a person on this task is not measured. A refusal or an answer out of steps "
             "counts as wrong and is not judged.",
             "Email reached the model: a search result or an opened document shown to the model "
-            "carries the email's id.",
+            "carries the email's id. Screen withheld a passage: answers where the injection screen "
+            "kept at least one search result, opened email or query row from the model.",
             "",
             "Questions and reference answers are the first of each row of EnronQA "
             "(MichaelR207/enron_qa_0922, CC BY 4.0). We wrote only the judge question.",
@@ -256,9 +263,15 @@ def write_results(out: Path, summary: dict[str, Any]) -> None:
 
 
 def _ask_once(
-    question: Question, pool: Pool, model: BaseChatModel, spending: Spending, jev: Jev
+    question: Question,
+    pool: Pool,
+    model: BaseChatModel,
+    spending: Spending,
+    jev: Jev,
+    screen: Screen | None,
 ) -> Record:
-    answer = ask(question.question, pool, principals(question.user, []), model, spending)
+    asker = principals(question.user, [])
+    answer = ask(question.question, pool, asker, model, spending, screen=screen)
     answered = not answer.refused and not answer.exhausted
     label = f"[{question.doc_id}]"
     return Record(
@@ -271,6 +284,7 @@ def _ask_once(
         correct=answered and judge(question, answer.text, jev),
         refused=answer.refused,
         exhausted=answer.exhausted,
+        withheld=answer.withheld,
         input_tokens=answer.input_tokens,
         output_tokens=answer.output_tokens,
         cost_usd=answer.cost_usd,
@@ -325,7 +339,15 @@ def main() -> None:
         with raw_path.open("a", encoding="utf-8") as raw:
             try:
                 records = evaluate(
-                    sample.questions, app, args.workers, model, spending, jev, raw, done
+                    sample.questions,
+                    app,
+                    args.workers,
+                    model,
+                    spending,
+                    jev,
+                    raw,
+                    done,
+                    screen_from_settings(settings),
                 )
             except BudgetExceeded as error:
                 raise SystemExit(f"stopped: {error}. Rerun with --resume to carry on.") from error
