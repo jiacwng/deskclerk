@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "needtoknow"
 version = "0.0.0"
-description = "A company AI assistant that never uses a document the person asking cannot open."
+description = "Open-source AI data agent with database-enforced permissions."
 requires-python = ">=3.12"
 authors = [{ name = "Wang Jiacheng" }]
 dependencies = [
@@ -16,17 +16,28 @@ dependencies = [
     "fastapi>=0.142",
     "uvicorn>=0.54",
     "langgraph>=1.2",
+    "langchain>=1.4",
     "langchain-core>=1.6",
+    "langchain-text-splitters>=1.1",
     "langchain-anthropic>=1.7",
     "mcp>=2.3",
+    "typesafe-sdk>=0.7",
+    "pydantic-settings>=2.16",
+    "psycopg-pool>=3.3",
+    "limits>=5.8",
 ]
+
+[project.optional-dependencies]
+eval = ["scipy>=1.18", "thefuzz>=0.22", "pyarrow>=25.0"]
+openai = ["langchain-openai>=1.7"]
+ollama = ["langchain-ollama>=1.1"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
 packages = ["needtoknow"]
 
 [tool.setuptools.package-data]
-needtoknow = ["static/chat.html"]
+needtoknow = ["static/chat.html", "sql/*.sql"]
 
 [tool.ruff]
 line-length = 100
@@ -36,14 +47,21 @@ src = ["src", "tests"]
 select = ["E", "W", "F", "I", "UP", "B", "S"]
 
 [tool.ruff.lint.per-file-ignores]
-# assert is the pytest idiom
-"tests/**" = ["S101"]
+# assert and throwaway passwords are the pytest idiom
+"tests/**" = ["S101", "S105", "S106"]
+# the development passwords from compose.yaml
+"src/needtoknow/config.py" = ["S105"]
 
 [tool.mypy]
 files = ["src", "tests"]
 mypy_path = "src"
 strict = true
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+# thefuzz and pyarrow ship no type information
+module = ["thefuzz", "pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

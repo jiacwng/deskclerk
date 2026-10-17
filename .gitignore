@@ -1,8 +1,11 @@
 # local
 local/
 data/
+!tests/data/
 *.local.md
+.env
 runs/
+results/*_raw.jsonl
 
 # Python
 __pycache__/

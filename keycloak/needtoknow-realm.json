@@ -1,32 +1,74 @@
 {
   "realm": "needtoknow",
-  "displayName": "Calder Systems (development only, every user's password is needtoknow)",
+  "displayName": "needtoknow (development only, every user's password is needtoknow)",
   "enabled": true,
   "groups": [
     {
-      "name": "executives"
+      "name": "district:1"
     },
     {
-      "name": "finance"
+      "name": "county:Sierra"
     },
     {
-      "name": "engineering"
-    },
-    {
-      "name": "hr"
-    },
-    {
-      "name": "sales"
+      "name": "analyst"
     }
   ],
   "users": [
     {
-      "username": "elena",
+      "username": "kaminski-v",
       "enabled": true,
-      "email": "elena@calder.example",
+      "email": "kaminski-v@needtoknow.example",
       "emailVerified": true,
-      "firstName": "Elena",
-      "lastName": "Duval",
+      "firstName": "Vince",
+      "lastName": "Kaminski",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "needtoknow",
+          "temporary": false
+        }
+      ],
+      "groups": []
+    },
+    {
+      "username": "dasovich-j",
+      "enabled": true,
+      "email": "dasovich-j@needtoknow.example",
+      "emailVerified": true,
+      "firstName": "Jeff",
+      "lastName": "Dasovich",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "needtoknow",
+          "temporary": false
+        }
+      ],
+      "groups": []
+    },
+    {
+      "username": "kean-s",
+      "enabled": true,
+      "email": "kean-s@needtoknow.example",
+      "emailVerified": true,
+      "firstName": "Steven",
+      "lastName": "Kean",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "needtoknow",
+          "temporary": false
+        }
+      ],
+      "groups": []
+    },
+    {
+      "username": "district-1",
+      "enabled": true,
+      "email": "district-1@needtoknow.example",
+      "emailVerified": true,
+      "firstName": "Hl.m. Praha",
+      "lastName": "District",
       "credentials": [
         {
           "type": "password",
@@ -35,16 +77,16 @@
         }
       ],
       "groups": [
-        "/executives"
+        "/district:1"
       ]
     },
     {
-      "username": "tomas",
+      "username": "county-sierra",
       "enabled": true,
-      "email": "tomas@calder.example",
+      "email": "county-sierra@needtoknow.example",
       "emailVerified": true,
-      "firstName": "Tomas",
-      "lastName": "Lindqvist",
+      "firstName": "Sierra",
+      "lastName": "County",
       "credentials": [
         {
           "type": "password",
@@ -53,17 +95,16 @@
         }
       ],
       "groups": [
-        "/executives",
-        "/finance"
+        "/county:Sierra"
       ]
     },
     {
-      "username": "rafael",
+      "username": "analyst",
       "enabled": true,
-      "email": "rafael@calder.example",
+      "email": "analyst@needtoknow.example",
       "emailVerified": true,
-      "firstName": "Rafael",
-      "lastName": "Ortega",
+      "firstName": "Data",
+      "lastName": "Analyst",
       "credentials": [
         {
           "type": "password",
@@ -72,170 +113,7 @@
         }
       ],
       "groups": [
-        "/executives",
-        "/engineering"
-      ]
-    },
-    {
-      "username": "chloe",
-      "enabled": true,
-      "email": "chloe@calder.example",
-      "emailVerified": true,
-      "firstName": "Chloe",
-      "lastName": "Martin",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "needtoknow",
-          "temporary": false
-        }
-      ],
-      "groups": [
-        "/hr"
-      ]
-    },
-    {
-      "username": "nadia",
-      "enabled": true,
-      "email": "nadia@calder.example",
-      "emailVerified": true,
-      "firstName": "Nadia",
-      "lastName": "Benali",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "needtoknow",
-          "temporary": false
-        }
-      ],
-      "groups": [
-        "/hr"
-      ]
-    },
-    {
-      "username": "marco",
-      "enabled": true,
-      "email": "marco@calder.example",
-      "emailVerified": true,
-      "firstName": "Marco",
-      "lastName": "Bianchi",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "needtoknow",
-          "temporary": false
-        }
-      ],
-      "groups": [
-        "/sales"
-      ]
-    },
-    {
-      "username": "sofia",
-      "enabled": true,
-      "email": "sofia@calder.example",
-      "emailVerified": true,
-      "firstName": "Sofia",
-      "lastName": "Novak",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "needtoknow",
-          "temporary": false
-        }
-      ],
-      "groups": [
-        "/sales"
-      ]
-    },
-    {
-      "username": "ben",
-      "enabled": true,
-      "email": "ben@calder.example",
-      "emailVerified": true,
-      "firstName": "Ben",
-      "lastName": "Carter",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "needtoknow",
-          "temporary": false
-        }
-      ],
-      "groups": [
-        "/sales"
-      ]
-    },
-    {
-      "username": "lukas",
-      "enabled": true,
-      "email": "lukas@calder.example",
-      "emailVerified": true,
-      "firstName": "Lukas",
-      "lastName": "Weber",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "needtoknow",
-          "temporary": false
-        }
-      ],
-      "groups": [
-        "/finance"
-      ]
-    },
-    {
-      "username": "amir",
-      "enabled": true,
-      "email": "amir@calder.example",
-      "emailVerified": true,
-      "firstName": "Amir",
-      "lastName": "Haddad",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "needtoknow",
-          "temporary": false
-        }
-      ],
-      "groups": [
-        "/engineering"
-      ]
-    },
-    {
-      "username": "julie",
-      "enabled": true,
-      "email": "julie@calder.example",
-      "emailVerified": true,
-      "firstName": "Julie",
-      "lastName": "Moreau",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "needtoknow",
-          "temporary": false
-        }
-      ],
-      "groups": [
-        "/engineering"
-      ]
-    },
-    {
-      "username": "oskar",
-      "enabled": true,
-      "email": "oskar@calder.example",
-      "emailVerified": true,
-      "firstName": "Oskar",
-      "lastName": "Nilsson",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "needtoknow",
-          "temporary": false
-        }
-      ],
-      "groups": [
-        "/engineering"
+        "/analyst"
       ]
     }
   ],
@@ -279,5 +157,194 @@
         }
       ]
     }
-  ]
+  ],
+  "clientScopes": [
+    {
+      "name": "basic",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "sub",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "config": {
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "auth_time",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usersessionmodel-note-mapper",
+          "config": {
+            "user.session.note": "AUTH_TIME",
+            "claim.name": "auth_time",
+            "jsonType.label": "long",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "profile",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "${profileScopeConsentText}"
+      },
+      "protocolMappers": [
+        {
+          "name": "username",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "username",
+            "claim.name": "preferred_username",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "web-origins",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "allowed web origins",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-allowed-origins-mapper",
+          "config": {
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "needtoknow-mcp",
+      "description": "Access to the needtoknow MCP server",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Search the documents and data you may read"
+      },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "config": {
+            "claim.name": "groups",
+            "full.path": "false",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "http://127.0.0.1:8001/mcp",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "defaultDefaultClientScopes": [
+    "basic",
+    "profile",
+    "web-origins"
+  ],
+  "defaultOptionalClientScopes": [
+    "needtoknow-mcp"
+  ],
+  "components": {
+    "org.keycloak.services.clientregistration.policy.ClientRegistrationPolicy": [
+      {
+        "name": "Trusted Hosts",
+        "providerId": "trusted-hosts",
+        "subType": "anonymous",
+        "config": {
+          "trusted-hosts": [
+            "localhost",
+            "127.0.0.1"
+          ],
+          "host-sending-registration-request-must-match": [
+            "true"
+          ],
+          "client-uris-must-match": [
+            "true"
+          ]
+        }
+      },
+      {
+        "name": "Max Clients Limit",
+        "providerId": "max-clients",
+        "subType": "anonymous",
+        "config": {
+          "max-clients": [
+            "200"
+          ]
+        }
+      },
+      {
+        "name": "Full Scope Disabled",
+        "providerId": "scope",
+        "subType": "anonymous",
+        "config": {}
+      },
+      {
+        "name": "Allowed Registration Web Origins",
+        "providerId": "registration-web-origins",
+        "subType": "anonymous",
+        "config": {}
+      },
+      {
+        "name": "Consent Required",
+        "providerId": "consent-required",
+        "subType": "anonymous",
+        "config": {}
+      },
+      {
+        "name": "Allowed Client Scopes",
+        "providerId": "allowed-client-templates",
+        "subType": "anonymous",
+        "config": {
+          "allow-default-scopes": [
+            "true"
+          ]
+        }
+      },
+      {
+        "name": "Allowed Protocol Mapper Types",
+        "providerId": "allowed-protocol-mappers",
+        "subType": "anonymous",
+        "config": {
+          "allowed-protocol-mapper-types": []
+        }
+      }
+    ]
+  }
 }

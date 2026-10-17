@@ -1,5 +1,5 @@
-# Row-level security against the real database: each employee sees exactly the documents the
-# corpus grants them, nothing is visible without an identity, and the app role cannot write.
+# Row-level security on the documents against the real database: each user sees exactly the
+# documents open to them, nothing is visible without an identity, and the app role cannot write.
 
 import psycopg
 import pytest
@@ -8,13 +8,15 @@ from psycopg.abc import Query
 from psycopg.pq import TransactionStatus
 from psycopg.rows import TupleRow
 
-from needtoknow.corpus import Corpus
+from needtoknow.auth import EVERYONE, principals
 from needtoknow.db import APP_ROLE, as_user
-from needtoknow.ingest import ingest, split_into_chunks
+from needtoknow.documents import Document
 from needtoknow.provision import OWNER_ROLE
-from needtoknow.workplace import Workplace
 
 Connection = psycopg.Connection[TupleRow]
+
+KAMINSKI = principals("kaminski-v", [])
+KEAN = principals("kean-s", [])
 
 
 def _ids(connection: Connection, query: Query) -> set[str]:
@@ -27,47 +29,23 @@ def _count(connection: Connection, query: Query) -> int:
     return int(row[0])
 
 
-def test_each_employee_sees_exactly_their_documents(app: Connection, corpus: Corpus) -> None:
-    expected = {}
-    seen_documents = {}
-    seen_chunks = {}
-    for employee in corpus.employees.values():
-        expected[employee.id] = {
-            doc.id for doc in corpus.documents if corpus.can_read(employee.id, doc)
-        }
-        with as_user(app, employee.principals()):
-            seen_documents[employee.id] = _ids(app, "SELECT id FROM documents")
-            seen_chunks[employee.id] = _ids(app, "SELECT doc_id FROM chunks")
+def test_each_user_sees_exactly_their_documents(
+    app: Connection, owner: Connection, emails: dict[str, Document]
+) -> None:
+    rows = owner.execute("SELECT doc_id FROM doc_access WHERE principal = %s", [EVERYONE])
+    for_everyone = {row[0] for row in rows}
+    custodians = {reader for email in emails.values() for reader in email.readers}
+    assert for_everyone
+    assert len(custodians) == 3
 
-    assert len(expected) * len(corpus.documents) == 480
-    assert seen_documents == expected
-    assert seen_chunks == expected
-
-
-def test_each_employee_sees_the_whole_directory(app: Connection, corpus: Corpus) -> None:
-    for employee in corpus.employees.values():
-        with as_user(app, employee.principals()):
-            assert _ids(app, "SELECT id FROM employees") == set(corpus.employees)
+    for custodian in custodians:
+        own = {doc_id for doc_id, email in emails.items() if custodian in email.readers}
+        with as_user(app, principals(custodian.removeprefix("user:"), [])):
+            assert _ids(app, "SELECT id FROM documents") == own | for_everyone
+            assert _ids(app, "SELECT doc_id FROM chunks") == own | for_everyone
 
 
-@pytest.mark.parametrize(
-    "table",
-    [
-        "documents",
-        "doc_access",
-        "chunks",
-        "employees",
-        "spending",
-        "forecasts",
-        "meetings",
-        "meeting_attendees",
-        "tasks",
-        "spending_by_month",
-        "forecast_vs_actual",
-        "open_tasks",
-        "my_meetings",
-    ],
-)
+@pytest.mark.parametrize("table", ["documents", "doc_access", "chunks"])
 def test_no_identity_sees_no_rows(app: Connection, owner: Connection, table: str) -> None:
     query = sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(table))
     assert _count(owner, query) > 0
@@ -96,36 +74,27 @@ def test_every_table_has_row_level_security(owner: Connection) -> None:
         ("chunks", OWNER_ROLE, True),
         ("doc_access", OWNER_ROLE, True),
         ("documents", OWNER_ROLE, True),
-        ("employees", OWNER_ROLE, True),
-        ("forecasts", OWNER_ROLE, True),
-        ("meeting_attendees", OWNER_ROLE, True),
-        ("meetings", OWNER_ROLE, True),
-        ("spending", OWNER_ROLE, True),
-        ("tasks", OWNER_ROLE, True),
     ]
 
 
-def test_identity_ends_with_the_transaction(app: Connection, corpus: Corpus) -> None:
-    with as_user(app, corpus.employees["julie"].principals()):
+def test_identity_ends_with_the_transaction(app: Connection) -> None:
+    with as_user(app, KAMINSKI):
         assert _count(app, "SELECT count(*) FROM documents") > 0
     assert _count(app, "SELECT count(*) FROM documents") == 0
 
 
-def test_identity_ends_when_the_transaction_fails(app: Connection, corpus: Corpus) -> None:
-    with (
-        pytest.raises(psycopg.errors.DivisionByZero),
-        as_user(app, corpus.employees["julie"].principals()),
-    ):
+def test_identity_ends_when_the_transaction_fails(app: Connection) -> None:
+    with pytest.raises(psycopg.errors.DivisionByZero), as_user(app, KAMINSKI):
         app.execute("SELECT 1 / 0")
     assert app.info.transaction_status == TransactionStatus.IDLE
     assert _count(app, "SELECT count(*) FROM documents") == 0
 
 
-def test_identity_cannot_be_set_inside_an_open_transaction(app: Connection, corpus: Corpus) -> None:
+def test_identity_cannot_be_set_inside_an_open_transaction(app: Connection) -> None:
     with (
-        as_user(app, corpus.employees["julie"].principals()),
+        as_user(app, KAMINSKI),
         pytest.raises(RuntimeError, match="no open transaction"),
-        as_user(app, corpus.employees["elena"].principals()),
+        as_user(app, KEAN),
     ):
         pass
 
@@ -139,39 +108,23 @@ def test_identity_cannot_be_set_inside_an_open_transaction(app: Connection, corp
         "TRUNCATE chunks",
     ],
 )
-def test_app_cannot_write(app: Connection, corpus: Corpus, statement: str) -> None:
-    with (
-        pytest.raises(psycopg.errors.InsufficientPrivilege),
-        as_user(app, corpus.employees["julie"].principals()),
-    ):
+def test_app_cannot_write(app: Connection, statement: str) -> None:
+    with pytest.raises(psycopg.errors.InsufficientPrivilege), as_user(app, KAMINSKI):
         app.execute(statement)
 
 
-def test_access_rows_show_only_the_askers_principals(app: Connection, corpus: Corpus) -> None:
-    principals = corpus.employees["julie"].principals()
-    with as_user(app, principals):
+def test_access_rows_show_only_the_askers_principals(app: Connection) -> None:
+    with as_user(app, KAMINSKI):
         visible = _ids(app, "SELECT principal FROM doc_access")
     assert visible
-    assert visible <= principals
+    assert visible <= KAMINSKI
 
 
-@pytest.mark.parametrize("principal", ["group:everyone,user:elena", ""])
+@pytest.mark.parametrize("principal", ["group:everyone,user:kean-s", ""])
 def test_malformed_principal_is_refused(app: Connection, principal: str) -> None:
     with (
         pytest.raises(ValueError, match="empty or contains a comma"),
-        as_user(app, ["user:julie", principal]),
+        as_user(app, ["user:kaminski-v", principal]),
     ):
         pass
     assert app.info.transaction_status == TransactionStatus.IDLE
-
-
-def test_loading_again_replaces_the_rows(
-    owner: Connection, corpus: Corpus, workplace: Workplace
-) -> None:
-    ingest(owner, corpus, workplace)
-    readers = sum(len(doc.readers) for doc in corpus.documents)
-    chunks = sum(len(split_into_chunks(doc)) for doc in corpus.documents)
-    assert _count(owner, "SELECT count(*) FROM documents") == len(corpus.documents)
-    assert _count(owner, "SELECT count(*) FROM doc_access") == readers
-    assert _count(owner, "SELECT count(*) FROM chunks") == chunks
-    assert _count(owner, "SELECT count(*) FROM employees") == len(corpus.employees)
