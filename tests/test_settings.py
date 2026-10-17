@@ -1,5 +1,6 @@
 # Settings refuse a development password for a database that is not on this machine, a model
-# named without its provider, and one price setting without the other.
+# named without its provider, one price setting without the other, and a public relation named
+# with more than a schema and a relation.
 
 import pytest
 from pydantic import ValidationError
@@ -32,3 +33,19 @@ def test_a_remote_database_needs_real_provision_passwords() -> None:
         ProvisionSettings().check_for("db.example.com")
 
     ProvisionSettings().check_for("localhost")
+
+
+def test_public_relations_are_a_comma_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NEEDTOKNOW_PUBLIC_RELATIONS", " handbook, sales.price_list ,")
+
+    assert Settings().public_relations == frozenset({"handbook", "sales.price_list"})
+
+    monkeypatch.setenv("NEEDTOKNOW_PUBLIC_RELATIONS", "")
+    assert Settings().public_relations == frozenset()
+
+
+def test_a_public_relation_takes_at_most_one_dot(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NEEDTOKNOW_PUBLIC_RELATIONS", "db.sales.price_list")
+
+    with pytest.raises(ValidationError, match="schema or schema.relation"):
+        Settings()

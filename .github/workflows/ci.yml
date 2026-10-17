@@ -59,3 +59,7 @@ jobs:
           http://localhost:8080/realms/needtoknow/.well-known/openid-configuration > /dev/null;
           do sleep 2; done' || { docker logs keycloak; exit 1; }
       - run: pytest
+      - name: Check that the app role reads only protected data
+        run: python -m needtoknow.exposure
+        env:
+          PYTHONPATH: src

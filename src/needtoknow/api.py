@@ -25,6 +25,7 @@ from needtoknow.auth import (
 )
 from needtoknow.config import Settings, load_settings
 from needtoknow.embed import embed_query
+from needtoknow.exposure import check_exposure
 from needtoknow.providers import BudgetExceeded, Spending, chat_model, price_of
 from needtoknow.quota import Quota
 from needtoknow.screen import Screen, screen_from_settings
@@ -66,6 +67,7 @@ def create_app(
     model: BaseChatModel,
     screen: Screen | None = None,
 ) -> FastAPI:
+    check_exposure(settings)
     pool = db.app_pool(settings, settings.pool_size)
     quota = Quota(settings.requests_per_minute)
 

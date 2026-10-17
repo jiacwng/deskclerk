@@ -1,7 +1,8 @@
 # Sets up the database: the admin creates the owner, app and reader roles and takes the
 # dangerous built-ins away from them, and the owner creates the tables. Only ingestion and the
 # tests run this; the API never does. The reader role sees every row, so it can log in only when
-# the evaluation asks for it.
+# the evaluation asks for it. The built-ins are taken from every role of the database, so
+# needtoknow needs a database of its own and refuses one that holds tables it did not create.
 
 from importlib.resources import files
 from typing import Any
@@ -66,6 +67,21 @@ REVOKE SELECT ON pg_catalog.pg_stat_activity, pg_catalog.pg_locks,
 """
 
 
+_RELATIONS_OF_OTHERS = r"""
+SELECT n.nspname || '.' || c.relname
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
+  AND n.nspname <> 'information_schema' AND n.nspname NOT LIKE 'pg\_%'
+  AND c.relowner IS DISTINCT FROM (SELECT oid FROM pg_roles WHERE rolname = 'needtoknow_owner')
+ORDER BY 1
+"""
+
+
+class SharedDatabase(RuntimeError):
+    pass
+
+
 # Every request holds one app connection, so a flood of requests or one heavy query must not
 # take the server's connections, memory or disk from everyone else.
 _APP_LIMITS = """
@@ -93,6 +109,12 @@ def prepare_database(
     evaluation: bool,
 ) -> None:
     provision.check_for(settings.db_host)
+    others = [row[0] for row in admin.execute(_RELATIONS_OF_OTHERS)]
+    if others:
+        raise SharedDatabase(
+            f"needtoknow needs a database of its own, and {settings.db_name} holds relations "
+            f"it did not create: {', '.join(others)}"
+        )
     admin.execute("CREATE EXTENSION IF NOT EXISTS vector")
     admin.execute(_CREATE_ROLES)
     for role, password, login in (

@@ -17,6 +17,7 @@ from pydantic import AnyHttpUrl
 from needtoknow import data, db, retrieval
 from needtoknow.auth import AuthError, Identity, SigningKeyLookup, authenticate, jwks_signing_key
 from needtoknow.config import Settings, load_settings
+from needtoknow.exposure import check_exposure
 from needtoknow.jev import JevError
 from needtoknow.quota import Quota
 from needtoknow.screen import SCREEN_DOWN, Screen, screen_from_settings, shown
@@ -56,6 +57,7 @@ class EmployeeTokenVerifier:
 def create_server(
     settings: Settings, signing_key: SigningKeyLookup, screen: Screen | None
 ) -> MCPServer:
+    check_exposure(settings)
     pool = db.app_pool(settings, settings.pool_size)
     quota = Quota(settings.requests_per_minute)
 
