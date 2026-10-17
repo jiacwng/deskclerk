@@ -23,6 +23,7 @@ from needtoknow import data, db, retrieval
 from needtoknow.auth import AuthError, Identity, SigningKeyLookup, authenticate, jwks_signing_key
 from needtoknow.config import Settings, load_settings
 from needtoknow.exposure import check_exposure
+from needtoknow.graph import GraphGroups, graph_from_settings
 from needtoknow.jev import JevError
 from needtoknow.quota import Quota
 from needtoknow.screen import SCREEN_DOWN, Screen, screen_from_settings, shown, shown_rows
@@ -36,16 +37,24 @@ class EmployeeToken(AccessToken):
 
 
 class EmployeeTokenVerifier:
-    def __init__(self, settings: Settings, signing_key: SigningKeyLookup) -> None:
+    def __init__(
+        self, settings: Settings, signing_key: SigningKeyLookup, graph: GraphGroups | None
+    ) -> None:
         self.settings = settings
         self.signing_key = signing_key
+        self.graph = graph
 
     # The SDK answers 401 when this returns None. The signing key lookup can block on Keycloak,
     # so it runs in a worker thread.
     async def verify_token(self, token: str) -> AccessToken | None:
         try:
             identity = await anyio.to_thread.run_sync(
-                authenticate, token, self.settings, self.signing_key, self.settings.mcp_url
+                authenticate,
+                token,
+                self.settings,
+                self.signing_key,
+                self.settings.mcp_url,
+                self.graph,
             )
         except AuthError:
             return None
@@ -73,7 +82,10 @@ def _reachable() -> Iterator[None]:
 
 
 def create_server(
-    settings: Settings, signing_key: SigningKeyLookup, screen: Screen | None
+    settings: Settings,
+    signing_key: SigningKeyLookup,
+    screen: Screen | None,
+    graph: GraphGroups | None = None,
 ) -> MCPServer:
     check_exposure(settings)
     pool = db.app_pool(settings, settings.pool_size)
@@ -89,7 +101,7 @@ def create_server(
 
     server = MCPServer(
         name="needtoknow",
-        token_verifier=EmployeeTokenVerifier(settings, signing_key),
+        token_verifier=EmployeeTokenVerifier(settings, signing_key, graph),
         auth=AuthSettings(
             issuer_url=AnyHttpUrl(settings.issuer),
             resource_server_url=AnyHttpUrl(settings.mcp_url),
@@ -136,7 +148,12 @@ def create_server(
 
 def main() -> None:
     settings = load_settings()
-    server = create_server(settings, jwks_signing_key(settings), screen_from_settings(settings))
+    server = create_server(
+        settings,
+        jwks_signing_key(settings),
+        screen_from_settings(settings),
+        graph_from_settings(settings),
+    )
     server.run("streamable-http", host=settings.mcp_host, port=settings.mcp_port)
 
 

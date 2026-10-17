@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- The demo chat page: sign in through Keycloak, ask a question, read the answer, its SQL and its sources. -->
+<!-- The demo chat page: sign in through the company's identity provider, ask a question, read the answer, its SQL and its sources. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -21,8 +21,6 @@
 <body>
 <h1>needtoknow</h1>
 <form id="login">
-  <input name="username" placeholder="username" autocomplete="username" required>
-  <input name="password" type="password" placeholder="password" autocomplete="current-password" required>
   <button>Sign in</button>
 </form>
 <p id="who" hidden></p>
@@ -38,38 +36,86 @@
   const who = document.getElementById("who");
   const error = document.getElementById("error");
   const replies = document.getElementById("replies");
+  // The access token lives in this variable only, so a reload signs in again. The PKCE verifier
+  // and the state survive the trip to the login page in sessionStorage (RFC 7636).
   let token = null;
+  const redirectUri = location.origin + location.pathname;
 
-  function signedIn(username) {
-    login.hidden = username !== null;
-    ask.hidden = username === null;
-    who.hidden = username === null;
-    who.textContent = username === null ? "" : `Signed in as ${username}`;
+  function signedIn(yes) {
+    login.hidden = yes;
+    ask.hidden = !yes;
+    who.hidden = !yes;
+    who.textContent = "Signed in";
+  }
+
+  function randomText() {
+    return base64url(crypto.getRandomValues(new Uint8Array(32)));
+  }
+
+  function base64url(bytes) {
+    return btoa(String.fromCharCode(...new Uint8Array(bytes)))
+      .replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  }
+
+  async function provider() {
+    const config = await (await fetch("/config")).json();
+    const discovery = await fetch(`${config.issuer}/.well-known/openid-configuration`);
+    return { config, endpoints: await discovery.json() };
   }
 
   login.addEventListener("submit", async (event) => {
     event.preventDefault();
-    error.textContent = "";
-    const config = await (await fetch("/config")).json();
-    const form = new FormData(login);
-    const response = await fetch(`${config.issuer}/protocol/openid-connect/token`, {
+    const { config, endpoints } = await provider();
+    const verifier = randomText();
+    const state = randomText();
+    sessionStorage.setItem("pkce", JSON.stringify({ verifier, state }));
+    const challenge = base64url(
+      await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)),
+    );
+    const query = new URLSearchParams({
+      response_type: "code",
+      client_id: config.client_id,
+      redirect_uri: redirectUri,
+      scope: config.scope,
+      state,
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+    });
+    location.assign(`${endpoints.authorization_endpoint}?${query}`);
+  });
+
+  async function finishSignIn() {
+    const answer = new URLSearchParams(location.search);
+    if (!answer.has("code") && !answer.has("error")) {
+      return;
+    }
+    const saved = JSON.parse(sessionStorage.getItem("pkce") ?? "null");
+    sessionStorage.removeItem("pkce");
+    history.replaceState(null, "", redirectUri);
+    if (saved === null || answer.get("state") !== saved.state || !answer.has("code")) {
+      error.textContent = "sign in failed, try again";
+      return;
+    }
+    const { config, endpoints } = await provider();
+    const response = await fetch(endpoints.token_endpoint, {
       method: "POST",
       body: new URLSearchParams({
-        grant_type: "password",
+        grant_type: "authorization_code",
         client_id: config.client_id,
-        username: form.get("username"),
-        password: form.get("password"),
-        scope: "openid",
+        code: answer.get("code"),
+        redirect_uri: redirectUri,
+        code_verifier: saved.verifier,
       }),
     });
     if (!response.ok) {
-      error.textContent = "wrong username or password";
+      error.textContent = "sign in failed, try again";
       return;
     }
     token = (await response.json()).access_token;
-    login.reset();
-    signedIn(form.get("username"));
-  });
+    signedIn(true);
+  }
+
+  finishSignIn();
 
   ask.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -82,7 +128,7 @@
     });
     if (response.status === 401) {
       token = null;
-      signedIn(null);
+      signedIn(false);
       error.textContent = "login expired, sign in again";
       return;
     }
@@ -91,6 +137,7 @@
       error.textContent = typeof body.detail === "string" ? body.detail : `error ${response.status}`;
       return;
     }
+    who.textContent = `Signed in as ${body.user}`;
     show(question, body);
     ask.reset();
   });

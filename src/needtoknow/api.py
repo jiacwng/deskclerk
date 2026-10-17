@@ -27,6 +27,7 @@ from needtoknow.auth import (
 from needtoknow.config import Settings, load_settings
 from needtoknow.embed import embed_query
 from needtoknow.exposure import check_exposure
+from needtoknow.graph import GraphGroups, graph_from_settings
 from needtoknow.providers import BudgetExceeded, Spending, chat_model, price_of
 from needtoknow.quota import Quota
 from needtoknow.screen import Screen, screen_from_settings
@@ -67,6 +68,7 @@ def create_app(
     signing_key: SigningKeyLookup,
     model: BaseChatModel,
     screen: Screen | None = None,
+    graph: GraphGroups | None = None,
 ) -> FastAPI:
     check_exposure(settings)
     pool = db.app_pool(settings, settings.pool_size)
@@ -89,7 +91,7 @@ def create_app(
             raise _unauthorized(None)
         try:
             identity = authenticate(
-                credentials.credentials, settings, signing_key, settings.client_id
+                credentials.credentials, settings, signing_key, settings.audience, graph
             )
         except AuthError:
             raise _unauthorized("invalid_token") from None
@@ -115,7 +117,11 @@ def create_app(
 
     @api.get("/config")
     def config() -> dict[str, str]:
-        return {"issuer": settings.issuer, "client_id": settings.client_id}
+        return {
+            "issuer": settings.issuer,
+            "client_id": settings.client_id,
+            "scope": settings.login_scope,
+        }
 
     # A plain def runs in FastAPI's thread pool, so the blocking database call and the embedding
     # do not stall other requests. A search, and each tool call of an answer, borrows a
@@ -161,7 +167,8 @@ def create_app(
 def create_default_app() -> FastAPI:
     settings = load_settings()
     screen = screen_from_settings(settings)
-    return create_app(settings, jwks_signing_key(settings), chat_model(settings), screen)
+    graph = graph_from_settings(settings)
+    return create_app(settings, jwks_signing_key(settings), chat_model(settings), screen, graph)
 
 
 def _unauthorized(error: str | None) -> HTTPException:
