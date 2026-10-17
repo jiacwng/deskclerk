@@ -60,8 +60,8 @@ strict = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-# thefuzz and pyarrow ship no type information
-module = ["thefuzz", "pyarrow", "pyarrow.*"]
+# thefuzz, pyarrow and pyyaml ship no type information
+module = ["thefuzz", "pyarrow", "pyarrow.*", "yaml"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
