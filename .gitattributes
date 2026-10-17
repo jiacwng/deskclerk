@@ -1,2 +1,3 @@
 tests/data/** -text
 *.sh text eol=lf
+.env.example text eol=lf

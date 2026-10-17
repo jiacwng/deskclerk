@@ -1,7 +1,6 @@
-# One server for a company. First load the data with docker compose -f compose.prod.yaml run
-# --rm load, then start the stack with docker compose -f compose.prod.yaml up -d; the app and
-# the MCP server exit with that load command when the database is not provisioned yet. Caddy is
-# the only public entry and gets a TLS certificate for NEEDTOKNOW_DOMAIN; it serves the chat
+# One server for a company. Start it with docker compose -f compose.prod.yaml up -d --wait; the
+# load service provisions the database first, and the company's files are loaded afterwards with
+# docker compose -f compose.prod.yaml run --rm load. Caddy is the only public entry and gets a TLS certificate for NEEDTOKNOW_DOMAIN; it serves the chat
 # page and API at /, the MCP server at /mcp and the Keycloak login at /auth. Every password
 # comes from the environment and the stack refuses to start without one. The app and the MCP
 # server get only the settings they read, passed through from .env, so the admin and owner
@@ -78,12 +77,16 @@ services:
       db:
         condition: service_healthy
 
-  # Creates the roles and tables and loads documents/documents.jsonl, then exits:
-  # docker compose -f compose.prod.yaml run --rm load
+  # Runs needtoknow.ingest on the folder ./documents, mounted as /data, then exits. Started with
+  # the stack it creates the roles and tables and does nothing else, so the app and the MCP
+  # server find a provisioned database. A folder of files with its access file is loaded, and
+  # reloaded after files change or go, with
+  # docker compose -f compose.prod.yaml run --rm load files /data/files
+  # --access /data/access.jsonl --delete-missing
   load:
     build: .
-    command: ["python", "-m", "needtoknow.ingest", "documents", "/data/documents.jsonl"]
-    profiles: ["load"]
+    entrypoint: ["python", "-m", "needtoknow.ingest"]
+    command: ["reindex"]
     environment:
       NEEDTOKNOW_DB_HOST: db
       NEEDTOKNOW_ADMIN_PASSWORD: ${NEEDTOKNOW_ADMIN_PASSWORD}
@@ -136,6 +139,8 @@ services:
     depends_on:
       keycloak:
         condition: service_healthy
+      load:
+        condition: service_completed_successfully
 
   mcp:
     build: .
@@ -161,6 +166,8 @@ services:
     depends_on:
       keycloak:
         condition: service_healthy
+      load:
+        condition: service_completed_successfully
 
 volumes:
   db-data:

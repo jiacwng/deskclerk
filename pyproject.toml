@@ -51,7 +51,7 @@ select = ["E", "W", "F", "I", "UP", "B", "S"]
 [tool.ruff.lint.per-file-ignores]
 # assert and throwaway passwords are the pytest idiom
 "tests/**" = ["S101", "S105", "S106"]
-"e2e/**" = ["S101", "S105"]
+"e2e/**" = ["S101", "S105", "S603", "S607"]
 # the development passwords from compose.yaml
 "src/needtoknow/config.py" = ["S105"]
 
