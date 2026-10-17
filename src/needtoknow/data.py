@@ -100,8 +100,20 @@ def _describe_schemas(app: psycopg.Connection[Any]) -> str:
 
 @dataclass(frozen=True)
 class QueryResult:
-    text: str
     failed: bool
+    header: str
+    rows: tuple[str, ...]
+    note: str
+
+    @property
+    def text(self) -> str:
+        if self.failed:
+            return self.note
+        return "\n".join([self.header, *self.rows, self.note])
+
+
+def _failure(note: str) -> QueryResult:
+    return QueryResult(failed=True, header="", rows=(), note=note)
 
 
 # The newlines keep a trailing -- comment from swallowing the closing parenthesis. Both
@@ -138,16 +150,16 @@ def query_data(
                 lines.append(line)
     except psycopg.Error as error:
         message = error.diag.message_primary or "the database refused it"
-        return QueryResult(text=f"The query failed: {message}", failed=True)
+        return _failure(f"The query failed: {message}")
     except UnicodeEncodeError:
-        return QueryResult(text="The query failed: the query is not valid UTF-8.", failed=True)
+        return _failure("The query failed: the query is not valid UTF-8.")
 
     shown = len(lines) - 1
     if cut:
-        lines.append(f"The result was cut at {shown} rows. Narrow the query or aggregate.")
+        note = f"The result was cut at {shown} rows. Narrow the query or aggregate."
     else:
-        lines.append(f"({shown} rows)")
-    return QueryResult(text="\n".join(lines), failed=False)
+        note = f"({shown} rows)"
+    return QueryResult(failed=False, header=lines[0], rows=tuple(lines[1:]), note=note)
 
 
 def _cut_values(query: str, width: int, caps: Caps) -> sql.Composed:

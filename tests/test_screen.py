@@ -8,6 +8,7 @@ from langchain_core.messages import ToolMessage
 
 from fakes import (
     HAIKU,
+    PLANTED_ROW_SQL,
     ScriptedModel,
     call_tool,
     fake_jev,
@@ -131,6 +132,19 @@ def test_a_flagged_query_result_is_withheld(app_pool: Pool) -> None:
 
     (result,) = _tool_results(model)
     assert result.text == f"The query result {WITHHELD}."
+    assert answer.withheld == 1
+
+
+def test_a_flagged_row_is_withheld_and_the_other_rows_are_shown(app_pool: Pool) -> None:
+    model = scripted(call_tool("query_data", {"sql": PLANTED_ROW_SQL}), final_reply(REFUSAL))
+    screen = Screen(fake_jev(lambda state: 0.9 if "ignore" in state["passage"] else 0.1))
+
+    answer = ask("What do the notes say?", app_pool, ANALYST, model, SPENDING(), screen=screen)
+
+    (result,) = _tool_results(model)
+    assert result.text == (
+        f"note\nPayment due Friday.\nThe desk costs 120.\n1 row(s) {WITHHELD}.\n(3 rows)"
+    )
     assert answer.withheld == 1
 
 

@@ -10,8 +10,11 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY src ./src
 
+# EXTRAS names the optional model providers to install, such as openai or openai,ollama.
+ARG EXTRAS=""
+
 # The embedding model is downloaded here, so a started container needs no network.
-RUN pip install --no-cache-dir . \
+RUN pip install --no-cache-dir ".${EXTRAS:+[${EXTRAS}]}" \
     && python -c "from needtoknow.embed import embed_query; embed_query('warm up')" \
     && useradd --create-home --uid 10001 needtoknow \
     && chown -R needtoknow:needtoknow /models

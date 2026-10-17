@@ -74,7 +74,7 @@ def test_execution_match_is_order_insensitive_and_catches_a_wrong_result(
 def test_the_runner_scores_the_agent_and_the_baseline(app_pool: Pool, tmp_path) -> None:  # type: ignore[no-untyped-def]
     def agent_then_wrong_baseline(gold: str, db_id: str, wrong: str) -> list:  # type: ignore[type-arg]
         return [
-            call_tool("describe_data", {}),
+            call_tool("describe_data", {"schema": None}),
             call_tool("describe_data", {"schema": db_id}),
             call_tool("query_data", {"sql": gold}),
             final_reply(f"The answer uses {gold}"),
@@ -188,6 +188,24 @@ def test_scored_questions_are_kept_only_when_resuming(tmp_path: Path) -> None:
     with pytest.raises(BirdEvalError, match="Pass --resume"):
         previous_records(raw_path, resume=False)
     assert previous_records(raw_path, resume=True) == [record]
+
+
+def test_a_question_scored_twice_is_refused(tmp_path: Path) -> None:
+    record = Record(
+        question_id=137,
+        db_id="financial",
+        difficulty="simple",
+        agent=Prediction("correct", DISTRICTS_SQL, 10, 2),
+        baseline=Prediction("sql_error", None, 5, 1),
+    )
+    raw_path = tmp_path / "bird_raw.jsonl"
+    line = json.dumps(asdict(record)) + "\n"
+    raw_path.write_text(line + line, encoding="utf-8")
+
+    with pytest.raises(BirdEvalError, match="more than once: 137"):
+        read_records(raw_path)
+    with pytest.raises(BirdEvalError, match="more than once: 137"):
+        summarise([record, record], "anthropic:claude-haiku-5-5", HAIKU)
 
 
 def test_the_agent_is_scored_on_the_query_its_answer_shows(app_pool: Pool) -> None:

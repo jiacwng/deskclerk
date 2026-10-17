@@ -12,6 +12,7 @@ from needtoknow.db import as_user
 from needtoknow.embed import Vector, embed_query
 
 MAX_RESULTS = 20
+MAX_INPUT_CHARS = 2000
 
 _NEAREST_CHUNKS = """
 SELECT chunks.doc_id, documents.title, chunks.text, chunks.embedding <=> %(query)s AS distance

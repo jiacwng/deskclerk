@@ -27,7 +27,7 @@ REPLY = f"District 1 holds the accounts counted by: {FIXED}"
 
 
 DATA_CALLS = [
-    call_tool("describe_data", {}),
+    call_tool("describe_data", {"schema": None}),
     call_tool("describe_data", {"schema": "financial"}),
     call_tool("query_data", {"sql": FAILING}),
     call_tool("query_data", {"sql": FIXED}),

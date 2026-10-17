@@ -1,6 +1,6 @@
 {
   "realm": "needtoknow",
-  "displayName": "Calder Systems (development only, every user's password is needtoknow)",
+  "displayName": "needtoknow (development only, every user's password is needtoknow)",
   "enabled": true,
   "groups": [
     {

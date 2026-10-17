@@ -106,7 +106,9 @@ def test_a_result_that_reads_like_an_error_still_succeeds(app: Connection, app_p
     sql = 'SELECT 1 AS "The query failed: x"'
     rows = "The query failed: x\n1\n(1 rows)"
 
-    assert query_data(app, PRAGUE, sql) == QueryResult(text=rows, failed=False)
+    assert query_data(app, PRAGUE, sql) == QueryResult(
+        failed=False, header="The query failed: x", rows=("1",), note="(1 rows)"
+    )
     assert _queries(app_pool, sql) == (Query(sql=sql, rows=rows, error=None),)
 
 
@@ -160,9 +162,8 @@ def test_a_long_header_is_cut_at_the_size_cap(app: Connection) -> None:
 def test_a_query_that_is_not_valid_utf8_fails_cleanly(app: Connection) -> None:
     result = query_data(app, PRAGUE, "SELECT '\ud800'")
 
-    assert result == QueryResult(
-        text="The query failed: the query is not valid UTF-8.", failed=True
-    )
+    assert result.failed
+    assert result.text == "The query failed: the query is not valid UTF-8."
 
 
 def test_the_tool_description_states_the_row_cap_in_force(app_pool: Pool) -> None:
@@ -368,17 +369,20 @@ def test_an_injected_escalation_through_the_agent_leaves_the_rows_filtered(
     assert [result.status for result in results] == ["success"] * 3
 
 
-def test_describe_data_takes_a_schema_or_nothing(app: Connection, app_pool: Pool) -> None:
+def test_describe_data_takes_a_schema_or_null(app: Connection, app_pool: Pool) -> None:
     results, outputs = _asks(
         app_pool,
         ("describe_data", {"view": "account"}),
         ("describe_data", {}),
+        ("describe_data", {"schema": None}),
         ("describe_data", {"schema": "financial"}),
         ("describe_data", {"schema": "nowhere"}),
     )
 
     assert results[0].status == "error"
     assert "view: Unexpected keyword argument" in results[0].text
+    assert results[1].status == "error"
+    assert "schema: Missing required argument" in results[1].text
     assert outputs == (
         describe_data(app),
         describe_data(app, "financial"),

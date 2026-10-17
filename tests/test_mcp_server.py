@@ -15,12 +15,12 @@ from mcp.types import TextContent
 from psycopg.rows import TupleRow
 from starlette.applications import Starlette
 
-from fakes import fake_jev
+from fakes import PLANTED_ROW_SQL, fake_jev
 from needtoknow.auth import SigningKeyLookup
 from needtoknow.config import Settings, load_settings
 from needtoknow.documents import Document
-from needtoknow.mcp_server import SCOPE, create_server
-from needtoknow.retrieval import MAX_RESULTS
+from needtoknow.mcp_server import SCOPE, EmployeeTokenVerifier, create_server
+from needtoknow.retrieval import MAX_INPUT_CHARS, MAX_RESULTS
 from needtoknow.screen import WITHHELD, Screen
 
 Sign = Callable[[dict[str, object]], str]
@@ -283,3 +283,74 @@ async def test_a_planted_instruction_in_a_query_error_never_reaches_the_mcp_clie
     assert isinstance(content, TextContent)
     assert planted not in content.text
     assert content.text.endswith(f"The query error {WITHHELD}.")
+
+
+async def test_a_planted_row_is_withheld_and_the_other_rows_reach_the_mcp_client(
+    owner: psycopg.Connection[TupleRow],
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    sign_mcp_token: Sign,
+) -> None:
+    screen = Screen(fake_jev(lambda state: 0.9 if "ignore" in state["passage"] else 0.1))
+    app = create_server(token_settings, token_signing_key, screen).streamable_http_app()
+    token = sign_mcp_token({"preferred_username": "analyst", "groups": ["analyst"]})
+
+    async with _connect(app, token) as client:
+        result = await client.call_tool("query_data", {"sql": PLANTED_ROW_SQL})
+
+    assert not result.is_error
+    [content] = result.content
+    assert isinstance(content, TextContent)
+    assert content.text == (
+        f"note\nPayment due Friday.\nThe desk costs 120.\n1 row(s) {WITHHELD}.\n(3 rows)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("tool", "argument"),
+    [("search_documents", "query"), ("query_data", "sql"), ("describe_data", "schema")],
+)
+async def test_an_argument_over_the_input_limit_is_a_tool_error(
+    asgi_app: Starlette, sign_mcp_token: Sign, tool: str, argument: str
+) -> None:
+    async with _connect(asgi_app, sign_mcp_token({})) as client:
+        result = await client.call_tool(tool, {argument: "x" * (MAX_INPUT_CHARS + 1)})
+
+    assert result.is_error
+    [content] = result.content
+    assert isinstance(content, TextContent)
+    assert f"at most {MAX_INPUT_CHARS} characters" in content.text
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [("search_documents", {"query": QUERY}), ("query_data", {"sql": ACCOUNTS_IN_DISTRICT_1})],
+)
+async def test_an_unreachable_database_is_a_tool_error(
+    unreachable_database: None,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    sign_mcp_token: Sign,
+    tool: str,
+    arguments: dict[str, Any],
+) -> None:
+    app = create_server(token_settings, token_signing_key, None).streamable_http_app()
+
+    async with _connect(app, sign_mcp_token({})) as client:
+        result = await client.call_tool(tool, arguments)
+
+    assert result.is_error
+    [content] = result.content
+    assert isinstance(content, TextContent)
+    assert content.text.endswith("the database cannot be reached, try again later")
+
+
+async def test_the_token_names_the_client_that_asked_for_it(
+    token_settings: Settings, token_signing_key: SigningKeyLookup, sign_mcp_token: Sign
+) -> None:
+    verifier = EmployeeTokenVerifier(token_settings, token_signing_key)
+
+    token = await verifier.verify_token(sign_mcp_token({}))
+
+    assert token is not None
+    assert token.client_id == "a-registered-client"

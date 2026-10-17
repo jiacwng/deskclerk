@@ -313,6 +313,21 @@ def test_ask_with_the_budget_spent_is_unavailable(
     assert model.prompts == []
 
 
+def test_ask_with_the_database_down_is_unavailable(
+    unreachable_database: None,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    sign_token: Sign,
+) -> None:
+    model = scripted(search_call(QUESTION), final_reply(REFUSAL))
+
+    with TestClient(create_app(token_settings, token_signing_key, model)) as ask_client:
+        response = ask_client.post("/ask", json=ASK, headers=_kean(sign_token))
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "the database cannot be reached"}
+
+
 def test_concurrent_searches_each_answer_as_their_own_caller(
     client: TestClient, sign_token: Sign, emails: dict[str, Document]
 ) -> None:

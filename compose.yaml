@@ -67,7 +67,13 @@ services:
       # Tokens are stamped with the browser's address, so the issuer stays localhost and only
       # the key lookup uses the address that resolves inside this network.
       NEEDTOKNOW_JWKS_URL: http://keycloak:8080/realms/needtoknow/protocol/openid-connect/certs
+      NEEDTOKNOW_MODEL: ${NEEDTOKNOW_MODEL:-anthropic:claude-haiku-5-5}
+      # Passed only when set on this machine, because an empty price is not a number.
+      NEEDTOKNOW_PRICE_INPUT:
+      NEEDTOKNOW_PRICE_OUTPUT:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OLLAMA_HOST: ${OLLAMA_HOST:-}
       TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
       NEEDTOKNOW_SCREEN: ${NEEDTOKNOW_SCREEN:-true}
     ports:

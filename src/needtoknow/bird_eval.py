@@ -112,6 +112,7 @@ def read_records(path: Path) -> list[Record]:
         row["agent"] = Prediction(**row["agent"])
         row["baseline"] = Prediction(**row["baseline"])
         records.append(Record(**row))
+    _refuse_repeats(records)
     return records
 
 
@@ -226,6 +227,7 @@ def score(
 def summarise(
     records: Sequence[Record], model_name: str, price: Price, unscorable: Sequence[int] = ()
 ) -> dict[str, Any]:
+    _refuse_repeats(records)
     return {
         "model": model_name,
         "questions": len(records),
@@ -295,6 +297,14 @@ def write_results(out: Path, summary: dict[str, Any]) -> None:
 
 class BirdEvalError(RuntimeError):
     pass
+
+
+def _refuse_repeats(records: Sequence[Record]) -> None:
+    counts = Counter(record.question_id for record in records)
+    repeated = sorted(question_id for question_id, count in counts.items() if count > 1)
+    if repeated:
+        ids = ", ".join(str(question_id) for question_id in repeated)
+        raise BirdEvalError(f"questions scored more than once: {ids}")
 
 
 def _outcome(

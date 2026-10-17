@@ -31,6 +31,7 @@ class Identity:
     user_id: str
     principals: frozenset[str]
     scopes: frozenset[str]
+    client_id: str
 
 
 def principals(user_id: str, groups: Iterable[str]) -> frozenset[str]:
@@ -94,11 +95,16 @@ def authenticate(
         raise AuthError("groups must be a list of non-empty strings")
     if not isinstance(scope, str):
         raise AuthError("scope must be a string")
+    if not isinstance(claims["azp"], str) or not claims["azp"]:
+        raise AuthError("azp must be a non-empty string")
     # The database receives the principals joined by commas.
     for name in [username, *groups]:
         if "," in name:
             raise AuthError(f"{name!r} contains a comma")
 
     return Identity(
-        user_id=username, principals=principals(username, groups), scopes=frozenset(scope.split())
+        user_id=username,
+        principals=principals(username, groups),
+        scopes=frozenset(scope.split()),
+        client_id=claims["azp"],
     )

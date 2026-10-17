@@ -6,20 +6,25 @@
 # signs the employee in; it accepts only tokens whose audience is its own URL (RFC 8707).
 # Run locally: PYTHONPATH=src .venv/bin/python -m needtoknow.mcp_server
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import Annotated
+
 import anyio.to_thread
+import psycopg
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
-from pydantic import AnyHttpUrl
+from pydantic import AnyHttpUrl, Field
 
 from needtoknow import data, db, retrieval
 from needtoknow.auth import AuthError, Identity, SigningKeyLookup, authenticate, jwks_signing_key
 from needtoknow.config import Settings, load_settings
 from needtoknow.jev import JevError
 from needtoknow.quota import Quota
-from needtoknow.screen import SCREEN_DOWN, Screen, screen_from_settings, shown
+from needtoknow.screen import SCREEN_DOWN, Screen, screen_from_settings, shown, shown_rows
 
 # The Keycloak client scope that puts this server's URL in the token audience.
 SCOPE = "needtoknow-mcp"
@@ -45,12 +50,25 @@ class EmployeeTokenVerifier:
             return None
         return EmployeeToken(
             token=token,
-            client_id=self.settings.client_id,
+            client_id=identity.client_id,
             scopes=sorted(identity.scopes),
             subject=identity.user_id,
             claims={"iss": self.settings.issuer},
             identity=identity,
         )
+
+
+Input = Annotated[str, Field(min_length=1, max_length=retrieval.MAX_INPUT_CHARS)]
+
+
+@contextmanager
+def _reachable() -> Iterator[None]:
+    try:
+        yield
+    except ValueError as error:
+        raise ToolError(str(error)) from error
+    except psycopg.OperationalError as error:
+        raise ToolError("the database cannot be reached, try again later") from error
 
 
 def create_server(
@@ -79,13 +97,10 @@ def create_server(
     )
 
     @server.tool(description="Search the company documents the signed-in employee may read.")
-    def search_documents(query: str, k: int = 5) -> list[retrieval.Hit]:
+    def search_documents(query: Input, k: int = 5) -> list[retrieval.Hit]:
         token = employee()
-        try:
-            with pool.connection() as connection:
-                hits = retrieval.search(connection, token.identity.principals, query, k)
-        except ValueError as error:
-            raise ToolError(str(error)) from error
+        with _reachable(), pool.connection() as connection:
+            hits = retrieval.search(connection, token.identity.principals, query, k)
         if screen is None:
             return hits
         try:
@@ -97,28 +112,22 @@ def create_server(
     @server.tool(
         description="List the schemas of the company data, or one schema's tables and columns."
     )
-    def describe_data(schema: str | None = None) -> str:
+    def describe_data(schema: Input | None = None) -> str:
         employee()
-        try:
-            with pool.connection() as connection:
-                text = data.describe_data(connection, schema)
-        except ValueError as error:
-            raise ToolError(str(error)) from error
+        with _reachable(), pool.connection() as connection:
+            text = data.describe_data(connection, schema)
         return shown(screen, text, "The data description")[0]
 
     @server.tool(
         description="Run one read-only SQL query as the signed-in employee and return the rows."
     )
-    def query_data(sql: str) -> str:
+    def query_data(sql: Input) -> str:
         token = employee()
-        try:
-            with pool.connection() as connection:
-                result = data.query_data(connection, token.identity.principals, sql)
-        except ValueError as error:
-            raise ToolError(str(error)) from error
+        with _reachable(), pool.connection() as connection:
+            result = data.query_data(connection, token.identity.principals, sql)
         if result.failed:
             raise ToolError(shown(screen, result.text, "The query error")[0])
-        return shown(screen, result.text, "The query result")[0]
+        return shown_rows(screen, result)[0]
 
     return server
 

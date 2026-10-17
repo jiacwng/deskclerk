@@ -13,6 +13,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from jwt.algorithms import RSAAlgorithm
 from psycopg.rows import TupleRow
+from psycopg_pool import ConnectionPool
 
 from needtoknow import db
 from needtoknow.auth import SigningKeyLookup
@@ -127,3 +128,19 @@ def sign_token(token_settings: Settings) -> Callable[[dict[str, object]], str]:
         return jwt.encode(merged, TOKEN_KEY, algorithm="RS256")
 
     return sign
+
+
+# The API and the MCP server get a pool on a port nothing listens on, which gives up on a
+# connection after half a second instead of thirty.
+@pytest.fixture
+def unreachable_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    def closed_pool(settings: Settings, size: int) -> Pool:
+        return ConnectionPool(
+            kwargs={"host": "127.0.0.1", "port": 1, "dbname": "none", "connect_timeout": 1},
+            min_size=1,
+            max_size=size,
+            timeout=0.5,
+            open=True,
+        )
+
+    monkeypatch.setattr(db, "app_pool", closed_pool)

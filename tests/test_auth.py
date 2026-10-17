@@ -106,6 +106,7 @@ def test_the_mcp_audience_accepts_any_registered_client_and_reads_the_scopes(
     )
     assert identity.user_id == "district-1"
     assert identity.scopes == {"openid", "profile", "needtoknow-mcp"}
+    assert identity.client_id == "a-registered-client"
 
 
 def test_a_scope_that_is_not_a_string_is_refused(

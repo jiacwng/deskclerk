@@ -33,12 +33,12 @@ from needtoknow.screen import (
     Screen,
     screen_from_settings,
     shown,
+    shown_rows,
 )
 
 REFUSAL = "I found nothing you have access to on this."
 EXHAUSTED = "I ran out of steps before I could answer. Try a narrower question."
 NOT_OPEN = "No document with that id is open to you."
-# A document longer than one screened part is cut, so one open cannot fill the context.
 DOCUMENT_CHARS = PART_CHARS
 MAX_TOOL_ROUNDS = 5
 SEARCH_RESULTS = 5
@@ -88,14 +88,19 @@ OPEN_DOCUMENT_TOOL = {
 
 DESCRIBE_DATA_TOOL = {
     "name": "describe_data",
-    "description": "Describe the company's data. Without a schema, list the schemas you can "
+    "description": "Describe the company's data. With schema null, list the schemas you can "
     "read, each with its comment and number of tables. With a schema, list its tables and views "
-    "with their columns, types and comments. Call it without a schema first, then with the "
+    "with their columns, types and comments. Call it with schema null first, then with the "
     "schema you pick, then call query_data.",
     "input_schema": {
         "type": "object",
-        "properties": {"schema": {"type": "string", "description": "The schema to describe."}},
-        "required": [],
+        "properties": {
+            "schema": {
+                "type": ["string", "null"],
+                "description": "The schema to describe, or null to list the schemas.",
+            }
+        },
+        "required": ["schema"],
         "additionalProperties": False,
     },
 }
@@ -214,7 +219,7 @@ def ask(
         returned = (doc_id,) if visible == text else ()
         return visible, _Trace(returned=returned, withheld=1 if was_withheld else 0)
 
-    def describe_data(schema: Text | None = None) -> tuple[str, _Trace]:
+    def describe_data(schema: Text | None) -> tuple[str, _Trace]:
         with pool.connection() as connection:
             description = data.describe_data(connection, schema)
         visible, was_withheld = shown(screen, description, "The data description")
@@ -225,10 +230,11 @@ def ask(
             result = data.query_data(connection, principals, sql, caps)
         if result.failed:
             query = Query(sql=sql, rows=None, error=result.text)
-        else:
-            query = Query(sql=sql, rows=result.text, error=None)
-        visible, was_withheld = shown(screen, result.text, "The query result")
-        return visible, _Trace(query=query, withheld=1 if was_withheld else 0)
+            visible, was_withheld = shown(screen, result.text, "The query result")
+            return visible, _Trace(query=query, withheld=1 if was_withheld else 0)
+        visible, withheld = shown_rows(screen, result)
+        query = Query(sql=sql, rows=result.text, error=None)
+        return visible, _Trace(query=query, withheld=withheld)
 
     tools = [(SEARCH_TOOL, search_documents), (OPEN_DOCUMENT_TOOL, open_document)]
     # The other methods search as the reader role, which every row is open to.
@@ -265,7 +271,6 @@ def _build_graph(
         spending.record(input_tokens, output_tokens)
         return {"messages": [reply], "input_tokens": input_tokens, "output_tokens": output_tokens}
 
-    # Every model reply but the last was followed by one round of tool calls.
     def after_model(state: AgentState) -> str:
         replies = [message for message in state["messages"] if isinstance(message, AIMessage)]
         if len(replies) > MAX_TOOL_ROUNDS:
@@ -281,8 +286,6 @@ def _build_graph(
     return graph.compile()
 
 
-# The model sees the spec as written; the arguments it sends are checked against the function's
-# signature, and a wrong call comes back to the model as an error message.
 def _tool(spec: dict[str, Any], run: Callable[..., tuple[str, _Trace]]) -> StructuredTool:
     return StructuredTool(
         name=spec["name"],

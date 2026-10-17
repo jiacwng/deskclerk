@@ -132,3 +132,9 @@ def test_anonymous_registration_is_limited_to_clients_on_this_machine() -> None:
     assert hosts["client-uris-must-match"] == ["true"]
     assert policies["allowed-protocol-mappers"]["allowed-protocol-mapper-types"] == []
     assert policies["allowed-client-templates"]["allow-default-scopes"] == ["true"]
+
+
+def test_the_login_page_names_the_project_and_warns_it_is_for_development() -> None:
+    assert REALM["displayName"] == (
+        "needtoknow (development only, every user's password is needtoknow)"
+    )

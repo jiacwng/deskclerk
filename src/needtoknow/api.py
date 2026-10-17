@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from importlib.resources import files
 from typing import Annotated
 
+import psycopg
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -36,7 +37,7 @@ _CHAT_PAGE = files("needtoknow").joinpath("static/chat.html").read_text(encoding
 class SearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    query: str = Field(min_length=1, max_length=2000)
+    query: str = Field(min_length=1, max_length=retrieval.MAX_INPUT_CHARS)
     k: int = Field(default=5, ge=1, le=retrieval.MAX_RESULTS)
 
 
@@ -48,7 +49,7 @@ class SearchResponse(BaseModel):
 class AskRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    question: str = Field(min_length=1, max_length=2000)
+    question: str = Field(min_length=1, max_length=retrieval.MAX_INPUT_CHARS)
 
 
 class AskResponse(BaseModel):
@@ -137,6 +138,11 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="the model budget for this server is spent",
+            ) from None
+        except psycopg.OperationalError:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="the database cannot be reached",
             ) from None
         return AskResponse(
             user=identity.user_id,
