@@ -71,6 +71,7 @@ class Settings(BaseSettings):
     mcp_port: int = 8001
     mcp_url: str = "http://127.0.0.1:8001/mcp"
     screen: bool = True
+    audit_text: bool = False
     requests_per_minute: int = 20
     pool_size: int = 10
     public_relations: Annotated[frozenset[str], NoDecode] = PUBLIC_RELATIONS
