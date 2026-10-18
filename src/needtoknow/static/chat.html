@@ -6,6 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>needtoknow</title>
 <style>
+  [hidden] { display: none !important; }
   body { font-family: system-ui, sans-serif; max-width: 44rem; margin: 0 auto; padding: 0 1rem 3rem; color: #222; line-height: 1.5; }
   header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 0; margin-bottom: 1.5rem; border-bottom: 1px solid #ddd; }
   h1 { margin: 0; font-size: 1.5rem; }
@@ -335,10 +336,29 @@
     return { reply, steps, answer };
   }
 
+  // The model cites a document as [id] and writes bold as **text**: the cited ids are listed
+  // under Sources, so they leave the text, and bold is built as elements, never as HTML.
+  function showAnswer(element, text, citations) {
+    let plain = text;
+    for (const source of citations) {
+      plain = plain.replaceAll(` [${source.doc_id}]`, "").replaceAll(`[${source.doc_id}]`, "");
+    }
+    element.replaceChildren();
+    plain.split("**").forEach((piece, index) => {
+      if (index % 2 === 1) {
+        const strong = document.createElement("strong");
+        strong.textContent = piece;
+        element.append(strong);
+      } else {
+        element.append(piece);
+      }
+    });
+  }
+
   function finish(parts, body) {
     const reply = parts.reply;
     parts.steps.remove();
-    parts.answer.textContent = body.answer;
+    showAnswer(parts.answer, body.answer, body.citations);
     if (body.refused) {
       reply.className = "reply refused";
       const label = document.createElement("p");

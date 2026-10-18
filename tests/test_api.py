@@ -137,6 +137,17 @@ def test_chat_page_signs_out_at_the_provider_and_names_the_user(client: TestClie
     assert 'who.textContent = yes ? `Signed in as ${usernameOf(idToken)}` : "";' in page
 
 
+def test_chat_page_hides_what_is_hidden_and_shows_bold_without_cited_ids(
+    client: TestClient,
+) -> None:
+    page = client.get("/").text
+    assert "[hidden] { display: none !important; }" in page
+    assert "showAnswer(parts.answer, body.answer, body.citations);" in page
+    assert "plain.replaceAll(` [${source.doc_id}]`" in page
+    assert 'const strong = document.createElement("strong");' in page
+    assert "strong.textContent = piece;" in page
+
+
 def test_chat_page_offers_three_questions_and_shows_source_titles(client: TestClient) -> None:
     page = client.get("/").text
     block = page[page.index("const SUGGESTED_QUESTIONS = [") :]
