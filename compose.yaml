@@ -75,9 +75,19 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OLLAMA_HOST: ${OLLAMA_HOST:-}
       TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
-      NEEDTOKNOW_SCREEN: ${NEEDTOKNOW_SCREEN:-true}
+      NEEDTOKNOW_SCREEN: ${NEEDTOKNOW_SCREEN:-false}
     ports:
       - "127.0.0.1:8000:8000"
+    # Ready once the database answers as the app role and the login server's keys can be fetched.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=12)
+      interval: 5s
+      timeout: 15s
+      retries: 30
     depends_on:
       keycloak:
         condition: service_healthy
@@ -92,7 +102,7 @@ services:
       NEEDTOKNOW_JWKS_URL: http://keycloak:8080/realms/needtoknow/protocol/openid-connect/certs
       NEEDTOKNOW_MCP_HOST: 0.0.0.0
       TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
-      NEEDTOKNOW_SCREEN: ${NEEDTOKNOW_SCREEN:-true}
+      NEEDTOKNOW_SCREEN: ${NEEDTOKNOW_SCREEN:-false}
     ports:
       - "127.0.0.1:8001:8001"
     depends_on:

@@ -123,8 +123,15 @@
       "name": "needtoknow",
       "enabled": true,
       "publicClient": true,
-      "standardFlowEnabled": false,
-      "directAccessGrantsEnabled": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": [
+        "http://localhost:8000/",
+        "http://127.0.0.1:8000/"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
       "webOrigins": [
         "http://localhost:8000",
         "http://127.0.0.1:8000"
@@ -137,7 +144,42 @@
           "protocolMapper": "oidc-group-membership-mapper",
           "config": {
             "claim.name": "groups",
-            "full.path": "false",
+            "full.path": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "needtoknow-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "needtoknow-test",
+      "name": "needtoknow tests",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "protocol": "openid-connect",
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "config": {
+            "claim.name": "groups",
+            "full.path": "true",
             "access.token.claim": "true",
             "id.token.claim": "false",
             "userinfo.token.claim": "false",
@@ -251,7 +293,7 @@
           "protocolMapper": "oidc-group-membership-mapper",
           "config": {
             "claim.name": "groups",
-            "full.path": "false",
+            "full.path": "true",
             "access.token.claim": "true",
             "id.token.claim": "false",
             "userinfo.token.claim": "false",

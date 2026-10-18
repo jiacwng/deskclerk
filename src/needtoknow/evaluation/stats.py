@@ -12,7 +12,15 @@ def wilson(successes: int, trials: int) -> tuple[float, float]:
 
 def with_interval(successes: int, trials: int) -> str:
     low, high = wilson(successes, trials)
-    return f"{successes} ({low:.1%} to {high:.1%})"
+    return f"{successes} ({_percent(low)} to {_percent(high)})"
+
+
+# A bound under 0.1% keeps two significant digits, so a large clean count does not print as 0.0%.
+def _percent(share: float) -> str:
+    percent = share * 100
+    if 0 < percent < 0.1:
+        return f"{percent:.2g}%"
+    return f"{percent:.1f}%"
 
 
 def mcnemar_exact(only_first: int, only_second: int) -> float:

@@ -3,7 +3,8 @@
 # searched for by its subject as a non-holder; each count should be zero. The same checks as a
 # holder show the tools do return the email to someone allowed to read it.
 # A full run (NEEDTOKNOW_DB_NAME=needtoknow_full):
-# PYTHONPATH=src .venv/bin/python -m needtoknow.access_eval --searches 10000 --out results/
+# PYTHONPATH=src .venv/bin/python -m needtoknow.evaluation.access_eval --searches 10000 \
+#   --out results/
 
 import argparse
 import json
@@ -19,13 +20,13 @@ import psycopg
 from needtoknow.auth import principals
 from needtoknow.config import load_provision_settings, load_settings
 from needtoknow.db import connect_app, connect_reader
-from needtoknow.leak_eval import TEMPLATE
+from needtoknow.evaluation.leak_eval import TEMPLATE
+from needtoknow.evaluation.stats import with_interval
 from needtoknow.retrieval import open_document, search
-from needtoknow.stats import with_interval
 
 SEED = 0
 SEARCH_RESULTS = 5
-_log = logging.getLogger("needtoknow.access_eval")
+_log = logging.getLogger("needtoknow.evaluation.access_eval")
 
 
 @dataclass(frozen=True)

@@ -5,7 +5,7 @@
 # The secured searches are also split by how many emails the custodian can read, and the slowest
 # get their query plan. A smaller set of the same questions then goes through the whole agent to
 # time and price a full answer. A full run (NEEDTOKNOW_DB_NAME=needtoknow_full):
-# PYTHONPATH=src .venv/bin/python -m needtoknow.speed_eval --out results/
+# PYTHONPATH=src .venv/bin/python -m needtoknow.evaluation.speed_eval --out results/
 
 import argparse
 import json
@@ -22,12 +22,12 @@ import psycopg
 from langchain_core.language_models import BaseChatModel
 from psycopg import sql
 
-from needtoknow.agent import SEARCH_RESULTS, ask
+from needtoknow.agent import SEARCH_RESULTS, ask, employee_tools
 from needtoknow.auth import principals
 from needtoknow.config import load_provision_settings, load_settings
 from needtoknow.db import Pool, app_pool, as_user, connect_app, connect_reader
 from needtoknow.embed import Vector, embed_query
-from needtoknow.leak_eval import Fact, build_facts
+from needtoknow.evaluation.leak_eval import Fact, build_facts
 from needtoknow.providers import BudgetExceeded, Spending, chat_model, price_of
 from needtoknow.retrieval import Hit, nearest_chunks, prepare_nearest_chunks
 
@@ -35,7 +35,7 @@ WARMUP = 20
 SLOWEST_PLANS = 5
 GROUPS = 3
 _VECTOR = re.compile(r"'\[[^\]]*\]'")
-_log = logging.getLogger("needtoknow.speed_eval")
+_log = logging.getLogger("needtoknow.evaluation.speed_eval")
 
 
 @dataclass(frozen=True)
@@ -121,7 +121,8 @@ def time_answers(
     timings = []
     for number, fact in enumerate(facts, start=1):
         start = time.perf_counter()
-        answer = ask(fact.question, pool, principals(fact.allowed_user, []), model, spending)
+        toolset = employee_tools(pool, principals(fact.allowed_user, []), None)
+        answer = ask(fact.question, toolset, model, spending)
         timings.append(AnswerTiming(time.perf_counter() - start, answer.cost_usd))
         _log.info("answer %d of %d; %.4f USD spent", number, len(facts), spending.cost_usd)
     return timings

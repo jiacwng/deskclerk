@@ -2,7 +2,8 @@
 # answering as the analyst who sees every row, scored the way the BIRD repository scores it (the
 # predicted result set equals the gold result set, order-insensitive). The gold SQL and both
 # predictions run on the loaded data. A full run:
-# NEEDTOKNOW_DB_NAME=needtoknow_full PYTHONPATH=src .venv/bin/python -m needtoknow.bird_eval \
+# NEEDTOKNOW_DB_NAME=needtoknow_full PYTHONPATH=src \
+#   .venv/bin/python -m needtoknow.evaluation.bird_eval \
 #   --questions ~/datasets/bird/extracted/minidev/MINIDEV/mini_dev_postgresql.json --out results/
 
 import argparse
@@ -19,13 +20,22 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from psycopg import sql
 
-from needtoknow.agent import Answer, ask
+from needtoknow.agent import (
+    Answer,
+    Query,
+    Text,
+    Toolset,
+    Trace,
+    ask,
+    employee_tools,
+    query_data_tool,
+)
 from needtoknow.auth import principals
 from needtoknow.config import load_settings
-from needtoknow.data import TIMEOUT_MS, Caps, describe_data
+from needtoknow.data import TIMEOUT_MS, Caps, describe_data, query_data
 from needtoknow.db import Pool, app_pool, as_user
+from needtoknow.evaluation.stats import mcnemar_exact
 from needtoknow.providers import BudgetExceeded, Price, Spending, chat_model, price_of
-from needtoknow.stats import mcnemar_exact
 
 ANALYST = principals("analyst", ["analyst"])
 CORRECT = "correct"
@@ -56,7 +66,7 @@ SQL_REPLY_FORMAT = {
 # more rows than a person ever would. Eight of the 500 answers are longer than this.
 EVAL_CAPS = Caps(rows=2_000, chars=200_000)
 
-_log = logging.getLogger("needtoknow.bird_eval")
+_log = logging.getLogger("needtoknow.evaluation.bird_eval")
 
 
 @dataclass(frozen=True)
@@ -149,8 +159,22 @@ def agent_prediction(
     if question.evidence:
         text += f"\n\nEvidence: {question.evidence}"
     text += f"\n\n{OUTPUT_CONTRACT}"
-    answer = ask(text, pool, ANALYST, model, spending, caps=EVAL_CAPS)
+    answer = ask(text, analyst_tools(pool), model, spending)
     return _answer_query(answer), answer.input_tokens, answer.output_tokens
+
+
+# The employee's tools as the analyst, with query_data under the evaluation's caps.
+def analyst_tools(pool: Pool) -> Toolset:
+    def query(sql: Text) -> tuple[str, Trace]:
+        with pool.connection() as connection:
+            result = query_data(connection, ANALYST, sql, EVAL_CAPS)
+        if result.failed:
+            return result.text, Trace(query=Query(sql=sql, rows=None, error=result.text))
+        return result.text, Trace(query=Query(sql=sql, rows=result.text, error=None))
+
+    employee = employee_tools(pool, ANALYST, None)
+    kept = [tool for tool in employee.tools if tool[0]["name"] != "query_data"]
+    return Toolset(employee.prompt, (*kept, (query_data_tool(EVAL_CAPS), query)))
 
 
 def baseline_prediction(
@@ -279,7 +303,8 @@ def results_table(summary: dict[str, Any]) -> str:
         f"Only the agent got {only_agent} questions right and only the baseline {only_baseline}. "
         f"The exact McNemar test on these paired outcomes gives p = {p_value:.3f}, so the "
         f"difference {significance} significant at the 5% level. The agent costs "
-        f"{cost_ratio:.1f} times as much as the baseline.",
+        f"{cost_ratio:.1f} times as much as the baseline. The agent is there to answer under "
+        "each employee's permissions; BIRD checks that its SQL stays as accurate as one prompt.",
         "",
         f"Agent tokens: {summary['agent']['input_tokens']:,} input and "
         f"{summary['agent']['output_tokens']:,} output. Baseline tokens: "

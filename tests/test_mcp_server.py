@@ -348,7 +348,7 @@ async def test_an_unreachable_database_is_a_tool_error(
 async def test_the_token_names_the_client_that_asked_for_it(
     token_settings: Settings, token_signing_key: SigningKeyLookup, sign_mcp_token: Sign
 ) -> None:
-    verifier = EmployeeTokenVerifier(token_settings, token_signing_key)
+    verifier = EmployeeTokenVerifier(token_settings, token_signing_key, None)
 
     token = await verifier.verify_token(sign_mcp_token({}))
 

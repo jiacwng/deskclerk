@@ -1,5 +1,6 @@
 # Settings refuse a development password for a database that is not on this machine, a model
-# named without its provider, and one price setting without the other.
+# named without its provider, one price setting without the other, Graph credentials given in
+# part, and a public relation named with more than a schema and a relation.
 
 import pytest
 from pydantic import ValidationError
@@ -27,8 +28,49 @@ def test_one_price_without_the_other_is_refused() -> None:
         Settings(price_output=1.0)
 
 
+def test_the_audience_is_the_client_unless_set() -> None:
+    assert Settings(client_id="page").audience == "page"
+    assert Settings(client_id="page", audience="api://default").audience == "api://default"
+
+
+def test_graph_credentials_come_all_three_or_none() -> None:
+    with pytest.raises(ValidationError, match="NEEDTOKNOW_GRAPH_CLIENT_SECRET together"):
+        Settings(graph_tenant_id="tenant", graph_client_id="client")
+
+    complete = Settings(
+        graph_tenant_id="tenant", graph_client_id="client", graph_client_secret="hunter2"
+    )
+    assert "hunter2" not in repr(complete)
+
+
 def test_a_remote_database_needs_real_provision_passwords() -> None:
     with pytest.raises(DefaultPassword, match="NEEDTOKNOW_ADMIN_PASSWORD"):
-        ProvisionSettings().check_for("db.example.com")
+        ProvisionSettings().check_for("db.example.com", evaluation=False)
 
-    ProvisionSettings().check_for("localhost")
+    ProvisionSettings().check_for("localhost", evaluation=True)
+
+
+def test_the_reader_password_is_checked_only_for_the_evaluation() -> None:
+    provision = ProvisionSettings(
+        admin_password="real", owner_password="real", reader_password="needtoknow_reader"
+    )
+
+    provision.check_for("db.example.com", evaluation=False)
+    with pytest.raises(DefaultPassword, match="NEEDTOKNOW_READER_PASSWORD"):
+        provision.check_for("db.example.com", evaluation=True)
+
+
+def test_public_relations_are_a_comma_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NEEDTOKNOW_PUBLIC_RELATIONS", " handbook, sales.price_list ,")
+
+    assert Settings().public_relations == frozenset({"handbook", "sales.price_list"})
+
+    monkeypatch.setenv("NEEDTOKNOW_PUBLIC_RELATIONS", "")
+    assert Settings().public_relations == frozenset()
+
+
+def test_a_public_relation_takes_at_most_one_dot(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NEEDTOKNOW_PUBLIC_RELATIONS", "db.sales.price_list")
+
+    with pytest.raises(ValidationError, match="schema or schema.relation"):
+        Settings()

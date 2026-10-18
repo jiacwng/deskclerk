@@ -9,7 +9,7 @@ from typing import Any
 import psycopg
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from needtoknow.embed import embed_passages
+from needtoknow.embed import Vector, embed_passages
 
 CHUNK_CHARS = 800
 # A body is split at blank lines, then line breaks, then sentence ends, then spaces; a run with
@@ -45,23 +45,37 @@ def split_into_chunks(document: Document) -> list[Chunk]:
 
 
 def write_documents(owner: psycopg.Connection[Any], documents: Sequence[Document]) -> int:
-    chunks = [chunk for document in documents for chunk in split_into_chunks(document)]
-    # Embedding takes seconds, so it runs before the transaction opens and holds no locks.
-    embeddings = embed_passages([chunk.text for chunk in chunks])
+    embedded = embed_chunks(documents)
     with owner.transaction(), owner.cursor() as cursor:
-        cursor.executemany(
-            "INSERT INTO documents (id, title, body) VALUES (%s, %s, %s)",
-            [(document.id, document.title, document.body) for document in documents],
-        )
-        cursor.executemany(
-            "INSERT INTO doc_access (doc_id, principal) VALUES (%s, %s)",
-            [(document.id, reader) for document in documents for reader in document.readers],
-        )
-        cursor.executemany(
-            "INSERT INTO chunks (doc_id, position, text, embedding) VALUES (%s, %s, %s, %s)",
-            [
-                (chunk.doc_id, chunk.position, chunk.text, embedding)
-                for chunk, embedding in zip(chunks, embeddings, strict=True)
-            ],
-        )
-    return len(chunks)
+        insert_documents(cursor, documents, embedded)
+    return len(embedded)
+
+
+# Embedding takes seconds, so it runs before a transaction opens and holds no locks.
+def embed_chunks(documents: Sequence[Document]) -> list[tuple[Chunk, Vector]]:
+    chunks = [chunk for document in documents for chunk in split_into_chunks(document)]
+    embeddings = embed_passages([chunk.text for chunk in chunks])
+    return list(zip(chunks, embeddings, strict=True))
+
+
+def insert_documents(
+    cursor: psycopg.Cursor[Any],
+    documents: Sequence[Document],
+    embedded: Sequence[tuple[Chunk, Vector]],
+) -> None:
+    cursor.executemany(
+        "INSERT INTO documents (id, title, body) VALUES (%s, %s, %s)",
+        [(document.id, document.title, document.body) for document in documents],
+    )
+    cursor.executemany(
+        "INSERT INTO doc_access (doc_id, principal) VALUES (%s, %s)",
+        [(document.id, reader) for document in documents for reader in document.readers],
+    )
+    insert_chunks(cursor, embedded)
+
+
+def insert_chunks(cursor: psycopg.Cursor[Any], embedded: Sequence[tuple[Chunk, Vector]]) -> None:
+    cursor.executemany(
+        "INSERT INTO chunks (doc_id, position, text, embedding) VALUES (%s, %s, %s, %s)",
+        [(chunk.doc_id, chunk.position, chunk.text, embedding) for chunk, embedding in embedded],
+    )

@@ -11,7 +11,7 @@ from langchain_core.messages import ToolMessage
 from psycopg.rows import TupleRow
 
 from fakes import HAIKU, ScriptedModel, call_tool, final_reply, scripted, search_call
-from needtoknow.agent import NOT_OPEN, REFUSAL, Answer, ask
+from needtoknow.agent import NOT_OPEN, REFUSAL, Answer, ask, employee_tools
 from needtoknow.api import create_app
 from needtoknow.auth import SigningKeyLookup, principals
 from needtoknow.config import Settings
@@ -27,7 +27,12 @@ QUESTION = "Who is helping with the Wharton and Rice projects for the Tiger Team
 
 
 def _ask(app_pool: Pool, custodian: str, model: ScriptedModel) -> Answer:
-    return ask(QUESTION, app_pool, principals(custodian, []), model, Spending(HAIKU, 1.0))
+    return ask(
+        QUESTION,
+        employee_tools(app_pool, principals(custodian, []), None),
+        model,
+        Spending(HAIKU, 1.0),
+    )
 
 
 def _tool_results(model: ScriptedModel) -> list[ToolMessage]:

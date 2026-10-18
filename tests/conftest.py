@@ -45,7 +45,7 @@ def owner() -> Iterator[psycopg.Connection[TupleRow]]:
     with admin:
         prepare_database(admin, settings, provision, evaluation=True)
     with connect_owner(settings, provision) as connection:
-        create_schema(connection)
+        create_schema(connection, replace=True, evaluation=True)
         load_enron(connection, MAILDIR)
         load_bird(connection, MINIDEV)
         yield connection
@@ -90,10 +90,13 @@ def emails() -> dict[str, Document]:
 
 @pytest.fixture(scope="session")
 def token_settings() -> Settings:
-    return load_settings().model_copy(
+    settings = load_settings()
+    return settings.model_copy(
         update={
+            "jwks_url": f"{settings.issuer}/protocol/openid-connect/certs",
             "issuer": "http://keycloak.test/realms/needtoknow",
             "client_id": "needtoknow-api",
+            "audience": "needtoknow-api",
             "requests_per_minute": 10_000,
         }
     )
@@ -116,9 +119,10 @@ def sign_token(token_settings: Settings) -> Callable[[dict[str, object]], str]:
         now = int(time.time())
         base: dict[str, object] = {
             "iss": token_settings.issuer,
-            "aud": token_settings.client_id,
+            "aud": token_settings.audience,
             "azp": token_settings.client_id,
             "typ": "Bearer",
+            "scope": "openid profile",
             "iat": now,
             "exp": now + 300,
             "preferred_username": "district-1",

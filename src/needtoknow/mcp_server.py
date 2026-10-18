@@ -6,11 +6,13 @@
 # signs the employee in; it accepts only tokens whose audience is its own URL (RFC 8707).
 # Run locally: PYTHONPATH=src .venv/bin/python -m needtoknow.mcp_server
 
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Annotated
 
 import anyio.to_thread
+import httpx
 import psycopg
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken
@@ -20,8 +22,19 @@ from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import AnyHttpUrl, Field
 
 from needtoknow import data, db, retrieval
-from needtoknow.auth import AuthError, Identity, SigningKeyLookup, authenticate, jwks_signing_key
+from needtoknow.audit import Audit, log_to_stdout
+from needtoknow.auth import (
+    JWKS_TIMEOUT_SECONDS,
+    AuthError,
+    Identity,
+    SigningKeyLookup,
+    authenticate,
+    discover_jwks_url,
+    jwks_signing_key,
+)
 from needtoknow.config import Settings, load_settings
+from needtoknow.exposure import check_startup
+from needtoknow.graph import GraphGroups, graph_from_settings
 from needtoknow.jev import JevError
 from needtoknow.quota import Quota
 from needtoknow.screen import SCREEN_DOWN, Screen, screen_from_settings, shown, shown_rows
@@ -35,16 +48,24 @@ class EmployeeToken(AccessToken):
 
 
 class EmployeeTokenVerifier:
-    def __init__(self, settings: Settings, signing_key: SigningKeyLookup) -> None:
+    def __init__(
+        self, settings: Settings, signing_key: SigningKeyLookup, graph: GraphGroups | None
+    ) -> None:
         self.settings = settings
         self.signing_key = signing_key
+        self.graph = graph
 
     # The SDK answers 401 when this returns None. The signing key lookup can block on Keycloak,
     # so it runs in a worker thread.
     async def verify_token(self, token: str) -> AccessToken | None:
         try:
             identity = await anyio.to_thread.run_sync(
-                authenticate, token, self.settings, self.signing_key, self.settings.mcp_url
+                authenticate,
+                token,
+                self.settings,
+                self.signing_key,
+                self.settings.mcp_url,
+                self.graph,
             )
         except AuthError:
             return None
@@ -72,10 +93,15 @@ def _reachable() -> Iterator[None]:
 
 
 def create_server(
-    settings: Settings, signing_key: SigningKeyLookup, screen: Screen | None
+    settings: Settings,
+    signing_key: SigningKeyLookup,
+    screen: Screen | None,
+    graph: GraphGroups | None = None,
 ) -> MCPServer:
+    check_startup(settings)
     pool = db.app_pool(settings, settings.pool_size)
     quota = Quota(settings.requests_per_minute)
+    audit = Audit(settings.audit_text, settings.audit_key)
 
     def employee() -> EmployeeToken:
         token = get_access_token()
@@ -87,7 +113,7 @@ def create_server(
 
     server = MCPServer(
         name="needtoknow",
-        token_verifier=EmployeeTokenVerifier(settings, signing_key),
+        token_verifier=EmployeeTokenVerifier(settings, signing_key, graph),
         auth=AuthSettings(
             issuer_url=AnyHttpUrl(settings.issuer),
             resource_server_url=AnyHttpUrl(settings.mcp_url),
@@ -98,43 +124,70 @@ def create_server(
 
     @server.tool(description="Search the company documents the signed-in employee may read.")
     def search_documents(query: Input, k: int = 5) -> list[retrieval.Hit]:
+        started = time.monotonic()
         token = employee()
         with _reachable(), pool.connection() as connection:
             hits = retrieval.search(connection, token.identity.principals, query, k)
-        if screen is None:
-            return hits
-        try:
-            flags = screen.flagged([hit.text for hit in hits])
-        except JevError:
-            raise ToolError(SCREEN_DOWN) from None
-        return [hit for hit, flag in zip(hits, flags, strict=True) if not flag]
+        kept = hits
+        if screen is not None:
+            try:
+                flags = screen.flagged([hit.text for hit in hits])
+            except JevError:
+                raise ToolError(SCREEN_DOWN) from None
+            kept = [hit for hit, flag in zip(hits, flags, strict=True) if not flag]
+        documents = [hit.doc_id for hit in kept]
+        withheld = len(hits) - len(kept)
+        audit.served(
+            "mcp:search_documents", token.identity, query, started, documents, withheld=withheld
+        )
+        return kept
 
     @server.tool(
         description="List the schemas of the company data, or one schema's tables and columns."
     )
     def describe_data(schema: Input | None = None) -> str:
-        employee()
+        started = time.monotonic()
+        token = employee()
         with _reachable(), pool.connection() as connection:
             text = data.describe_data(connection, schema)
-        return shown(screen, text, "The data description")[0]
+        visible, was_withheld = shown(screen, text, "The data description")
+        withheld = int(was_withheld)
+        audit.served("mcp:describe_data", token.identity, schema or "", started, withheld=withheld)
+        return visible
 
     @server.tool(
         description="Run one read-only SQL query as the signed-in employee and return the rows."
     )
     def query_data(sql: Input) -> str:
+        started = time.monotonic()
         token = employee()
         with _reachable(), pool.connection() as connection:
             result = data.query_data(connection, token.identity.principals, sql)
         if result.failed:
-            raise ToolError(shown(screen, result.text, "The query error")[0])
-        return shown_rows(screen, result)[0]
+            error, was_withheld = shown(screen, result.text, "The query error")
+            withheld = int(was_withheld)
+            audit.served(
+                "mcp:query_data", token.identity, sql, started, sql=[sql], withheld=withheld
+            )
+            raise ToolError(error)
+        rows, count = shown_rows(screen, result)
+        audit.served("mcp:query_data", token.identity, sql, started, sql=[sql], withheld=count)
+        return rows
 
     return server
 
 
 def main() -> None:
+    log_to_stdout()
     settings = load_settings()
-    server = create_server(settings, jwks_signing_key(settings), screen_from_settings(settings))
+    with httpx.Client(timeout=JWKS_TIMEOUT_SECONDS) as client:
+        jwks_url = discover_jwks_url(settings, client)
+    server = create_server(
+        settings,
+        jwks_signing_key(jwks_url),
+        screen_from_settings(settings),
+        graph_from_settings(settings),
+    )
     server.run("streamable-http", host=settings.mcp_host, port=settings.mcp_port)
 
 

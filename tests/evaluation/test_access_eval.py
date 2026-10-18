@@ -4,7 +4,7 @@
 import psycopg
 from psycopg.rows import TupleRow
 
-from needtoknow.access_eval import count_found, count_opens, results_table, sample_emails
+from needtoknow.evaluation.access_eval import count_found, count_opens, results_table, sample_emails
 
 Connection = psycopg.Connection[TupleRow]
 

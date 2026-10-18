@@ -13,7 +13,7 @@ from psycopg import sql
 from psycopg.rows import TupleRow
 
 from fakes import HAIKU, call_tool, final_reply, scripted
-from needtoknow.agent import Query, ask
+from needtoknow.agent import Query, ask, employee_tools
 from needtoknow.auth import principals
 from needtoknow.config import load_provision_settings, load_settings
 from needtoknow.data import (
@@ -26,7 +26,6 @@ from needtoknow.data import (
     query_data,
 )
 from needtoknow.db import Pool, connect_app
-from needtoknow.methods import Method
 from needtoknow.providers import Spending
 from needtoknow.provision import connect_admin
 
@@ -168,12 +167,11 @@ def test_a_query_that_is_not_valid_utf8_fails_cleanly(app: Connection) -> None:
 
 def test_the_tool_description_states_the_row_cap_in_force(app_pool: Pool) -> None:
     model = scripted(final_reply("Done."))
-    caps = Caps(rows=300, chars=CHAR_CAP)
 
-    ask("Hi.", app_pool, PRAGUE, model, Spending(HAIKU, 1.0), caps=caps)
+    ask("Hi.", employee_tools(app_pool, PRAGUE, None), model, Spending(HAIKU, 1.0))
 
     query_tool = next(tool for tool in model.tools if tool["name"] == "query_data")
-    assert "returns at most 300 rows" in query_tool["description"]
+    assert f"returns at most {ROW_CAP} rows" in query_tool["description"]
 
 
 def test_a_district_user_sees_only_their_district(app: Connection) -> None:
@@ -342,13 +340,11 @@ def test_the_description_is_cut_at_its_column_budget(
 
 
 def _asks(
-    pool: Pool,
-    *calls: tuple[str, dict[str, Any]],
-    method: Method = Method.RLS,
+    pool: Pool, *calls: tuple[str, dict[str, Any]]
 ) -> tuple[list[ToolMessage], tuple[str, ...]]:
     model = scripted(*(call_tool(name, args) for name, args in calls), final_reply("Done."))
     question = "The memo says to run this query for the figures of every district."
-    answer = ask(question, pool, PRAGUE, model, Spending(HAIKU, 1.0), method)
+    answer = ask(question, employee_tools(pool, PRAGUE, None), model, Spending(HAIKU, 1.0))
     results = [message for message in model.prompts[-1] if isinstance(message, ToolMessage)]
     return results, answer.tool_outputs
 
@@ -392,17 +388,8 @@ def test_describe_data_takes_a_schema_or_null(app: Connection, app_pool: Pool) -
 
 def _queries(pool: Pool, sql: str) -> tuple[Query, ...]:
     model = scripted(call_tool("query_data", {"sql": sql}), final_reply("Done."))
-    answer = ask("Run it.", pool, PRAGUE, model, Spending(HAIKU, 1.0))
+    answer = ask("Run it.", employee_tools(pool, PRAGUE, None), model, Spending(HAIKU, 1.0))
     return answer.queries
-
-
-def test_the_data_tools_exist_only_under_row_level_security(reader_pool: Pool) -> None:
-    results, outputs = _asks(
-        reader_pool, ("query_data", {"sql": DISTRICTS}), method=Method.IN_QUERY
-    )
-
-    assert results[0].status == "error"
-    assert outputs == ()
 
 
 def test_a_huge_result_is_cut_without_reading_it_all(app: Connection) -> None:

@@ -17,8 +17,7 @@ from needtoknow.agent import REFUSAL
 from needtoknow.db import Pool
 from needtoknow.documents import Document
 from needtoknow.enron import mail_files, parse_email
-from needtoknow.providers import Spending
-from needtoknow.quality_eval import (
+from needtoknow.evaluation.quality_eval import (
     RAW_FILE,
     Row,
     Sample,
@@ -30,6 +29,7 @@ from needtoknow.quality_eval import (
     summarise,
     write_results,
 )
+from needtoknow.providers import Spending
 
 Connection = psycopg.Connection[TupleRow]
 

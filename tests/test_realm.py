@@ -1,10 +1,13 @@
 # The Keycloak realm holds the users of the public data, each taken from the slices in
-# tests/data, a client that puts their groups and itself in the access token, and the scope and
+# tests/data, a chat page client that signs in with the code flow and PKCE, a test client that
+# takes a password, both putting the groups and the API in the access token, and the scope and
 # registration policies that let an MCP client register itself and get a token for the server.
 
 import json
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from needtoknow.config import Settings
 from needtoknow.mcp_server import SCOPE
@@ -48,34 +51,40 @@ def test_every_user_can_log_in() -> None:
         assert [c["type"] for c in user["credentials"]] == ["password"]
 
 
-def test_client_puts_group_names_in_the_access_token() -> None:
-    clients = [c for c in REALM["clients"] if c["clientId"] == "needtoknow-api"]
+def _client(client_id: str) -> dict[str, Any]:
+    clients: list[dict[str, Any]] = [c for c in REALM["clients"] if c["clientId"] == client_id]
     assert len(clients) == 1
-    client = clients[0]
-    assert client["publicClient"]
-    assert client["directAccessGrantsEnabled"]
-
-    mappers = [
-        m
-        for m in client["protocolMappers"]
-        if m["protocolMapper"] == "oidc-group-membership-mapper"
-    ]
-    assert len(mappers) == 1
-    config = mappers[0]["config"]
-    assert config["claim.name"] == "groups"
-    assert config["full.path"] == "false"
-    assert config["access.token.claim"] == "true"
+    return clients[0]
 
 
-def test_client_puts_itself_in_the_access_token_audience() -> None:
-    client = next(c for c in REALM["clients"] if c["clientId"] == "needtoknow-api")
-    mappers = [
-        m for m in client["protocolMappers"] if m["protocolMapper"] == "oidc-audience-mapper"
-    ]
-    assert len(mappers) == 1
-    config = mappers[0]["config"]
-    assert config["included.client.audience"] == "needtoknow-api"
-    assert config["access.token.claim"] == "true"
+def test_the_chat_page_signs_in_with_the_code_flow_and_pkce_only() -> None:
+    page = _client("needtoknow-api")
+    assert page["publicClient"]
+    assert page["standardFlowEnabled"]
+    assert not page["directAccessGrantsEnabled"]
+    assert page["attributes"]["pkce.code.challenge.method"] == "S256"
+    assert page["redirectUris"] == ["http://localhost:8000/", "http://127.0.0.1:8000/"]
+
+
+def test_only_the_test_client_takes_a_password() -> None:
+    test = _client("needtoknow-test")
+    assert test["publicClient"]
+    assert test["directAccessGrantsEnabled"]
+    assert not test["standardFlowEnabled"]
+    password_clients = [c["clientId"] for c in REALM["clients"] if c["directAccessGrantsEnabled"]]
+    assert password_clients == ["needtoknow-test"]
+
+
+@pytest.mark.parametrize("client_id", ["needtoknow-api", "needtoknow-test"])
+def test_each_client_puts_the_groups_and_the_api_in_the_access_token(client_id: str) -> None:
+    client = _client(client_id)
+    [groups] = _mappers(client, "oidc-group-membership-mapper")
+    assert groups["claim.name"] == "groups"
+    assert groups["full.path"] == "true"
+    assert groups["access.token.claim"] == "true"
+    [audience] = _mappers(client, "oidc-audience-mapper")
+    assert audience["included.client.audience"] == "needtoknow-api"
+    assert audience["access.token.claim"] == "true"
 
 
 def _mappers(scope: dict[str, Any], kind: str) -> list[dict[str, str]]:
@@ -91,7 +100,7 @@ def test_the_mcp_scope_puts_the_server_url_and_the_groups_in_the_access_token() 
     assert audience["access.token.claim"] == "true"
     [groups] = _mappers(scope, "oidc-group-membership-mapper")
     assert groups["claim.name"] == "groups"
-    assert groups["full.path"] == "false"
+    assert groups["full.path"] == "true"
     assert groups["access.token.claim"] == "true"
 
 

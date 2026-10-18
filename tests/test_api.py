@@ -1,13 +1,20 @@
 # The HTTP API against the real database and embedding model, with tokens signed by the throwaway
 # key from conftest.py and a scripted chat model: no token or a bad one is refused, results are
 # only documents the token's user may read, and nothing in the body can change who is asking.
+# Each answer writes one audit line, and /ready reports the database and the login server's keys.
 
+import hashlib
+import hmac
+import json
+import logging
 import re
 import threading
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+import anthropic
+import httpx2
 import jwt
 import psycopg
 import pytest
@@ -16,20 +23,23 @@ from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.messages import BaseMessage
 from langchain_core.outputs import ChatResult
 from psycopg.rows import TupleRow
-from pydantic import Field
+from pydantic import Field, SecretStr
 
-from fakes import ScriptedModel, call_tool, final_reply, scripted, search_call
+from fakes import HAIKU, USAGE, ScriptedModel, call_tool, final_reply, scripted, search_call
 from needtoknow.agent import REFUSAL
-from needtoknow.api import create_app
+from needtoknow.api import MAX_HISTORY_CHARS, MAX_HISTORY_TURNS, create_app
 from needtoknow.auth import SigningKeyLookup
 from needtoknow.config import Settings, load_settings
 from needtoknow.documents import Document
+from needtoknow.providers import price_of
 
 Sign = Callable[[dict[str, object]], str]
 
 QUESTION = {"query": "Who is helping with the Wharton and Rice projects for the Tiger Team?"}
 ASK = {"question": QUESTION["query"]}
 TIGER_TEAM = "enron-770963d7e2ceeb8d22d92a1ebfaba325068dfa242524cb4a8983dc0d1165f2ab"
+TIGER_TEAM_SOURCE = {"doc_id": TIGER_TEAM, "title": "Help with the Tiger Team"}
+TURN = {"question": "Who runs the Tiger Team?", "answer": "Vince Kaminski."}
 
 
 @pytest.fixture(scope="module")
@@ -52,6 +62,20 @@ def _kean(sign_token: Sign) -> dict[str, str]:
     return _bearer(sign_token({"preferred_username": "kean-s", "groups": []}))
 
 
+def _events(stream: str) -> list[tuple[str, Any]]:
+    events = []
+    for block in stream.strip().split("\n\n"):
+        name = ""
+        data = []
+        for line in block.split("\n"):
+            if line.startswith("event: "):
+                name = line.removeprefix("event: ")
+            elif line.startswith("data: "):
+                data.append(line.removeprefix("data: "))
+        events.append((name, json.loads("\n".join(data))))
+    return events
+
+
 def test_health_needs_no_token(client: TestClient) -> None:
     response = client.get("/health")
     assert response.status_code == 200
@@ -71,19 +95,65 @@ def test_chat_page_shows_each_query_as_text(client: TestClient) -> None:
     assert 'label.textContent = "Queries:"' in page
     assert "for (const query of body.queries)" in page
     assert "result.textContent = query.error ?? query.rows;" in page
+    assert "parts.answer.textContent += message.data;" in page
     assert "innerHTML" not in page
+
+
+def test_chat_page_sends_the_history_the_api_accepts(client: TestClient) -> None:
+    page = client.get("/").text
+    assert f"const MAX_HISTORY_TURNS = {MAX_HISTORY_TURNS};" in page
+    assert f"const MAX_HISTORY_CHARS = {MAX_HISTORY_CHARS};" in page
+    assert "body: JSON.stringify({ question, history: recentHistory() })," in page
 
 
 def test_chat_page_calls_only_the_api_and_the_issuer(client: TestClient) -> None:
     page = client.get("/").text
     assert re.findall(r"fetch\(([^,)]+)", page) == [
+        "endpoints.token_endpoint",
         '"/config"',
-        "`${config.issuer}/protocol/openid-connect/token`",
-        '"/ask"',
+        "`${config.issuer}/.well-known/openid-configuration`",
+        "endpoints.token_endpoint",
+        '"/ask/stream"',
     ]
+
+
+def test_chat_page_renews_the_token_before_it_ends_the_conversation(client: TestClient) -> None:
+    page = client.get("/").text
+    assert 'grant_type: "refresh_token",' in page
+    assert "refreshTimer = setTimeout(refresh, seconds * 1000);" in page
+    retry = page.index("if (response.status === 401 && await refresh()) {")
+    assert retry < page.index("conversation.length = 0;")
     assert "://" not in page
     assert "src=" not in page
     assert "<link" not in page
+
+
+def test_chat_page_signs_out_at_the_provider_and_names_the_user(client: TestClient) -> None:
+    page = client.get("/").text
+    assert 'id="logout"' in page
+    assert "location.assign(`${endpoints.end_session_endpoint}?${query}`);" in page
+    assert "id_token_hint: hintToken," in page
+    assert "post_logout_redirect_uri: redirectUri," in page
+    assert 'who.textContent = yes ? `Signed in as ${usernameOf(idToken)}` : "";' in page
+
+
+def test_chat_page_hides_what_is_hidden_and_shows_bold_without_cited_ids(
+    client: TestClient,
+) -> None:
+    page = client.get("/").text
+    assert "[hidden] { display: none !important; }" in page
+    assert "showAnswer(parts.answer, body.answer, body.citations);" in page
+    assert "plain.replaceAll(` [${source.doc_id}]`" in page
+    assert 'const strong = document.createElement("strong");' in page
+    assert "strong.textContent = piece;" in page
+
+
+def test_chat_page_offers_three_questions_and_shows_source_titles(client: TestClient) -> None:
+    page = client.get("/").text
+    block = page[page.index("const SUGGESTED_QUESTIONS = [") :]
+    assert block[: block.index("];")].count('",\n') == 3
+    assert "suggestion.textContent = text;" in page
+    assert 'item.textContent = source.title === "" ? source.doc_id : source.title;' in page
 
 
 def test_config_gives_the_page_the_issuer_and_client(
@@ -94,6 +164,7 @@ def test_config_gives_the_page_the_issuer_and_client(
     assert response.json() == {
         "issuer": token_settings.issuer,
         "client_id": token_settings.client_id,
+        "scope": token_settings.login_scope,
     }
 
 
@@ -212,13 +283,43 @@ def test_ask_without_a_token_is_refused(client: TestClient) -> None:
         pytest.param({"question": ""}, id="empty-question"),
         pytest.param({"question": "x" * 2001}, id="long-question"),
         pytest.param({"question": 42}, id="question-not-a-string"),
+        pytest.param(ASK | {"history": TURN}, id="history-not-a-list"),
+        pytest.param(ASK | {"history": [TURN] * (MAX_HISTORY_TURNS + 1)}, id="too-many-turns"),
+        pytest.param(
+            ASK | {"history": [{"question": "q", "answer": "x" * MAX_HISTORY_CHARS}]},
+            id="too-many-characters",
+        ),
+        pytest.param(ASK | {"history": [TURN | {"answer": ""}]}, id="empty-answer"),
+        pytest.param(ASK | {"history": [TURN | {"question": "x" * 2001}]}, id="long-turn"),
+        pytest.param(ASK | {"history": [TURN | {"citations": [TIGER_TEAM]}]}, id="turn-extra"),
     ],
 )
+@pytest.mark.parametrize("path", ["/ask", "/ask/stream"])
 def test_ask_with_an_invalid_body_is_refused(
-    client: TestClient, sign_token: Sign, body: dict[str, object]
+    client: TestClient, sign_token: Sign, path: str, body: dict[str, object]
 ) -> None:
-    response = client.post("/ask", json=body, headers=_kean(sign_token))
+    response = client.post(path, json=body, headers=_kean(sign_token))
     assert response.status_code == 422
+
+
+def test_a_history_at_the_caps_reaches_the_model(
+    owner: psycopg.Connection[TupleRow],
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    sign_token: Sign,
+) -> None:
+    answer_chars = MAX_HISTORY_CHARS // MAX_HISTORY_TURNS - 1
+    history = [{"question": "q", "answer": "x" * answer_chars}] * MAX_HISTORY_TURNS
+    model = scripted(final_reply(REFUSAL))
+
+    with TestClient(create_app(token_settings, token_signing_key, model)) as ask_client:
+        response = ask_client.post(
+            "/ask", json=ASK | {"history": history}, headers=_kean(sign_token)
+        )
+
+    assert response.status_code == 200
+    (prompt,) = model.prompts
+    assert len(prompt) == 1 + 2 * MAX_HISTORY_TURNS + 1
 
 
 @pytest.mark.parametrize(
@@ -230,7 +331,7 @@ def test_ask_with_an_invalid_body_is_refused(
             {
                 "user": "kaminski-v",
                 "answer": f"Two people in his group help [{TIGER_TEAM}].",
-                "citations": [TIGER_TEAM],
+                "citations": [TIGER_TEAM_SOURCE],
                 "refused": False,
                 "queries": [],
                 "withheld": 0,
@@ -290,7 +391,7 @@ def test_ask_after_opening_a_document_keeps_the_response_shape(
     assert response.json() == {
         "user": "kaminski-v",
         "answer": reply,
-        "citations": [TIGER_TEAM],
+        "citations": [TIGER_TEAM_SOURCE],
         "refused": False,
         "queries": [],
         "withheld": 0,
@@ -313,6 +414,69 @@ def test_ask_with_the_budget_spent_is_unavailable(
     assert model.prompts == []
 
 
+def test_the_stream_sends_tool_calls_and_tokens_then_what_ask_returns(
+    owner: psycopg.Connection[TupleRow],
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    sign_token: Sign,
+) -> None:
+    sql = "SELECT 1 AS one"
+    reply = f"Two people in his group help [{TIGER_TEAM}] [enron-made-up]."
+    body = ASK | {"history": [TURN]}
+    token = sign_token({"preferred_username": "kaminski-v", "groups": []})
+    responses = {}
+    for path in ("/ask", "/ask/stream"):
+        model = scripted(
+            search_call({"query": ASK["question"]}),
+            call_tool("query_data", {"sql": sql}),
+            final_reply(reply),
+        )
+        with TestClient(create_app(token_settings, token_signing_key, model)) as ask_client:
+            responses[path] = ask_client.post(path, json=body, headers=_bearer(token))
+        assert [message.text for message in model.prompts[0][1:]] == [
+            TURN["question"],
+            TURN["answer"],
+            ASK["question"],
+        ]
+
+    streamed = responses["/ask/stream"]
+    assert streamed.status_code == 200
+    assert streamed.headers["content-type"].startswith("text/event-stream")
+    events = _events(streamed.text)
+    tokens = [data for name, data in events if name == "token"]
+    assert events[:2] == [
+        ("tool", {"name": "search_documents", "sql": None}),
+        ("tool", {"name": "query_data", "sql": sql}),
+    ]
+    assert "".join(tokens) == reply
+    assert events[2:] == [("token", text) for text in tokens] + [
+        ("answer", responses["/ask"].json())
+    ]
+    assert events[-1][1]["citations"] == [TIGER_TEAM_SOURCE]
+    assert len(events[-1][1]["queries"]) == 1
+
+
+def test_a_budget_spent_mid_stream_ends_with_an_error_event(
+    owner: psycopg.Connection[TupleRow],
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    sign_token: Sign,
+) -> None:
+    model = scripted(search_call({"query": ASK["question"]}), final_reply(REFUSAL))
+    one_call = price_of(token_settings).cost(USAGE["input_tokens"], USAGE["output_tokens"])
+    half_a_call = token_settings.model_copy(update={"budget_usd": one_call / 2})
+
+    with TestClient(create_app(half_a_call, token_signing_key, model)) as ask_client:
+        response = ask_client.post("/ask/stream", json=ASK, headers=_kean(sign_token))
+
+    assert response.status_code == 200
+    assert _events(response.text) == [
+        ("tool", {"name": "search_documents", "sql": None}),
+        ("error", {"detail": "the model budget for this server is spent"}),
+    ]
+    assert len(model.prompts) == 1
+
+
 def test_ask_with_the_database_down_is_unavailable(
     unreachable_database: None,
     token_settings: Settings,
@@ -326,6 +490,56 @@ def test_ask_with_the_database_down_is_unavailable(
 
     assert response.status_code == 503
     assert response.json() == {"detail": "the database cannot be reached"}
+
+
+def test_without_a_model_key_search_works_and_a_question_names_the_key(
+    owner: psycopg.Connection[TupleRow],
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    sign_token: Sign,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    missing = {"detail": "ANTHROPIC_API_KEY is not set; put it in .env"}
+
+    with TestClient(create_app(token_settings, token_signing_key, None)) as keyless_client:
+        searched = keyless_client.post("/search", json=QUESTION, headers=_kean(sign_token))
+        asked = keyless_client.post("/ask", json=ASK, headers=_kean(sign_token))
+        streamed = keyless_client.post("/ask/stream", json=ASK, headers=_kean(sign_token))
+
+    assert searched.status_code == 200
+    assert asked.status_code == 503
+    assert asked.json() == missing
+    assert _events(streamed.text) == [("error", missing)]
+
+
+class _FailingModel(ScriptedModel):
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+        raise anthropic.APIConnectionError(request=request)
+
+
+def test_a_failing_model_provider_is_unavailable_on_ask_and_an_error_event_on_stream(
+    owner: psycopg.Connection[TupleRow],
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    sign_token: Sign,
+) -> None:
+    model = _FailingModel(messages=iter([]))
+    with TestClient(create_app(token_settings, token_signing_key, model)) as ask_client:
+        asked = ask_client.post("/ask", json=ASK, headers=_kean(sign_token))
+        streamed = ask_client.post("/ask/stream", json=ASK, headers=_kean(sign_token))
+
+    assert asked.status_code == 503
+    assert asked.json() == {"detail": "the model provider failed"}
+    assert streamed.status_code == 200
+    assert _events(streamed.text) == [("error", {"detail": "the model provider failed"})]
 
 
 def test_concurrent_searches_each_answer_as_their_own_caller(
@@ -428,3 +642,146 @@ def test_an_employee_over_the_quota_gets_429(
 
     assert first.status_code == 200
     assert second.status_code == 429
+
+
+def _audit_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [record.getMessage() for record in caplog.records if record.name == "needtoknow.audit"]
+
+
+def _ask_as_kaminski(
+    settings: Settings, signing_key: SigningKeyLookup, token: str
+) -> dict[str, Any]:
+    reply = f"Two people in his group help [{TIGER_TEAM}]."
+    model = scripted(search_call({"query": ASK["question"]}), final_reply(reply))
+    with TestClient(create_app(settings, signing_key, model)) as ask_client:
+        response = ask_client.post("/ask", json=ASK, headers=_bearer(token))
+    assert response.status_code == 200
+    body: dict[str, Any] = response.json()
+    return body
+
+
+def test_an_answer_writes_one_audit_line_without_the_question(
+    owner: psycopg.Connection[TupleRow],
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    sign_token: Sign,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="needtoknow.audit")
+    token = sign_token({"preferred_username": "kaminski-v", "groups": []})
+
+    _ask_as_kaminski(token_settings, token_signing_key, token)
+
+    lines = _audit_lines(caplog)
+    assert len(lines) == 1
+    assert ASK["question"] not in lines[0]
+    assert token not in lines[0]
+    line = json.loads(lines[0])
+    assert set(line) == {
+        "time",
+        "user",
+        "client",
+        "entry",
+        "text_chars",
+        "text_hmac",
+        "text",
+        "documents",
+        "sql",
+        "withheld",
+        "refused",
+        "exhausted",
+        "input_tokens",
+        "output_tokens",
+        "cost_usd",
+        "latency_ms",
+    }
+    question = ASK["question"]
+    assert line["user"] == "kaminski-v"
+    assert line["client"] == token_settings.client_id
+    assert line["entry"] == "ask"
+    assert line["text_chars"] == len(question)
+    assert line["text_hmac"] is None
+    assert line["text"] is None
+    assert line["documents"] == [TIGER_TEAM]
+    assert line["sql"] is None
+    assert line["withheld"] == 0
+    assert line["refused"] is False
+    assert line["exhausted"] is False
+    assert line["input_tokens"] == 2000
+    assert line["output_tokens"] == 200
+    assert line["cost_usd"] == HAIKU.cost(2000, 200)
+    assert line["latency_ms"] >= 0
+
+
+def test_the_audit_line_holds_the_question_when_the_setting_asks(
+    owner: psycopg.Connection[TupleRow],
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    sign_token: Sign,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="needtoknow.audit")
+    with_text = token_settings.model_copy(update={"audit_text": True})
+    token = sign_token({"preferred_username": "kaminski-v", "groups": []})
+
+    _ask_as_kaminski(with_text, token_signing_key, token)
+
+    lines = _audit_lines(caplog)
+    assert len(lines) == 1
+    line = json.loads(lines[0])
+    assert line["text"] == ASK["question"]
+    assert line["sql"] == []
+
+
+def test_the_audit_line_holds_a_keyed_hash_of_the_question_when_a_key_is_set(
+    owner: psycopg.Connection[TupleRow],
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    sign_token: Sign,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="needtoknow.audit")
+    keyed = token_settings.model_copy(update={"audit_key": SecretStr("audit-test-key")})
+    token = sign_token({"preferred_username": "kaminski-v", "groups": []})
+
+    _ask_as_kaminski(keyed, token_signing_key, token)
+
+    [line] = [json.loads(text) for text in _audit_lines(caplog)]
+    question = ASK["question"].encode()
+    assert line["text_hmac"] == hmac.new(b"audit-test-key", question, hashlib.sha256).hexdigest()
+    assert line["text_hmac"] != hashlib.sha256(question).hexdigest()
+    assert line["text"] is None
+
+
+@pytest.mark.keycloak
+def test_ready_when_the_database_and_the_keys_answer(client: TestClient) -> None:
+    response = client.get("/ready")
+    assert response.status_code == 200
+    assert response.json() == {"database": "ok", "signing_keys": "ok"}
+
+
+def test_not_ready_with_the_database_down(
+    owner: psycopg.Connection[TupleRow],
+    unreachable_database: None,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+) -> None:
+    with TestClient(create_app(token_settings, token_signing_key, scripted())) as down_client:
+        response = down_client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json()["database"] == "unreachable"
+
+
+def test_not_ready_when_the_keys_cannot_be_fetched(
+    owner: psycopg.Connection[TupleRow],
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+) -> None:
+    no_keys = token_settings.model_copy(update={"jwks_url": "http://127.0.0.1:1/certs"})
+
+    with TestClient(create_app(no_keys, token_signing_key, scripted())) as down_client:
+        response = down_client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"database": "ok", "signing_keys": "unreachable"}

@@ -6,7 +6,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from needtoknow.agent import REFUSAL, ask
+from needtoknow.agent import REFUSAL, ask, employee_tools
 from needtoknow.auth import principals
 from needtoknow.config import load_settings
 from needtoknow.db import Pool
@@ -32,7 +32,9 @@ def spending() -> Iterator[Spending]:
 def test_the_holder_gets_an_answer_that_cites_the_email(app_pool: Pool, spending: Spending) -> None:
     holder = principals("kaminski-v", [])
 
-    answer = ask(QUESTION, app_pool, holder, chat_model(load_settings()), spending)
+    answer = ask(
+        QUESTION, employee_tools(app_pool, holder, None), chat_model(load_settings()), spending
+    )
 
     assert not answer.refused, answer.text
     assert TIGER_TEAM in answer.citations
@@ -42,7 +44,9 @@ def test_the_holder_gets_an_answer_that_cites_the_email(app_pool: Pool, spending
 def test_another_custodian_gets_the_fixed_refusal(app_pool: Pool, spending: Spending) -> None:
     other = principals("kean-s", [])
 
-    answer = ask(QUESTION, app_pool, other, chat_model(load_settings()), spending)
+    answer = ask(
+        QUESTION, employee_tools(app_pool, other, None), chat_model(load_settings()), spending
+    )
 
     assert answer.refused, answer.text
     assert answer.text == REFUSAL

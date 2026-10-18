@@ -13,7 +13,14 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 from needtoknow import providers
 from needtoknow.agent import DESCRIBE_DATA_TOOL
 from needtoknow.config import Settings
-from needtoknow.providers import MAX_TOKENS, MissingProvider, Price, chat_model, price_of
+from needtoknow.providers import (
+    MAX_TOKENS,
+    MissingApiKey,
+    MissingProvider,
+    Price,
+    chat_model,
+    price_of,
+)
 
 
 def _priced(model_name: str = "anthropic:claude-haiku-5-5") -> Settings:
@@ -24,6 +31,26 @@ def _priced(model_name: str = "anthropic:claude-haiku-5-5") -> Settings:
 def _api_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+
+@pytest.mark.parametrize(
+    ("model_name", "variable"),
+    [("anthropic:claude-haiku-5-5", "ANTHROPIC_API_KEY"), ("openai:gpt-5", "OPENAI_API_KEY")],
+)
+def test_a_missing_key_stops_the_model_naming_the_variable(
+    monkeypatch: pytest.MonkeyPatch, model_name: str, variable: str
+) -> None:
+    monkeypatch.delenv(variable)
+
+    with pytest.raises(MissingApiKey, match=f"{variable} is not set; put it in .env"):
+        chat_model(_priced(model_name))
+
+
+def test_an_ollama_model_needs_no_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    monkeypatch.delenv("OPENAI_API_KEY")
+
+    chat_model(_priced("ollama:llama3.2:3b"))
 
 
 def test_the_default_model_is_anthropic_with_low_effort() -> None:
