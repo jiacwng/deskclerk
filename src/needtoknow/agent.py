@@ -19,10 +19,19 @@ class Verdict:
     reason: str
 
 
-Gate = Callable[[str, str, str, dict[str, Any]], Awaitable[Verdict]]
+@dataclass(frozen=True)
+class ProposedCall:
+    request: str
+    server: str
+    tool: ToolInfo
+    arguments: dict[str, Any]
+    observed: tuple[str, ...]
 
 
-async def allow_all(request: str, server: str, tool: str, arguments: dict[str, Any]) -> Verdict:
+Gate = Callable[[ProposedCall], Awaitable[Verdict]]
+
+
+async def allow_all(call: ProposedCall) -> Verdict:
     return Verdict(True, "no write check is configured")
 
 
@@ -115,7 +124,14 @@ async def run_agent(
                 continue
             server_name, tool_name = tool.server.name, tool.info.name
             if not tool.info.read_only:
-                verdict = await gate(request, server_name, tool_name, arguments)
+                proposed = ProposedCall(
+                    request,
+                    server_name,
+                    tool.info,
+                    arguments,
+                    tuple(done.result for done in executed),
+                )
+                verdict = await gate(proposed)
                 if not verdict.allowed:
                     blocked.append(BlockedCall(server_name, tool_name, arguments, verdict.reason))
                     text = f"This call was blocked and not run: {verdict.reason}"

@@ -1,6 +1,6 @@
 # A real MCP server with OAuth for the tests: the SDK's server side on a free localhost port,
 # an authorization server that approves every request, a read tool, a write tool and a tool
-# that fails. With oauth=False it has no sign-in at all.
+# that fails, plus a delete tool on request. With oauth=False it has no sign-in at all.
 
 import secrets
 import socket
@@ -130,10 +130,13 @@ class RunningServer:
     redirect_url: str
     provider: ApprovingProvider
     notes: list[tuple[str, str]] = field(default_factory=list)
+    deleted: list[str] = field(default_factory=list)
 
 
 @contextmanager
-def running_mcp_server(redirect_url: str, oauth: bool = True) -> Iterator[RunningServer]:
+def running_mcp_server(
+    redirect_url: str, oauth: bool = True, delete_tool: bool = False
+) -> Iterator[RunningServer]:
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     base = f"http://127.0.0.1:{sock.getsockname()[1]}"
@@ -167,6 +170,13 @@ def running_mcp_server(redirect_url: str, oauth: bool = True) -> Iterator[Runnin
     @mcp.tool()
     def break_note() -> str:
         raise ValueError("the note is locked")
+
+    if delete_tool:
+
+        @mcp.tool()
+        def delete_note(note_id: str) -> str:
+            running.deleted.append(note_id)
+            return f"deleted {note_id}"
 
     server = uvicorn.Server(uvicorn.Config(mcp.streamable_http_app(), log_level="warning"))
     thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]})
