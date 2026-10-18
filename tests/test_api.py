@@ -20,8 +20,8 @@ import psycopg
 import pytest
 from fastapi.testclient import TestClient
 from langchain_core.callbacks import CallbackManagerForLLMRun
-from langchain_core.messages import BaseMessage
-from langchain_core.outputs import ChatResult
+from langchain_core.messages import BaseMessage, ToolMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
 from psycopg.rows import TupleRow
 from pydantic import Field, SecretStr
 
@@ -514,6 +514,49 @@ def test_concurrent_searches_each_answer_as_their_own_caller(
     assert len(replies) == 40
     assert TIGER_TEAM in found["kaminski-v"]
     assert TIGER_TEAM not in found["kean-s"]
+
+
+class _SearchThenCiteModel(ScriptedModel):
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        if isinstance(messages[-1], ToolMessage):
+            reply = final_reply(f"Two people in his group help [{TIGER_TEAM}].")
+        else:
+            reply = search_call(QUESTION)
+        return ChatResult(generations=[ChatGeneration(message=reply)])
+
+
+def test_concurrent_streams_each_answer_as_their_own_caller(
+    owner: psycopg.Connection[TupleRow],
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    sign_token: Sign,
+) -> None:
+    callers = {
+        "kean-s": _kean(sign_token),
+        "kaminski-v": _bearer(sign_token({"preferred_username": "kaminski-v", "groups": []})),
+    }
+    model = _SearchThenCiteModel(messages=iter([]))
+
+    with TestClient(create_app(token_settings, token_signing_key, model)) as stream_client:
+
+        def stream_as(user: str) -> tuple[str, tuple[str, Any]]:
+            response = stream_client.post("/ask/stream", json=ASK, headers=callers[user])
+            return user, _events(response.text)[-1]
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            finals = list(pool.map(stream_as, ["kean-s", "kaminski-v"] * 10))
+
+    for user, (name, answer) in finals:
+        assert name == "answer"
+        assert answer["user"] == user
+        assert answer["citations"] == ([TIGER_TEAM_SOURCE] if user == "kaminski-v" else [])
+    assert len(finals) == 20
 
 
 class _WaitingModel(ScriptedModel):

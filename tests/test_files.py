@@ -213,6 +213,30 @@ def test_a_file_no_access_line_matches_stops_the_load_before_anything_is_written
     assert _ids(owner_clean, FILE_PREFIX) == []
 
 
+@pytest.mark.parametrize(
+    ("name", "content", "error"),
+    [
+        ("report.pdf", b"%PDF-1.7\n" + bytes(range(256)) * 4, "PDFSyntaxError"),
+        ("contract.docx", b"PK\x03\x04" + bytes(range(256)) * 4, "BadZipFile"),
+    ],
+)
+def test_a_corrupt_file_stops_the_load_before_anything_is_written(
+    owner_clean: Connection, tmp_path: Path, name: str, content: bytes, error: str
+) -> None:
+    folder = tmp_path / "files"
+    folder.mkdir()
+    (folder / name).write_bytes(content)
+    (folder / "welcome.txt").write_text("Welcome.", encoding="utf-8")
+    access = _access(tmp_path / "access.jsonl", {"path": "*", "public": True})
+
+    with pytest.raises(FilesError, match=rf"(?s)^{name}: .*{error}"):
+        load_documents(
+            owner_clean, read_files(folder, access, MAX_BYTES).documents, FILE_PREFIX, True
+        )
+
+    assert _ids(owner_clean, FILE_PREFIX) == []
+
+
 def test_a_symbolic_link_is_refused(tmp_path: Path) -> None:
     secret = tmp_path / "secret.txt"
     secret.write_text("Outside the folder.", encoding="utf-8")
