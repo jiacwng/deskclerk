@@ -14,7 +14,7 @@ from mcp.client import Client
 from mcp.client.auth import OAuthClientProvider
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.auth import AuthorizationCodeResult, OAuthClientMetadata
-from mcp.types import TextContent
+from mcp.types import TextContent, Tool
 
 from needtoknow.servers import McpServer
 from needtoknow.tokens import ServerTokenStorage, TokenStore
@@ -24,6 +24,10 @@ HTTP_TIMEOUT = httpx2.Timeout(30, read=300)
 
 
 class NotConnected(Exception):
+    pass
+
+
+class NoSignInNeeded(Exception):
     pass
 
 
@@ -48,6 +52,8 @@ class ToolInfo:
     name: str
     description: str
     input_schema: dict[str, Any]
+    read_only: bool
+    destructive: bool
 
 
 @dataclass(frozen=True)
@@ -94,7 +100,7 @@ class OAuthConnections:
 
     @asynccontextmanager
     async def _client(
-        self, provider: OAuthClientProvider, server: McpServer
+        self, provider: OAuthClientProvider | None, server: McpServer
     ) -> AsyncIterator[Client]:
         async with httpx2.AsyncClient(auth=provider, timeout=HTTP_TIMEOUT) as http:
             transport = streamable_http_client(server.url, http_client=http)
@@ -102,6 +108,8 @@ class OAuthConnections:
                 yield client
 
     async def begin(self, user_id: str, server: McpServer) -> str:
+        if server.auth == "none":
+            raise NoSignInNeeded(f"{server.name} needs no sign-in")
         loop = asyncio.get_running_loop()
         storage = self._tokens.storage_for(user_id, server, self._redirect_url)
         authorization_url: asyncio.Future[str] = loop.create_future()
@@ -158,6 +166,10 @@ class OAuthConnections:
 
     @asynccontextmanager
     async def _connected_client(self, user_id: str, server: McpServer) -> AsyncIterator[Client]:
+        if server.auth == "none":
+            async with self._client(None, server) as client:
+                yield client
+            return
         storage = self._tokens.storage_for(user_id, server, self._redirect_url)
         if await storage.get_tokens() is None:
             raise NotConnected(f"{user_id} has not connected {server.name}")
@@ -181,9 +193,7 @@ class OAuthConnections:
     async def tools(self, user_id: str, server: McpServer) -> list[ToolInfo]:
         async with self._connected_client(user_id, server) as client:
             listing = await client.list_tools()
-        return [
-            ToolInfo(tool.name, tool.description or "", tool.input_schema) for tool in listing.tools
-        ]
+        return [_tool_info(tool) for tool in listing.tools]
 
     async def call(
         self, user_id: str, server: McpServer, tool_name: str, arguments: dict[str, Any]
@@ -192,6 +202,13 @@ class OAuthConnections:
             result = await client.call_tool(tool_name, arguments)
         texts = [block.text for block in result.content if isinstance(block, TextContent)]
         return ToolResult("\n".join(texts), result.is_error)
+
+
+def _tool_info(tool: Tool) -> ToolInfo:
+    hints = tool.annotations
+    read_only = hints is not None and hints.read_only_hint is True
+    destructive = not read_only and (hints is None or hints.destructive_hint is not False)
+    return ToolInfo(tool.name, tool.description or "", tool.input_schema, read_only, destructive)
 
 
 def _consume_exception(task: asyncio.Task[None]) -> None:

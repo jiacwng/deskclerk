@@ -15,6 +15,7 @@ from mcp_server import PRESET_CLIENT_ID, PRESET_CLIENT_SECRET, RunningServer, ru
 from needtoknow.connections import (
     AlreadyConnected,
     FlowExpired,
+    NoSignInNeeded,
     NotConnected,
     OAuthConnections,
     UnknownState,
@@ -80,7 +81,7 @@ async def test_connect_then_list_and_call_tools_as_that_employee(
     await connections.complete("ada", state, code)
 
     tools = await connections.tools("ada", server)
-    assert {tool.name for tool in tools} == {"read_note", "write_note"}
+    assert {tool.name for tool in tools} == {"read_note", "write_note", "break_note"}
     result = await connections.call("ada", server, "write_note", {"text": "hello"})
     assert (result.text, result.is_error) == ("wrote hello", False)
 
@@ -123,6 +124,7 @@ async def test_a_restart_keeps_the_connection_and_the_stored_expiry_triggers_a_r
     assert {tool.name for tool in await restarted.tools("ada", server)} == {
         "read_note",
         "write_note",
+        "break_note",
     }
     assert mcp_server.provider.refreshes == 1
     new = await storage.get_tokens()
@@ -198,6 +200,7 @@ async def test_a_registered_client_skips_dynamic_registration(
     assert {tool.name for tool in await connections.tools("ada", server)} == {
         "read_note",
         "write_note",
+        "break_note",
     }
     assert mcp_server.provider.registrations == 0
     assert TokenStore(token_path, key).get("ada", "notes", "client") is None
@@ -275,3 +278,17 @@ async def test_a_connection_never_finished_leaves_no_task_running(
     assert asyncio.all_tasks() - before
     await asyncio.sleep(0.6)
     assert not [task for task in asyncio.all_tasks() - before if not task.done()]
+
+
+@pytest.mark.anyio
+async def test_a_server_with_no_sign_in_lists_its_tools_with_their_hints(
+    token_path: Path, key: str
+) -> None:
+    connections = make_connections(token_path, key)
+    with running_mcp_server(REDIRECT, oauth=False) as open_server:
+        server = McpServer("open", open_server.url, None, None, "none")
+        tools = {tool.name: tool for tool in await connections.tools("ada", server)}
+        with pytest.raises(NoSignInNeeded):
+            await connections.begin("ada", server)
+    assert (tools["read_note"].read_only, tools["read_note"].destructive) == (True, False)
+    assert (tools["write_note"].read_only, tools["write_note"].destructive) == (False, True)

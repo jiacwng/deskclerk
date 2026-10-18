@@ -5,6 +5,7 @@ import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
@@ -22,6 +23,7 @@ class McpServer:
     url: str
     client_id: str | None
     client_secret: str | None
+    auth: Literal["oauth", "none"] = "oauth"
 
 
 class _ServerEntry(BaseModel):
@@ -31,6 +33,7 @@ class _ServerEntry(BaseModel):
     url: str
     client_id: str | None = None
     client_secret_env: str | None = None
+    auth: Literal["oauth", "none"] = "oauth"
 
     @field_validator("name")
     @classmethod
@@ -53,6 +56,12 @@ class _ServerEntry(BaseModel):
     def _secret_needs_client_id(self) -> "_ServerEntry":
         if self.client_secret_env is not None and self.client_id is None:
             raise ValueError(f"server {self.name!r} sets client_secret_env without client_id")
+        return self
+
+    @model_validator(mode="after")
+    def _no_sign_in_needs_no_client(self) -> "_ServerEntry":
+        if self.auth == "none" and (self.client_id is not None or self.client_secret_env):
+            raise ValueError(f'server {self.name!r} has auth = "none" and a client')
         return self
 
 
@@ -95,5 +104,5 @@ def load_servers(path: Path, environ: Mapping[str, str] = os.environ) -> list[Mc
                     f"server {entry.name!r} reads its client secret from the environment "
                     f"variable {entry.client_secret_env}, which is not set"
                 )
-        servers.append(McpServer(entry.name, entry.url, entry.client_id, secret))
+        servers.append(McpServer(entry.name, entry.url, entry.client_id, secret, entry.auth))
     return servers

@@ -75,3 +75,12 @@ def test_a_secret_without_a_client_id_is_refused(tmp_path: Path) -> None:
 def test_a_missing_file_is_an_error_naming_it(tmp_path: Path) -> None:
     with pytest.raises(ServersError, match="nothing.toml"):
         load_servers(tmp_path / "nothing.toml", {})
+
+
+def test_auth_none_is_read_and_refuses_a_client(tmp_path: Path) -> None:
+    entry = '[[server]]\nname = "a"\nurl = "https://a.test/mcp"\nauth = "none"\n'
+    assert load_servers(write(tmp_path, entry), {}) == [
+        McpServer("a", "https://a.test/mcp", None, None, "none")
+    ]
+    with pytest.raises(ServersError, match="and a client"):
+        load_servers(write(tmp_path, entry + 'client_id = "x"\n'), {})
