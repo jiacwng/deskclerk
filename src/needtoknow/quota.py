@@ -1,6 +1,6 @@
-# A per-employee request quota for the API and the MCP server, with the limits library's moving
-# window in memory: one employee looping on requests cannot spend the shared model budget or
-# hold every database connection. NEEDTOKNOW_REQUESTS_PER_MINUTE sets the rate.
+# A per-employee request quota with the limits library's moving window in memory: one employee
+# looping on requests cannot spend the shared model budget. NEEDTOKNOW_REQUESTS_PER_MINUTE sets
+# the rate.
 
 from limits import RateLimitItemPerMinute
 from limits.storage import MemoryStorage

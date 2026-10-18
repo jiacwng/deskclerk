@@ -1,21 +1,5 @@
-# Local services. The database is reachable from this machine only.
+# Local services, reachable from this machine only.
 services:
-  db:
-    image: pgvector/pgvector:0.8.7-pg17
-    environment:
-      POSTGRES_USER: needtoknow
-      POSTGRES_PASSWORD: needtoknow
-      POSTGRES_DB: needtoknow
-    ports:
-      - "127.0.0.1:5432:5432"
-    volumes:
-      - db-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U needtoknow -d needtoknow"]
-      interval: 2s
-      timeout: 5s
-      retries: 30
-
   # Development login server. The realm in keycloak/ holds the six users of the public data, each
   # with the password needtoknow; the admin console account is admin / admin.
   keycloak:
@@ -40,76 +24,3 @@ services:
       interval: 2s
       timeout: 5s
       retries: 60
-
-  # Loads the committed data slices once, then exits. Point the volume at a full maildir or a
-  # full BIRD Mini-Dev download to load those instead.
-  load:
-    build: .
-    command:
-      - sh
-      - -c
-      - >-
-        python -m needtoknow.ingest enron tests/data/enron/maildir &&
-        python -m needtoknow.ingest bird tests/data/bird
-    environment:
-      NEEDTOKNOW_DB_HOST: db
-    volumes:
-      - ./tests/data:/app/tests/data:ro
-    restart: "no"
-    depends_on:
-      db:
-        condition: service_healthy
-
-  app:
-    build: .
-    environment:
-      NEEDTOKNOW_DB_HOST: db
-      # Tokens are stamped with the browser's address, so the issuer stays localhost and only
-      # the key lookup uses the address that resolves inside this network.
-      NEEDTOKNOW_JWKS_URL: http://keycloak:8080/realms/needtoknow/protocol/openid-connect/certs
-      NEEDTOKNOW_MODEL: ${NEEDTOKNOW_MODEL:-anthropic:claude-haiku-5-5}
-      # Passed only when set on this machine, because an empty price is not a number.
-      NEEDTOKNOW_PRICE_INPUT:
-      NEEDTOKNOW_PRICE_OUTPUT:
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OLLAMA_HOST: ${OLLAMA_HOST:-}
-      TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
-      NEEDTOKNOW_SCREEN: ${NEEDTOKNOW_SCREEN:-false}
-    ports:
-      - "127.0.0.1:8000:8000"
-    # Ready once the database answers as the app role and the login server's keys can be fetched.
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=12)
-      interval: 5s
-      timeout: 15s
-      retries: 30
-    depends_on:
-      keycloak:
-        condition: service_healthy
-      load:
-        condition: service_completed_successfully
-
-  mcp:
-    build: .
-    command: ["python", "-m", "needtoknow.mcp_server"]
-    environment:
-      NEEDTOKNOW_DB_HOST: db
-      NEEDTOKNOW_JWKS_URL: http://keycloak:8080/realms/needtoknow/protocol/openid-connect/certs
-      NEEDTOKNOW_MCP_HOST: 0.0.0.0
-      TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
-      NEEDTOKNOW_SCREEN: ${NEEDTOKNOW_SCREEN:-false}
-    ports:
-      - "127.0.0.1:8001:8001"
-    depends_on:
-      keycloak:
-        condition: service_healthy
-      load:
-        condition: service_completed_successfully
-
-volumes:
-  db-data:

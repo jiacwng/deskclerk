@@ -1,7 +1,7 @@
-# The audit log: one JSON line per answer, search and MCP tool call, naming who asked, from which
-# client, which documents were used, and what it cost. The question or query and the SQL are
-# logged only when NEEDTOKNOW_AUDIT_TEXT is set; otherwise only the text's length, and its
-# HMAC-SHA256 when NEEDTOKNOW_AUDIT_KEY is set. Tokens and document text are never logged.
+# The audit log: one JSON line per answer, naming who asked, from which client, which documents
+# were used, and what it cost. The question and the SQL are logged only when
+# NEEDTOKNOW_AUDIT_TEXT is set; otherwise only the question's length, and its HMAC-SHA256 when
+# NEEDTOKNOW_AUDIT_KEY is set. Tokens and document text are never logged.
 
 import hashlib
 import hmac
@@ -14,7 +14,6 @@ from datetime import UTC, datetime
 
 from pydantic import SecretStr
 
-from needtoknow.agent import Answer
 from needtoknow.auth import Identity
 
 _log = logging.getLogger(__name__)
@@ -25,57 +24,28 @@ class Audit:
         self.include_text = include_text
         self.key = key
 
-    def answered(self, identity: Identity, question: str, answer: Answer, started: float) -> None:
-        self._write(
-            "ask",
-            identity,
-            question,
-            started,
-            documents=answer.citations,
-            sql=[query.sql for query in answer.queries],
-            withheld=answer.withheld,
-            refused=answer.refused,
-            exhausted=answer.exhausted,
-            input_tokens=answer.input_tokens,
-            output_tokens=answer.output_tokens,
-            cost_usd=answer.cost_usd,
-        )
-
-    def served(
+    def answered(
         self,
-        entry: str,
         identity: Identity,
-        text: str,
-        started: float,
-        documents: Iterable[str] = (),
-        sql: Iterable[str] = (),
-        withheld: int = 0,
-    ) -> None:
-        self._write(entry, identity, text, started, documents=documents, sql=sql, withheld=withheld)
-
-    def _write(
-        self,
-        entry: str,
-        identity: Identity,
-        text: str,
+        question: str,
         started: float,
         documents: Iterable[str],
         sql: Iterable[str],
         withheld: int,
-        refused: bool | None = None,
-        exhausted: bool | None = None,
-        input_tokens: int | None = None,
-        output_tokens: int | None = None,
-        cost_usd: float | None = None,
+        refused: bool,
+        exhausted: bool,
+        input_tokens: int,
+        output_tokens: int,
+        cost_usd: float,
     ) -> None:
         line = {
             "time": datetime.now(UTC).isoformat(timespec="milliseconds"),
             "user": identity.user_id,
             "client": identity.client_id,
-            "entry": entry,
-            "text_chars": len(text),
-            "text_hmac": self._hmac(text),
-            "text": text if self.include_text else None,
+            "entry": "ask",
+            "text_chars": len(question),
+            "text_hmac": self._hmac(question),
+            "text": question if self.include_text else None,
             "documents": list(documents),
             "sql": list(sql) if self.include_text else None,
             "withheld": withheld,
@@ -95,7 +65,7 @@ class Audit:
         return hmac.new(key, text.encode(), hashlib.sha256).hexdigest()
 
 
-# The server entry points call this once: the process writes its audit lines to stdout and the
+# The server entry point calls this once: the process writes its audit lines to stdout and the
 # operator ships them, as a twelve-factor app does.
 def log_to_stdout() -> None:
     handler = logging.StreamHandler(sys.stdout)

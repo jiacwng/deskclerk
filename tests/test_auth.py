@@ -22,6 +22,7 @@ from needtoknow.auth import (
 from needtoknow.config import Settings
 
 Sign = Callable[[dict[str, object]], str]
+OTHER_SERVICE = "https://agent.example.com"
 
 
 def test_valid_token_gives_user_groups_and_everyone(
@@ -106,27 +107,25 @@ def test_audience_list_naming_the_api_is_accepted(
     assert identity.user_id == "district-1"
 
 
-def test_a_token_for_the_mcp_server_is_refused_by_the_api(
+def test_a_token_for_another_service_is_refused(
     sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup
 ) -> None:
-    token = sign_token({"aud": token_settings.mcp_url})
+    token = sign_token({"aud": OTHER_SERVICE})
     with pytest.raises(AuthError, match="Audience doesn't match"):
         authenticate(token, token_settings, token_signing_key, token_settings.audience)
 
 
-def test_the_mcp_audience_accepts_any_registered_client_and_reads_the_scopes(
+def test_another_audience_accepts_any_registered_client_and_reads_the_scopes(
     sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup
 ) -> None:
     claims: dict[str, object] = {
-        "aud": token_settings.mcp_url,
+        "aud": OTHER_SERVICE,
         "azp": "a-registered-client",
-        "scope": "openid profile needtoknow-mcp",
+        "scope": "openid profile needtoknow-agent",
     }
-    identity = authenticate(
-        sign_token(claims), token_settings, token_signing_key, token_settings.mcp_url
-    )
+    identity = authenticate(sign_token(claims), token_settings, token_signing_key, OTHER_SERVICE)
     assert identity.user_id == "district-1"
-    assert identity.scopes == {"openid", "profile", "needtoknow-mcp"}
+    assert identity.scopes == {"openid", "profile", "needtoknow-agent"}
     assert identity.client_id == "a-registered-client"
 
 

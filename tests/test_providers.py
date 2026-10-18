@@ -1,7 +1,7 @@
 # The chat model for each provider is built without a network call, Anthropic alone gets low
 # effort, a model is priced from the table or from the price settings and refused without
-# either, a missing provider package names the extra that installs it, and the optional
-# describe_data argument stays required and nullable under strict tool use.
+# either, a missing provider package names the extra that installs it, and an optional tool
+# argument stays required and nullable under strict tool use.
 
 from typing import Any
 
@@ -11,7 +11,6 @@ from langchain_core.runnables import RunnableBinding
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from needtoknow import providers
-from needtoknow.agent import DESCRIBE_DATA_TOOL
 from needtoknow.config import Settings
 from needtoknow.providers import (
     MAX_TOKENS,
@@ -21,6 +20,17 @@ from needtoknow.providers import (
     chat_model,
     price_of,
 )
+
+LOOKUP_TOOL: dict[str, Any] = {
+    "name": "lookup",
+    "description": "Look a name up, in one group or in all of them.",
+    "input_schema": {
+        "type": "object",
+        "properties": {"group": {"type": ["string", "null"]}},
+        "required": ["group"],
+        "additionalProperties": False,
+    },
+}
 
 
 def _priced(model_name: str = "anthropic:claude-haiku-5-5") -> Settings:
@@ -116,13 +126,13 @@ def test_a_missing_provider_package_names_its_extra(monkeypatch: pytest.MonkeyPa
         chat_model(_priced("ollama:llama3.2:3b"))
 
 
-def test_describe_data_takes_a_nullable_schema_under_strict_tool_use() -> None:
-    openai = convert_to_openai_tool(DESCRIBE_DATA_TOOL, strict=True)["function"]
-    anthropic = chat_model(Settings()).bind_tools([DESCRIBE_DATA_TOOL], strict=True)
+def test_a_tool_takes_a_nullable_schema_under_strict_tool_use() -> None:
+    openai = convert_to_openai_tool(LOOKUP_TOOL, strict=True)["function"]
+    anthropic = chat_model(Settings()).bind_tools([LOOKUP_TOOL], strict=True)
 
     assert openai["strict"] is True
-    assert openai["parameters"]["required"] == ["schema"]
-    assert openai["parameters"]["properties"]["schema"]["type"] == ["string", "null"]
+    assert openai["parameters"]["required"] == ["group"]
+    assert openai["parameters"]["properties"]["group"]["type"] == ["string", "null"]
     assert isinstance(anthropic, RunnableBinding)
     (tool,) = anthropic.kwargs["tools"]
-    assert tool["input_schema"] == DESCRIBE_DATA_TOOL["input_schema"]
+    assert tool["input_schema"] == LOOKUP_TOOL["input_schema"]
