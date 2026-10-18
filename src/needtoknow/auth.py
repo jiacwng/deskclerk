@@ -1,5 +1,5 @@
-# Validates an OpenID Connect access token and turns it into the principals the database
-# filters on.
+# Validates an OpenID Connect access token and turns it into the principals documents
+# are filtered on.
 
 import threading
 import time

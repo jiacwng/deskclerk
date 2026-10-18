@@ -1,53 +1,16 @@
-# Settings read from NEEDTOKNOW_* environment variables by pydantic-settings. The defaults are
-# the development values from compose.yaml, and a database password left at its default is
-# refused for any database that is not on this machine or in the compose network. The API
-# process loads only Settings; the admin, owner and reader passwords live in ProvisionSettings,
-# which only ingestion, the evaluation and the tests load.
+# Settings read from NEEDTOKNOW_* environment variables by pydantic-settings: how employees sign
+# in, the Entra ID Graph credentials, the model and its prices, the budget, the audit log and the
+# request quota.
 
-import os
-from pathlib import Path
-from typing import Annotated, Any
+from typing import Any
 
 from pydantic import SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
-
-# Half the cores embeds as fast as all of them on a mixed corpus and leaves the machine usable.
-# A bulk load that owns the machine raises it.
-DEFAULT_EMBED_THREADS = max(1, (os.cpu_count() or 2) // 2)
-
-# The schemas and relations every employee may read in full, so the startup check lets the app
-# role read them without row-level security: the nine BIRD databases that carry no policy and
-# financial.district, the list of districts.
-PUBLIC_RELATIONS = frozenset(
-    {
-        "card_games",
-        "codebase_community",
-        "debit_card_specializing",
-        "european_football_2",
-        "financial.district",
-        "formula_1",
-        "student_club",
-        "superhero",
-        "thrombosis_prediction",
-        "toxicology",
-    }
-)
-
-LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "db"})
-
-_FROM_ENVIRONMENT = SettingsConfigDict(env_prefix="NEEDTOKNOW_", frozen=True)
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = _FROM_ENVIRONMENT
+    model_config = SettingsConfigDict(env_prefix="NEEDTOKNOW_", frozen=True)
 
-    db_host: str = "localhost"
-    db_port: int = 5432
-    db_name: str = "needtoknow"
-    app_password: str = "needtoknow_app"
-    model_cache: Path = Path("~/.cache/needtoknow/models")
-    embed_threads: int = DEFAULT_EMBED_THREADS
-    max_file_bytes: int = 20 * 1024 * 1024
     issuer: str = "http://localhost:8080/realms/needtoknow"
     # Left unset, the signing keys are found from the issuer's OpenID configuration. Set it where
     # the API reaches the login server by another address than the issuer, as in a container.
@@ -66,19 +29,9 @@ class Settings(BaseSettings):
     price_input: float | None = None
     price_output: float | None = None
     budget_usd: float = 2.0
-    mcp_host: str = "127.0.0.1"
-    mcp_port: int = 8001
-    mcp_url: str = "http://127.0.0.1:8001/mcp"
-    screen: bool = False
     audit_text: bool = False
     audit_key: SecretStr | None = None
     requests_per_minute: int = 20
-    pool_size: int = 10
-    public_relations: Annotated[frozenset[str], NoDecode] = PUBLIC_RELATIONS
-    data_host: str | None = None
-    data_port: int = 5432
-    data_name: str | None = None
-    data_password: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -86,30 +39,6 @@ class Settings(BaseSettings):
         if not values.get("audience"):
             values["audience"] = values.get("client_id") or cls.model_fields["client_id"].default
         return values
-
-    @model_validator(mode="after")
-    def _no_default_password_off_this_machine(self) -> "Settings":
-        default = type(self).model_fields["app_password"].default
-        refuse_default_password(self.db_host, "NEEDTOKNOW_APP_PASSWORD", self.app_password, default)
-        return self
-
-    @model_validator(mode="after")
-    def _all_data_settings_or_none(self) -> "Settings":
-        given = [self.data_host, self.data_name, self.data_password]
-        port_set = "data_port" in self.model_fields_set
-        if any(value is None for value in given) and (
-            port_set or any(value is not None for value in given)
-        ):
-            raise ValueError(
-                "set NEEDTOKNOW_DATA_HOST, NEEDTOKNOW_DATA_NAME and NEEDTOKNOW_DATA_PASSWORD "
-                "together, with NEEDTOKNOW_DATA_PORT if needed, or none of them"
-            )
-        if self.data_host is not None and self.data_password is not None:
-            default = type(self).model_fields["app_password"].default
-            refuse_default_password(
-                self.data_host, "NEEDTOKNOW_DATA_PASSWORD", self.data_password, default
-            )
-        return self
 
     @model_validator(mode="after")
     def _all_graph_credentials_or_none(self) -> "Settings":
@@ -140,70 +69,6 @@ class Settings(BaseSettings):
             )
         return value
 
-    @field_validator("public_relations", mode="before")
-    @classmethod
-    def _comma_list(cls, value: object) -> object:
-        if not isinstance(value, str):
-            return value
-        names = frozenset(name.strip() for name in value.split(",") if name.strip())
-        for name in names:
-            if name.count(".") > 1:
-                raise ValueError(
-                    f"NEEDTOKNOW_PUBLIC_RELATIONS takes schema or schema.relation, not {name!r}"
-                )
-        return names
-
-    @field_validator("model_cache")
-    @classmethod
-    def _expand_home(cls, value: Path) -> Path:
-        return value.expanduser()
-
-
-class ProvisionSettings(BaseSettings):
-    model_config = _FROM_ENVIRONMENT
-
-    admin_user: str = "needtoknow"
-    admin_password: str = "needtoknow"
-    owner_password: str = "needtoknow_owner"
-    reader_password: str = "needtoknow_reader"
-
-    def check_for(self, db_host: str, evaluation: bool) -> None:
-        names = ["admin_password", "owner_password"]
-        if evaluation:
-            names.append("reader_password")
-        for name in names:
-            default = type(self).model_fields[name].default
-            variable = f"NEEDTOKNOW_{name.upper()}"
-            refuse_default_password(db_host, variable, getattr(self, name), default)
-
-
-class DefaultPassword(ValueError):
-    pass
-
-
-def refuse_default_password(db_host: str, variable: str, value: str, default: str) -> None:
-    if db_host not in LOCAL_HOSTS and value == default:
-        raise DefaultPassword(f"{variable} is the development default; set it for {db_host}")
-
-
-# The SQL tools reach the company database as the same app role, so its address, name and
-# password take the place of the needtoknow database's.
-def company_database(settings: Settings) -> Settings:
-    if settings.data_host is None or settings.data_name is None or settings.data_password is None:
-        raise ValueError("NEEDTOKNOW_DATA_HOST is not set")
-    return settings.model_copy(
-        update={
-            "db_host": settings.data_host,
-            "db_port": settings.data_port,
-            "db_name": settings.data_name,
-            "app_password": settings.data_password,
-        }
-    )
-
 
 def load_settings() -> Settings:
     return Settings()
-
-
-def load_provision_settings() -> ProvisionSettings:
-    return ProvisionSettings()

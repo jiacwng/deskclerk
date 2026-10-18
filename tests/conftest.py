@@ -1,139 +1,18 @@
-# Shared fixtures. Database: an admin connection creates the roles and tables, the owner loads the
-# slices of public data in tests/data, the Enron emails and the BIRD databases, with their
-# embeddings, and the tests read through the app role or the reader role. A second database on
-# the same server stands in for a company's own, with a role of the company's and a table whose
-# policy gives each group its own row. Tokens: access tokens signed with a throwaway RSA key, so
-# tests that need one run without Keycloak.
+# Shared fixtures: access tokens signed with a throwaway RSA key, so tests that need one run
+# without Keycloak.
 
 import time
-from collections.abc import Callable, Iterator
-from pathlib import Path
+from collections.abc import Callable
 
 import jwt
-import psycopg
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from jwt.algorithms import RSAAlgorithm
-from psycopg import sql
-from psycopg.rows import TupleRow
-from psycopg_pool import ConnectionPool
 
-from needtoknow import db
 from needtoknow.auth import SigningKeyLookup
-from needtoknow.bird import load_bird
-from needtoknow.config import Settings, company_database, load_provision_settings, load_settings
-from needtoknow.db import Pool, connect_app, connect_reader
-from needtoknow.documents import Document
-from needtoknow.enron import load_enron, mail_files, parse_email
-from needtoknow.provision import (
-    connect_admin,
-    connect_owner,
-    create_schema,
-    prepare_company_database,
-    prepare_database,
-)
+from needtoknow.config import Settings, load_settings
 
 TOKEN_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-DATA = Path(__file__).parent / "data"
-MAILDIR = DATA / "enron" / "maildir"
-MINIDEV = DATA / "bird"
-SALES = """
-CREATE TABLE sales (team TEXT NOT NULL, amount INTEGER NOT NULL);
-INSERT INTO sales VALUES ('group:north', 100), ('group:south', 200);
-ALTER TABLE sales ENABLE ROW LEVEL SECURITY;
-CREATE POLICY sales_read ON sales FOR SELECT TO needtoknow_app
-USING (team = ANY (string_to_array(current_setting('app.principals', true), ',')));
-"""
-
-
-@pytest.fixture(scope="session")
-def owner() -> Iterator[psycopg.Connection[TupleRow]]:
-    settings = load_settings()
-    provision = load_provision_settings()
-    try:
-        admin = connect_admin(settings, provision)
-    except psycopg.OperationalError as error:
-        pytest.fail(
-            f"cannot reach PostgreSQL at {settings.db_host}:{settings.db_port}, "
-            f"start it with: docker compose up -d --wait db\n{error}",
-            pytrace=False,
-        )
-    with admin:
-        prepare_database(admin, settings, provision, evaluation=True)
-    with connect_owner(settings, provision) as connection:
-        create_schema(connection, replace=True, evaluation=True)
-        load_enron(connection, MAILDIR)
-        load_bird(connection, MINIDEV)
-        yield connection
-
-
-# The settings name the company database, and the role it had before is its name + _reporting.
-# The app role has one password on a server, so the company database is given the same one.
-@pytest.fixture(scope="session")
-def company(owner: psycopg.Connection[TupleRow]) -> Iterator[Settings]:
-    settings = load_settings()
-    provision = load_provision_settings()
-    name = f"{settings.db_name}_company"
-    data = settings.model_copy(
-        update={
-            "data_host": settings.db_host,
-            "data_port": settings.db_port,
-            "data_name": name,
-            "data_password": settings.app_password,
-        }
-    )
-    database = sql.Identifier(name)
-    role = sql.Identifier(f"{name}_reporting")
-    with connect_admin(settings, provision) as admin:
-        admin.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(database))
-        admin.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(role))
-        admin.execute(sql.SQL("CREATE DATABASE {}").format(database))
-        admin.execute(sql.SQL("CREATE ROLE {}").format(role))
-    with connect_admin(company_database(data), provision) as admin:
-        admin.execute(SALES)
-        prepare_company_database(admin, data, provision)
-        admin.execute("GRANT SELECT ON sales TO needtoknow_app")
-    yield data
-    with connect_admin(settings, provision) as admin:
-        admin.execute(sql.SQL("DROP DATABASE {} WITH (FORCE)").format(database))
-        admin.execute(sql.SQL("DROP ROLE {}").format(role))
-
-
-@pytest.fixture(scope="session")
-def app(owner: psycopg.Connection[TupleRow]) -> Iterator[psycopg.Connection[TupleRow]]:
-    with connect_app(load_settings()) as connection:
-        yield connection
-
-
-@pytest.fixture(scope="session")
-def reader(owner: psycopg.Connection[TupleRow]) -> Iterator[psycopg.Connection[TupleRow]]:
-    with connect_reader(load_settings(), load_provision_settings()) as connection:
-        yield connection
-
-
-@pytest.fixture(scope="session")
-def app_pool(owner: psycopg.Connection[TupleRow]) -> Iterator[Pool]:
-    with db.app_pool(load_settings(), size=1) as pool:
-        yield pool
-
-
-@pytest.fixture(scope="session")
-def reader_pool(owner: psycopg.Connection[TupleRow]) -> Iterator[Pool]:
-    with db.reader_pool(load_settings(), load_provision_settings(), size=1) as pool:
-        yield pool
-
-
-# Every email of the slice once, read by the custodians whose mailbox holds a copy.
-@pytest.fixture(scope="session")
-def emails() -> dict[str, Document]:
-    found: dict[str, tuple[str, str, set[str]]] = {}
-    for custodian, path in mail_files(MAILDIR):
-        email = parse_email(path.read_bytes())
-        found.setdefault(email.id, (email.subject, email.body, set()))[2].add(f"user:{custodian}")
-    return {
-        doc_id: Document(id=doc_id, title=title, body=body, readers=frozenset(readers))
-        for doc_id, (title, body, readers) in found.items()
-    }
 
 
 @pytest.fixture(scope="session")
@@ -180,19 +59,3 @@ def sign_token(token_settings: Settings) -> Callable[[dict[str, object]], str]:
         return jwt.encode(merged, TOKEN_KEY, algorithm="RS256")
 
     return sign
-
-
-# The API and the MCP server get a pool on a port nothing listens on, which gives up on a
-# connection after half a second instead of thirty.
-@pytest.fixture
-def unreachable_database(monkeypatch: pytest.MonkeyPatch) -> None:
-    def closed_pool(settings: Settings, size: int) -> Pool:
-        return ConnectionPool(
-            kwargs={"host": "127.0.0.1", "port": 1, "dbname": "none", "connect_timeout": 1},
-            min_size=1,
-            max_size=size,
-            timeout=0.5,
-            open=True,
-        )
-
-    monkeypatch.setattr(db, "app_pool", closed_pool)

@@ -1,11 +1,9 @@
 # local
 local/
 data/
-!tests/data/
 *.local.md
 .env
 runs/
-results/*_raw.jsonl
 documents/
 
 # Python
