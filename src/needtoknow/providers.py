@@ -11,6 +11,7 @@ from typing import Any
 import anthropic
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage
 
 from needtoknow.config import Settings
 
@@ -32,29 +33,87 @@ class MissingApiKey(RuntimeError):
 
 
 @dataclass(frozen=True)
+class Usage:
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+
+
+class InconsistentUsage(ValueError):
+    pass
+
+
+def usage_from(message: AIMessage) -> Usage:
+    metadata = message.usage_metadata
+    if metadata is None:
+        return Usage(0, 0, 0, 0)
+    details = metadata.get("input_token_details", {})
+    return Usage(
+        input_tokens=metadata.get("input_tokens", 0),
+        output_tokens=metadata.get("output_tokens", 0),
+        cache_read_tokens=details.get("cache_read", 0),
+        cache_write_tokens=details.get("cache_creation", 0),
+    )
+
+
+@dataclass(frozen=True)
 class Price:
     input_per_million: float
     output_per_million: float
+    cache_read_per_million: float
+    cache_write_per_million: float
 
-    def cost(self, input_tokens: int, output_tokens: int) -> float:
+    def cost(self, usage: Usage) -> float:
+        uncached = usage.input_tokens - usage.cache_read_tokens - usage.cache_write_tokens
+        if uncached < 0:
+            raise InconsistentUsage(
+                f"{usage.cache_read_tokens} cache read and {usage.cache_write_tokens} cache write "
+                f"tokens exceed the {usage.input_tokens} input tokens"
+            )
         return (
-            input_tokens * self.input_per_million + output_tokens * self.output_per_million
+            uncached * self.input_per_million
+            + usage.cache_read_tokens * self.cache_read_per_million
+            + usage.cache_write_tokens * self.cache_write_per_million
+            + usage.output_tokens * self.output_per_million
         ) / 1_000_000
+
+
+# Anthropic bills a 5-minute cache write at 1.25 times the input price and a cache read at 0.1
+# times, or 0.05 times on Opus 5.5:
+# https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+CACHE_WRITE_MULTIPLIER = 1.25
+CACHE_READ_MULTIPLIER = 0.1
+
+
+def _anthropic_price(input_per_million: float, output_per_million: float, read: float) -> Price:
+    return Price(
+        input_per_million,
+        output_per_million,
+        input_per_million * read,
+        input_per_million * CACHE_WRITE_MULTIPLIER,
+    )
 
 
 # List prices in USD per million input and output tokens, for prompts up to 100,000 tokens.
 # A model missing here needs NEEDTOKNOW_PRICE_INPUT and NEEDTOKNOW_PRICE_OUTPUT, so no call
 # can go unpriced.
 PRICES = {
-    "anthropic:claude-haiku-5-5": Price(0.10, 0.50),
-    "anthropic:claude-sonnet-5-5": Price(2.00, 10.00),
-    "anthropic:claude-opus-5-5": Price(4.00, 20.00),
+    "anthropic:claude-haiku-5-5": _anthropic_price(0.10, 0.50, CACHE_READ_MULTIPLIER),
+    "anthropic:claude-sonnet-5-5": _anthropic_price(2.00, 10.00, CACHE_READ_MULTIPLIER),
+    "anthropic:claude-opus-5-5": _anthropic_price(4.00, 20.00, 0.05),
 }
 
 
 def price_of(settings: Settings) -> Price:
     if settings.price_input is not None and settings.price_output is not None:
-        return Price(settings.price_input, settings.price_output)
+        if settings.model.startswith("anthropic:"):
+            return _anthropic_price(
+                settings.price_input, settings.price_output, CACHE_READ_MULTIPLIER
+            )
+        return Price(
+            settings.price_input, settings.price_output, settings.price_input, settings.price_input
+        )
     if settings.model not in PRICES:
         known = ", ".join(sorted(PRICES))
         raise ValueError(
@@ -68,14 +127,13 @@ class Spending:
     def __init__(self, price: Price, budget_usd: float) -> None:
         self.price = price
         self.budget_usd = budget_usd
-        self.input_tokens = 0
-        self.output_tokens = 0
+        self.usage = Usage(0, 0, 0, 0)
         # The API answers requests on a thread pool, and every request records here.
         self._lock = threading.Lock()
 
     @property
     def cost_usd(self) -> float:
-        return self.price.cost(self.input_tokens, self.output_tokens)
+        return self.price.cost(self.usage)
 
     def check(self) -> None:
         with self._lock:
@@ -85,10 +143,14 @@ class Spending:
                     "(NEEDTOKNOW_BUDGET_USD)"
                 )
 
-    def record(self, input_tokens: int, output_tokens: int) -> None:
+    def record(self, usage: Usage) -> None:
         with self._lock:
-            self.input_tokens += input_tokens
-            self.output_tokens += output_tokens
+            self.usage = Usage(
+                self.usage.input_tokens + usage.input_tokens,
+                self.usage.output_tokens + usage.output_tokens,
+                self.usage.cache_read_tokens + usage.cache_read_tokens,
+                self.usage.cache_write_tokens + usage.cache_write_tokens,
+            )
 
 
 def _options(provider: str) -> dict[str, Any]:
