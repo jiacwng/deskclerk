@@ -1,28 +1,8 @@
--- Tables, grants and row-level security policies for the documents. Run by needtoknow_owner;
--- running it again drops the tables and starts empty. A change here raises
--- schema.SCHEMA_VERSION.
+-- Tables, grants and row-level security policies for the documents. Run by needtoknow_owner,
+-- followed by identity.sql; running it again drops the tables and starts empty. A change here
+-- raises schema.SCHEMA_VERSION.
 
 DROP TABLE IF EXISTS schema_info, chunks, doc_access, documents;
-DROP FUNCTION IF EXISTS set_identity(TEXT);
-
--- The only way the app role can set who is asking: provision.prepare_database takes
--- set_config away from them. It works once per transaction, so SQL that runs after db.as_user
--- cannot call it again to become someone else.
-CREATE FUNCTION set_identity(principals TEXT) RETURNS VOID
-LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, public
-AS $$
-BEGIN
-    IF current_setting('app.identity_set', true) = 'on' THEN
-        RAISE EXCEPTION 'the identity is already set in this transaction'
-            USING ERRCODE = 'insufficient_privilege';
-    END IF;
-    PERFORM set_config('app.principals', principals, true);
-    PERFORM set_config('app.identity_set', 'on', true);
-END
-$$;
-
-REVOKE EXECUTE ON FUNCTION set_identity(TEXT) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION set_identity(TEXT) TO needtoknow_app;
 
 CREATE TABLE documents (
     id    TEXT PRIMARY KEY,

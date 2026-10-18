@@ -2,10 +2,12 @@
 # e2e/run_prod.sh, over HTTPS through Caddy as an operator would use it: two groups and two users
 # are created in the empty needtoknow realm through Keycloak's admin REST API, a folder of
 # Enron emails is loaded with an access file that gives each group its own mailbox, each user
-# searches and is served only that group's files, a request without a valid token is refused,
-# and a file deleted from the folder is gone after the next load. Skipped unless the script sets
-# E2E_PROD_DIR. Run with: bash e2e/run_prod.sh
+# searches and is served only that group's files, each user reads only their group's row of a
+# second, company database through the MCP server's query_data tool, a request without a valid
+# token is refused, and a file deleted from the folder is gone after the next load. Skipped
+# unless the script sets E2E_PROD_DIR. Run with: bash e2e/run_prod.sh
 
+import json
 import os
 import re
 import secrets
@@ -23,6 +25,7 @@ pytestmark = pytest.mark.skipif("E2E_PROD_DIR" not in os.environ, reason="run e2
 KEYCLOAK_ADMIN = "http://127.0.0.1:8080/auth"
 REALM_ADMIN = f"{KEYCLOAK_ADMIN}/admin/realms/needtoknow"
 CLIENT_ID = "operator-test"
+MCP_PROTOCOL = "2025-06-18"
 MAILBOXES = ["dasovich-j", "kaminski-v"]
 LOAD = [
     "files",
@@ -94,13 +97,14 @@ def _load(company: Company) -> str:
     return done.stdout
 
 
-def _token(company: Company, username: str) -> str:
+def _token(company: Company, username: str, scope: str = "openid") -> str:
     form = {
         "grant_type": "password",
         "client_id": CLIENT_ID,
         "client_secret": company.secret,
         "username": username,
         "password": company.password,
+        "scope": scope,
     }
     response = httpx.post(
         f"https://{company.domain}/auth/realms/needtoknow/protocol/openid-connect/token",
@@ -124,6 +128,56 @@ def _search(company: Company, username: str, query: str) -> list[str]:
     assert response.status_code == 200
     assert response.json()["user"] == username
     return [result["doc_id"] for result in response.json()["results"]]
+
+
+# A Streamable HTTP response is one JSON-RPC message, sent as JSON or as a server-sent event.
+def _rpc_result(response: httpx.Response) -> dict[str, Any]:
+    assert response.status_code == 200, response.text
+    if response.headers["content-type"].startswith("application/json"):
+        message: dict[str, Any] = response.json()
+    else:
+        [data] = [line[5:] for line in response.text.splitlines() if line.startswith("data:")]
+        message = json.loads(data)
+    result: dict[str, Any] = message["result"]
+    return result
+
+
+def _query_data(company: Company, username: str, sql: str) -> str:
+    token = _token(company, username, "openid needtoknow-mcp")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json, text/event-stream",
+    }
+    url = f"https://{company.domain}/mcp"
+    initialize = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": MCP_PROTOCOL,
+            "capabilities": {},
+            "clientInfo": {"name": "e2e", "version": "1"},
+        },
+    }
+    call = {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {"name": "query_data", "arguments": {"sql": sql}},
+    }
+    with httpx.Client(headers=headers, verify=company.tls, timeout=60) as client:
+        opened = client.post(url, json=initialize)
+        _rpc_result(opened)
+        session = {
+            "mcp-session-id": opened.headers["mcp-session-id"],
+            "mcp-protocol-version": MCP_PROTOCOL,
+        }
+        client.post(
+            url, json={"jsonrpc": "2.0", "method": "notifications/initialized"}, headers=session
+        )
+        result = _rpc_result(client.post(url, json=call, headers=session))
+    assert not result.get("isError"), result
+    return str(result["content"][0]["text"])
 
 
 @pytest.fixture(scope="module")
@@ -197,6 +251,14 @@ def test_each_user_is_served_only_the_files_of_their_group(company: Company) -> 
         assert all(doc_id.startswith(f"file-{mine}/") for doc_id in found)
         theirs = _search(company, username, _subject(_own_file(company, other)))
         assert not [doc_id for doc_id in theirs if doc_id.startswith(f"file-{other}/")]
+
+
+def test_each_user_reads_only_their_row_of_the_company_database(company: Company) -> None:
+    for username, mine, other in [("alice", *MAILBOXES), ("bob", *reversed(MAILBOXES))]:
+        rows = _query_data(company, username, "SELECT team, amount FROM sales")
+        assert f"group:{mine} |" in rows
+        assert other not in rows
+        assert rows.endswith("(1 rows)")
 
 
 @pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer not-a-token"}])

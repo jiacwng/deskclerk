@@ -4,7 +4,8 @@
 # `python -m needtoknow.ingest files <folder> --access <access.jsonl>` a folder of its files;
 # each creates the tables on first use and keeps what the others loaded.
 # `python -m needtoknow.ingest reindex` rebuilds every chunk after the embedding model or the
-# chunk size has changed.
+# chunk size has changed. `python -m needtoknow.ingest data-setup`, run by a company database's
+# admin, lets the SQL tools query that database as the employee asking.
 
 import argparse
 import logging
@@ -13,11 +14,17 @@ from pathlib import Path
 
 from needtoknow.bird import load_bird
 from needtoknow.company import ID_PREFIX, Loaded, load_documents, read_documents
-from needtoknow.config import load_provision_settings, load_settings
+from needtoknow.config import company_database, load_provision_settings, load_settings
 from needtoknow.documents import CHUNK_CHARS
 from needtoknow.embed import MODEL
 from needtoknow.enron import MAX_FILE_BYTES, load_enron
-from needtoknow.provision import connect_admin, connect_owner, create_schema, prepare_database
+from needtoknow.provision import (
+    connect_admin,
+    connect_owner,
+    create_schema,
+    prepare_company_database,
+    prepare_database,
+)
 from needtoknow.reindex import reindex
 from needtoknow.schema import SchemaMismatch, check_schema
 
@@ -57,6 +64,11 @@ def main() -> None:
         action="store_true",
         help="delete the loaded files this folder no longer holds",
     )
+    commands.add_parser(
+        "data-setup",
+        help="let the app role query the company database named by NEEDTOKNOW_DATA_HOST, "
+        "NEEDTOKNOW_DATA_NAME and NEEDTOKNOW_DATA_PASSWORD, as NEEDTOKNOW_ADMIN_USER",
+    )
     parser.add_argument(
         "--evaluation",
         action="store_true",
@@ -77,6 +89,16 @@ def main() -> None:
 def _ingest(args: argparse.Namespace) -> None:
     settings = load_settings()
     provision = load_provision_settings()
+    if args.command == "data-setup":
+        if settings.data_host is None:
+            sys.exit(
+                "data-setup needs NEEDTOKNOW_DATA_HOST, NEEDTOKNOW_DATA_NAME and "
+                "NEEDTOKNOW_DATA_PASSWORD"
+            )
+        with connect_admin(company_database(settings), provision) as admin:
+            prepare_company_database(admin, settings, provision)
+        print(f"needtoknow_app can query {settings.data_name} as the employee asking")
+        return
     with connect_admin(settings, provision) as admin:
         prepare_database(admin, settings, provision, args.evaluation)
 

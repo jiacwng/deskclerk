@@ -100,6 +100,7 @@ def create_server(
 ) -> MCPServer:
     check_startup(settings)
     pool = db.app_pool(settings, settings.pool_size)
+    data_pool = db.data_pool(settings, pool, settings.pool_size)
     quota = Quota(settings.requests_per_minute)
     audit = Audit(settings.audit_text, settings.audit_key)
 
@@ -148,7 +149,7 @@ def create_server(
     def describe_data(schema: Input | None = None) -> str:
         started = time.monotonic()
         token = employee()
-        with _reachable(), pool.connection() as connection:
+        with _reachable(), data_pool.connection() as connection:
             text = data.describe_data(connection, schema)
         visible, was_withheld = shown(screen, text, "The data description")
         withheld = int(was_withheld)
@@ -161,7 +162,7 @@ def create_server(
     def query_data(sql: Input) -> str:
         started = time.monotonic()
         token = employee()
-        with _reachable(), pool.connection() as connection:
+        with _reachable(), data_pool.connection() as connection:
             result = data.query_data(connection, token.identity.principals, sql)
         if result.failed:
             error, was_withheld = shown(screen, result.text, "The query error")

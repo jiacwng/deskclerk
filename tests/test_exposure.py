@@ -15,9 +15,11 @@ from needtoknow.api import create_app
 from needtoknow.auth import SigningKeyLookup
 from needtoknow.config import PUBLIC_RELATIONS, Settings, load_provision_settings, load_settings
 from needtoknow.db import APP_ROLE, connect
-from needtoknow.exposure import Exposed, find_exposures
+from needtoknow.exposure import SCHEMA_INFO, Exposed, find_exposures
 from needtoknow.mcp_server import create_server
 from needtoknow.provision import connect_admin
+
+OWN_PUBLIC = PUBLIC_RELATIONS | {SCHEMA_INFO}
 
 Connection = psycopg.Connection[TupleRow]
 SCHEMA = "exposure_test"
@@ -87,28 +89,26 @@ def _guarded(admin: Connection) -> None:
 
 
 def test_the_loaded_data_passes_with_the_shipped_public_list(app: Connection) -> None:
-    assert find_exposures(app, PUBLIC_RELATIONS) == []
+    assert find_exposures(app, OWN_PUBLIC) == []
 
 
 def test_the_public_list_is_what_the_bird_data_needs(app: Connection) -> None:
-    assert find_exposures(app, set()) == ["financial.district: row-level security is off"]
+    assert find_exposures(app, {SCHEMA_INFO}) == ["financial.district: row-level security is off"]
 
 
 def test_a_table_without_row_level_security_is_reported(app: Connection, admin: Connection) -> None:
     _readable(admin, "CREATE TABLE exposure_test.plain (a INT)", "plain")
     _guarded(admin)
 
-    assert find_exposures(app, PUBLIC_RELATIONS) == [
-        "exposure_test.plain: row-level security is off"
-    ]
-    assert find_exposures(app, PUBLIC_RELATIONS | {"exposure_test.plain"}) == []
-    assert find_exposures(app, PUBLIC_RELATIONS | {SCHEMA}) == []
+    assert find_exposures(app, OWN_PUBLIC) == ["exposure_test.plain: row-level security is off"]
+    assert find_exposures(app, OWN_PUBLIC | {"exposure_test.plain"}) == []
+    assert find_exposures(app, OWN_PUBLIC | {SCHEMA}) == []
 
 
 def test_a_table_the_app_cannot_select_is_not_reported(app: Connection, admin: Connection) -> None:
     admin.execute("CREATE TABLE exposure_test.hidden (a INT)")
 
-    assert find_exposures(app, PUBLIC_RELATIONS) == []
+    assert find_exposures(app, OWN_PUBLIC) == []
 
 
 def test_a_partition_without_row_level_security_is_reported(
@@ -124,9 +124,7 @@ def test_a_partition_without_row_level_security_is_reported(
     )
     admin.execute(f"GRANT SELECT ON exposure_test.part TO {APP_ROLE}")
 
-    assert find_exposures(app, PUBLIC_RELATIONS) == [
-        "exposure_test.part: row-level security is off"
-    ]
+    assert find_exposures(app, OWN_PUBLIC) == ["exposure_test.part: row-level security is off"]
 
 
 def test_a_policy_that_lets_every_row_through_is_reported(
@@ -140,7 +138,7 @@ def test_a_policy_that_lets_every_row_through_is_reported(
         "open",
     )
 
-    assert find_exposures(app, PUBLIC_RELATIONS) == [
+    assert find_exposures(app, OWN_PUBLIC) == [
         "exposure_test.open: a policy lets the app role read every row"
     ]
 
@@ -157,7 +155,7 @@ def test_a_view_that_reads_as_its_owner_is_reported(app: Connection, admin: Conn
         "invoker",
     )
 
-    assert find_exposures(app, PUBLIC_RELATIONS) == [
+    assert find_exposures(app, OWN_PUBLIC) == [
         "exposure_test.definer: the view reads as its owner; set security_invoker = true"
     ]
 
@@ -173,10 +171,10 @@ def test_an_invoker_view_over_an_unprotected_table_is_reported(
         "invoker",
     )
 
-    assert find_exposures(app, PUBLIC_RELATIONS) == [
+    assert find_exposures(app, OWN_PUBLIC) == [
         "exposure_test.invoker: it reads exposure_test.plain, which is not protected"
     ]
-    assert find_exposures(app, PUBLIC_RELATIONS | {"exposure_test.plain"}) == []
+    assert find_exposures(app, OWN_PUBLIC | {"exposure_test.plain"}) == []
 
 
 def test_a_materialized_view_is_reported_unless_listed(app: Connection, admin: Connection) -> None:
@@ -187,10 +185,10 @@ def test_a_materialized_view_is_reported_unless_listed(app: Connection, admin: C
         "copied",
     )
 
-    assert find_exposures(app, PUBLIC_RELATIONS) == [
+    assert find_exposures(app, OWN_PUBLIC) == [
         "exposure_test.copied: a materialized view cannot have row-level security"
     ]
-    assert find_exposures(app, PUBLIC_RELATIONS | {"exposure_test.copied"}) == []
+    assert find_exposures(app, OWN_PUBLIC | {"exposure_test.copied"}) == []
 
 
 def test_a_foreign_table_is_reported_unless_listed(app: Connection, admin: Connection) -> None:
@@ -203,10 +201,10 @@ def test_a_foreign_table_is_reported_unless_listed(app: Connection, admin: Conne
             "remote",
         )
 
-        assert find_exposures(app, PUBLIC_RELATIONS) == [
+        assert find_exposures(app, OWN_PUBLIC) == [
             "exposure_test.remote: a foreign table cannot have row-level security"
         ]
-        assert find_exposures(app, PUBLIC_RELATIONS | {"exposure_test.remote"}) == []
+        assert find_exposures(app, OWN_PUBLIC | {"exposure_test.remote"}) == []
     finally:
         admin.execute("DROP EXTENSION postgres_fdw CASCADE")
 
@@ -217,7 +215,7 @@ def test_a_security_definer_function_is_reported(app: Connection, admin: Connect
         "AS 'SELECT count(*) FROM documents'"
     )
 
-    assert find_exposures(app, PUBLIC_RELATIONS) == [
+    assert find_exposures(app, OWN_PUBLIC) == [
         "exposure_test.everything(): a SECURITY DEFINER function the app role can run"
     ]
 

@@ -1,6 +1,7 @@
 # Settings refuse a development password for a database that is not on this machine, a model
-# named without its provider, one price setting without the other, Graph credentials given in
-# part, and a public relation named with more than a schema and a relation.
+# named without its provider, one price setting without the other, Graph credentials or the
+# company database given in part, and a public relation named with more than a schema and a
+# relation.
 
 import pytest
 from pydantic import ValidationError
@@ -31,6 +32,30 @@ def test_one_price_without_the_other_is_refused() -> None:
 def test_the_audience_is_the_client_unless_set() -> None:
     assert Settings(client_id="page").audience == "page"
     assert Settings(client_id="page", audience="api://default").audience == "api://default"
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        {"data_host": "sales.example.com"},
+        {"data_host": "sales.example.com", "data_name": "sales"},
+        {"data_name": "sales", "data_password": "s3cret"},
+        {"data_port": 5433},
+    ],
+)
+def test_the_company_database_is_set_in_full_or_not_at_all(given: dict[str, object]) -> None:
+    with pytest.raises(ValidationError, match="NEEDTOKNOW_DATA_PASSWORD together"):
+        Settings.model_validate(given)
+
+    full = Settings(data_host="sales.example.com", data_name="sales", data_password="s3cret")
+    assert full.data_port == 5432
+
+
+def test_a_remote_company_database_needs_a_real_app_password() -> None:
+    with pytest.raises(ValidationError, match="NEEDTOKNOW_DATA_PASSWORD is the development"):
+        Settings(data_host="sales.example.com", data_name="sales", data_password="needtoknow_app")
+
+    Settings(data_host="localhost", data_name="sales", data_password="needtoknow_app")
 
 
 def test_graph_credentials_come_all_three_or_none() -> None:

@@ -28,9 +28,9 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 from pydantic import AfterValidator, validate_call
 
-from needtoknow import auth, data, retrieval
+from needtoknow import auth, data, db, retrieval
 from needtoknow.config import load_settings
-from needtoknow.db import Pool, app_pool
+from needtoknow.db import Pool
 from needtoknow.jev import JevError
 from needtoknow.providers import Spending, chat_model, price_of
 from needtoknow.screen import (
@@ -250,8 +250,12 @@ def _start(question: str, history: Sequence[Turn]) -> AgentState:
     return {"messages": messages, "input_tokens": 0, "output_tokens": 0}
 
 
-def employee_tools(pool: Pool, principals: frozenset[str], screen: Screen | None) -> Toolset:
+def employee_tools(
+    pool: Pool, principals: frozenset[str], screen: Screen | None, data_pool: Pool | None = None
+) -> Toolset:
     # The principals are fixed here, outside the model's reach: each tool takes only one string.
+    tables = pool if data_pool is None else data_pool
+
     def search_documents(query: Text) -> tuple[str, Trace]:
         with pool.connection() as connection:
             hits = retrieval.search(connection, principals, query, SEARCH_RESULTS)
@@ -281,13 +285,13 @@ def employee_tools(pool: Pool, principals: frozenset[str], screen: Screen | None
         return visible, Trace(returned=returned, withheld=1 if was_withheld else 0)
 
     def describe_data(schema: Text | None) -> tuple[str, Trace]:
-        with pool.connection() as connection:
+        with tables.connection() as connection:
             description = data.describe_data(connection, schema)
         visible, was_withheld = shown(screen, description, "The data description")
         return visible, Trace(withheld=1 if was_withheld else 0)
 
     def query_data(sql: Text) -> tuple[str, Trace]:
-        with pool.connection() as connection:
+        with tables.connection() as connection:
             result = data.query_data(connection, principals, sql)
         if result.failed:
             query = Query(sql=sql, rows=None, error=result.text)
@@ -443,8 +447,11 @@ def main() -> None:
     settings = load_settings()
     spending = Spending(price_of(settings), settings.budget_usd)
     principals = auth.principals(args.user, args.group)
-    with app_pool(settings, size=1) as pool:
-        toolset = employee_tools(pool, principals, screen_from_settings(settings))
+    with (
+        db.app_pool(settings, size=1) as pool,
+        db.data_pool(settings, pool, size=1) as tables,
+    ):
+        toolset = employee_tools(pool, principals, screen_from_settings(settings), tables)
         answer = ask(args.question, toolset, chat_model(settings), spending)
 
     print(answer.text)

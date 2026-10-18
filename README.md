@@ -83,6 +83,25 @@ Load them, and run the same command again after files change. Files removed from
 docker compose -f compose.prod.yaml run --rm load files /data/files --access /data/access.jsonl --delete-missing
 ```
 
+Connect your own PostgreSQL database to the SQL tools. Set `NEEDTOKNOW_DATA_HOST`, `NEEDTOKNOW_DATA_NAME` and `NEEDTOKNOW_DATA_PASSWORD` in `.env`. A superuser of that database runs the setup once:
+
+```
+docker compose -f compose.prod.yaml run --rm -e NEEDTOKNOW_ADMIN_USER=postgres -e NEEDTOKNOW_ADMIN_PASSWORD=yourpassword load data-setup
+```
+
+The setup creates the role `needtoknow_app` and the function that tells the database who is asking. It takes away the built-in functions that would let that role change who is asking or watch other sessions. Your existing roles keep them. Run it again after you add a role.
+
+Then grant `needtoknow_app` the tables employees may query, with a policy on each. The setting `app.principals` holds the employee as `user:name` and each of their groups as `group:name`, separated by commas.
+
+```
+ALTER TABLE sales ENABLE ROW LEVEL SECURITY;
+CREATE POLICY sales_read ON sales FOR SELECT TO needtoknow_app
+USING (team = ANY (string_to_array(current_setting('app.principals', true), ',')));
+GRANT SELECT ON sales TO needtoknow_app;
+```
+
+The app and the MCP server refuse to start while that role can read a table without row-level security.
+
 ## Settings
 
 | Variable | Default | What it sets |
