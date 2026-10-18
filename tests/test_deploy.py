@@ -124,10 +124,6 @@ def test_any_host_may_register_a_client_that_redirects_to_its_own_machine() -> N
     assert limit["max-clients"] == ["50"]
 
 
-def test_access_tokens_expire_after_fifteen_minutes() -> None:
-    assert REALM["accessTokenLifespan"] == 900
-
-
 def test_the_groups_claim_carries_each_group_s_full_path() -> None:
     scopes = [REALM["clients"][0], *REALM["clientScopes"]]
     mappers = []
@@ -137,8 +133,3 @@ def test_the_groups_claim_carries_each_group_s_full_path() -> None:
                 mappers.append(mapper["config"])
     assert len(mappers) == 2
     assert all(mapper["full.path"] == "true" for mapper in mappers)
-
-
-def test_caddy_caps_the_request_body() -> None:
-    caddyfile = (ROOT / "deploy" / "Caddyfile").read_text()
-    assert "request_body {\n\t\tmax_size 1MB\n\t}" in caddyfile

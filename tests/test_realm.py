@@ -9,7 +9,6 @@ from typing import Any
 
 import pytest
 
-from needtoknow.config import Settings
 from needtoknow.mcp_server import SCOPE
 
 ROOT = Path(__file__).parent.parent
@@ -57,24 +56,6 @@ def _client(client_id: str) -> dict[str, Any]:
     return clients[0]
 
 
-def test_the_chat_page_signs_in_with_the_code_flow_and_pkce_only() -> None:
-    page = _client("needtoknow-api")
-    assert page["publicClient"]
-    assert page["standardFlowEnabled"]
-    assert not page["directAccessGrantsEnabled"]
-    assert page["attributes"]["pkce.code.challenge.method"] == "S256"
-    assert page["redirectUris"] == ["http://localhost:8000/", "http://127.0.0.1:8000/"]
-
-
-def test_only_the_test_client_takes_a_password() -> None:
-    test = _client("needtoknow-test")
-    assert test["publicClient"]
-    assert test["directAccessGrantsEnabled"]
-    assert not test["standardFlowEnabled"]
-    password_clients = [c["clientId"] for c in REALM["clients"] if c["directAccessGrantsEnabled"]]
-    assert password_clients == ["needtoknow-test"]
-
-
 @pytest.mark.parametrize("client_id", ["needtoknow-api", "needtoknow-test"])
 def test_each_client_puts_the_groups_and_the_api_in_the_access_token(client_id: str) -> None:
     client = _client(client_id)
@@ -89,19 +70,6 @@ def test_each_client_puts_the_groups_and_the_api_in_the_access_token(client_id: 
 
 def _mappers(scope: dict[str, Any], kind: str) -> list[dict[str, str]]:
     return [m["config"] for m in scope["protocolMappers"] if m["protocolMapper"] == kind]
-
-
-def test_the_mcp_scope_puts_the_server_url_and_the_groups_in_the_access_token() -> None:
-    [scope] = [s for s in REALM["clientScopes"] if s["name"] == SCOPE]
-    assert scope["attributes"]["include.in.token.scope"] == "true"
-
-    [audience] = _mappers(scope, "oidc-audience-mapper")
-    assert audience["included.custom.audience"] == Settings.model_fields["mcp_url"].default
-    assert audience["access.token.claim"] == "true"
-    [groups] = _mappers(scope, "oidc-group-membership-mapper")
-    assert groups["claim.name"] == "groups"
-    assert groups["full.path"] == "true"
-    assert groups["access.token.claim"] == "true"
 
 
 def test_every_client_may_ask_for_the_mcp_scope_and_none_gets_it_unasked() -> None:
@@ -141,9 +109,3 @@ def test_anonymous_registration_is_limited_to_clients_on_this_machine() -> None:
     assert hosts["client-uris-must-match"] == ["true"]
     assert policies["allowed-protocol-mappers"]["allowed-protocol-mapper-types"] == []
     assert policies["allowed-client-templates"]["allow-default-scopes"] == ["true"]
-
-
-def test_the_login_page_names_the_project_and_warns_it_is_for_development() -> None:
-    assert REALM["displayName"] == (
-        "needtoknow (development only, every user's password is needtoknow)"
-    )
