@@ -2,7 +2,7 @@
 # Graph credentials given in part, and the audience defaults to the client.
 
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from needtoknow.config import Settings
 
@@ -33,3 +33,10 @@ def test_graph_credentials_come_all_three_or_none() -> None:
         graph_tenant_id="tenant", graph_client_id="client", graph_client_secret="hunter2"
     )
     assert "hunter2" not in repr(complete)
+
+
+def test_the_token_key_is_a_secret() -> None:
+    settings = Settings(token_key=SecretStr("a-key"))
+    assert "a-key" not in repr(settings)
+    assert settings.token_key is not None
+    assert settings.token_key.get_secret_value() == "a-key"
