@@ -1,7 +1,7 @@
 # PostgreSQL access for the API: connecting as the app role and running queries as one employee,
 # so that row-level security filters every read. Creating roles and tables is in provision.py.
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
@@ -11,7 +11,7 @@ from psycopg.pq import TransactionStatus
 from psycopg.rows import TupleRow
 from psycopg_pool import ConnectionPool
 
-from needtoknow.config import ProvisionSettings, Settings
+from needtoknow.config import ProvisionSettings, Settings, company_database
 
 APP_ROLE = "needtoknow_app"
 READER_ROLE = "needtoknow_reader"
@@ -47,16 +47,31 @@ Pool = ConnectionPool[psycopg.Connection[TupleRow]]
 
 # The API, the MCP server and the agent's tools borrow a connection from a bounded pool for one
 # transaction at a time. A connection goes back idle, so the identity set_identity gave it has
-# already ended.
+# already ended. The SQL tools borrow from the data pool, which is the documents' pool unless a
+# company database is set.
 def app_pool(settings: Settings, size: int) -> Pool:
-    return _pool(settings, APP_ROLE, settings.app_password, size)
+    return _pool(settings, APP_ROLE, settings.app_password, size, register_vector)
+
+
+# A company database has no pgvector, and the SQL tools return every value as text.
+def data_pool(settings: Settings, documents: Pool, size: int) -> Pool:
+    if settings.data_host is None:
+        return documents
+    company = company_database(settings)
+    return _pool(company, APP_ROLE, company.app_password, size, None)
 
 
 def reader_pool(settings: Settings, provision: ProvisionSettings, size: int) -> Pool:
-    return _pool(settings, READER_ROLE, provision.reader_password, size)
+    return _pool(settings, READER_ROLE, provision.reader_password, size, register_vector)
 
 
-def _pool(settings: Settings, user: str, password: str, size: int) -> Pool:
+def _pool(
+    settings: Settings,
+    user: str,
+    password: str,
+    size: int,
+    configure: Callable[[psycopg.Connection[TupleRow]], None] | None,
+) -> Pool:
     return ConnectionPool(
         kwargs={
             "host": settings.db_host,
@@ -66,7 +81,7 @@ def _pool(settings: Settings, user: str, password: str, size: int) -> Pool:
             "password": password,
             "autocommit": True,
         },
-        configure=register_vector,
+        configure=configure,
         min_size=1,
         max_size=size,
         check=ConnectionPool.check_connection,

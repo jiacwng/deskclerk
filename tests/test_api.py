@@ -342,6 +342,32 @@ def test_ask_after_opening_a_document_keeps_the_response_shape(
     }
 
 
+def test_ask_queries_the_company_database_when_one_is_set(
+    company: Settings,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    sign_token: Sign,
+) -> None:
+    settings = token_settings.model_copy(
+        update={
+            "data_host": company.data_host,
+            "data_port": company.data_port,
+            "data_name": company.data_name,
+            "data_password": company.data_password,
+        }
+    )
+    sql = "SELECT team, amount FROM sales"
+    model = scripted(call_tool("query_data", {"sql": sql}), final_reply("South sold 200."))
+    token = sign_token({"preferred_username": "ana", "groups": ["south"]})
+
+    with TestClient(create_app(settings, token_signing_key, model)) as ask_client:
+        response = ask_client.post("/ask", json={"question": "Sales?"}, headers=_bearer(token))
+
+    assert response.status_code == 200
+    rows = "team | amount\ngroup:south | 200\n(1 rows)"
+    assert response.json()["queries"] == [{"sql": sql, "rows": rows, "error": None}]
+
+
 def test_ask_with_the_budget_spent_is_unavailable(
     owner: psycopg.Connection[TupleRow],
     token_settings: Settings,

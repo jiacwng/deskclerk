@@ -83,6 +83,8 @@ services:
   # reloaded after files change or go, with
   # docker compose -f compose.prod.yaml run --rm load files /data/files
   # --access /data/access.jsonl --delete-missing
+  # and a company database for the SQL tools is set up, before the app and the MCP server start
+  # with it, with docker compose -f compose.prod.yaml run --rm load data-setup
   load:
     build: .
     entrypoint: ["python", "-m", "needtoknow.ingest"]
@@ -92,6 +94,10 @@ services:
       NEEDTOKNOW_ADMIN_PASSWORD: ${NEEDTOKNOW_ADMIN_PASSWORD}
       NEEDTOKNOW_OWNER_PASSWORD: ${NEEDTOKNOW_OWNER_PASSWORD:?set NEEDTOKNOW_OWNER_PASSWORD}
       NEEDTOKNOW_APP_PASSWORD: ${NEEDTOKNOW_APP_PASSWORD:?set NEEDTOKNOW_APP_PASSWORD}
+      NEEDTOKNOW_DATA_HOST:
+      NEEDTOKNOW_DATA_PORT:
+      NEEDTOKNOW_DATA_NAME:
+      NEEDTOKNOW_DATA_PASSWORD:
     volumes:
       - ./documents:/data:ro
     restart: "no"
@@ -108,6 +114,10 @@ services:
       NEEDTOKNOW_JWKS_URL: http://keycloak:8080/auth/realms/needtoknow/protocol/openid-connect/certs
       NEEDTOKNOW_MCP_URL: https://${NEEDTOKNOW_DOMAIN}/mcp
       NEEDTOKNOW_PUBLIC_RELATIONS: ${NEEDTOKNOW_PUBLIC_RELATIONS:-}
+      NEEDTOKNOW_DATA_HOST:
+      NEEDTOKNOW_DATA_PORT:
+      NEEDTOKNOW_DATA_NAME:
+      NEEDTOKNOW_DATA_PASSWORD:
       NEEDTOKNOW_MODEL:
       NEEDTOKNOW_PRICE_INPUT:
       NEEDTOKNOW_PRICE_OUTPUT:
@@ -153,6 +163,10 @@ services:
       NEEDTOKNOW_MCP_URL: https://${NEEDTOKNOW_DOMAIN}/mcp
       NEEDTOKNOW_MCP_HOST: 0.0.0.0
       NEEDTOKNOW_PUBLIC_RELATIONS: ${NEEDTOKNOW_PUBLIC_RELATIONS:-}
+      NEEDTOKNOW_DATA_HOST:
+      NEEDTOKNOW_DATA_PORT:
+      NEEDTOKNOW_DATA_NAME:
+      NEEDTOKNOW_DATA_PASSWORD:
       NEEDTOKNOW_BUDGET_USD:
       NEEDTOKNOW_SCREEN:
       NEEDTOKNOW_AUDIT_TEXT:

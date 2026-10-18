@@ -75,6 +75,10 @@ class Settings(BaseSettings):
     requests_per_minute: int = 20
     pool_size: int = 10
     public_relations: Annotated[frozenset[str], NoDecode] = PUBLIC_RELATIONS
+    data_host: str | None = None
+    data_port: int = 5432
+    data_name: str | None = None
+    data_password: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -87,6 +91,24 @@ class Settings(BaseSettings):
     def _no_default_password_off_this_machine(self) -> "Settings":
         default = type(self).model_fields["app_password"].default
         refuse_default_password(self.db_host, "NEEDTOKNOW_APP_PASSWORD", self.app_password, default)
+        return self
+
+    @model_validator(mode="after")
+    def _all_data_settings_or_none(self) -> "Settings":
+        given = [self.data_host, self.data_name, self.data_password]
+        port_set = "data_port" in self.model_fields_set
+        if any(value is None for value in given) and (
+            port_set or any(value is not None for value in given)
+        ):
+            raise ValueError(
+                "set NEEDTOKNOW_DATA_HOST, NEEDTOKNOW_DATA_NAME and NEEDTOKNOW_DATA_PASSWORD "
+                "together, with NEEDTOKNOW_DATA_PORT if needed, or none of them"
+            )
+        if self.data_host is not None and self.data_password is not None:
+            default = type(self).model_fields["app_password"].default
+            refuse_default_password(
+                self.data_host, "NEEDTOKNOW_DATA_PASSWORD", self.data_password, default
+            )
         return self
 
     @model_validator(mode="after")
@@ -162,6 +184,21 @@ class DefaultPassword(ValueError):
 def refuse_default_password(db_host: str, variable: str, value: str, default: str) -> None:
     if db_host not in LOCAL_HOSTS and value == default:
         raise DefaultPassword(f"{variable} is the development default; set it for {db_host}")
+
+
+# The SQL tools reach the company database as the same app role, so its address, name and
+# password take the place of the needtoknow database's.
+def company_database(settings: Settings) -> Settings:
+    if settings.data_host is None or settings.data_name is None or settings.data_password is None:
+        raise ValueError("NEEDTOKNOW_DATA_HOST is not set")
+    return settings.model_copy(
+        update={
+            "db_host": settings.data_host,
+            "db_port": settings.data_port,
+            "db_name": settings.data_name,
+            "app_password": settings.data_password,
+        }
+    )
 
 
 def load_settings() -> Settings:

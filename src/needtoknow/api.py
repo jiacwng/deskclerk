@@ -122,6 +122,7 @@ def create_app(
     with httpx.Client(timeout=JWKS_TIMEOUT_SECONDS) as client:
         jwks_url = discover_jwks_url(settings, client)
     pool = db.app_pool(settings, settings.pool_size)
+    data_pool = db.data_pool(settings, pool, settings.pool_size)
     quota = Quota(settings.requests_per_minute)
     audit = Audit(settings.audit_text, settings.audit_key)
     signing_keys = jwt.PyJWKClient(jwks_url, timeout=JWKS_TIMEOUT_SECONDS)
@@ -132,6 +133,7 @@ def create_app(
         embed_query("warm up")
         yield
         pool.close()
+        data_pool.close()
 
     api = FastAPI(title="needtoknow", lifespan=lifespan)
     spending = Spending(price_of(settings), settings.budget_usd)
@@ -215,7 +217,7 @@ def create_app(
         try:
             answer = agent.ask(
                 request.question,
-                agent.employee_tools(pool, identity.principals, screen),
+                agent.employee_tools(pool, identity.principals, screen, data_pool),
                 model,
                 spending,
                 request.turns(),
@@ -247,7 +249,7 @@ def create_app(
             return
         events = agent.ask_stream(
             request.question,
-            agent.employee_tools(pool, identity.principals, screen),
+            agent.employee_tools(pool, identity.principals, screen, data_pool),
             model,
             spending,
             request.turns(),

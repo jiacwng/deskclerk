@@ -247,6 +247,32 @@ async def test_a_write_through_query_data_is_a_tool_error(
     assert owner.execute("SELECT DISTINCT frequency FROM financial.account").fetchall() != [("x",)]
 
 
+async def test_query_data_reads_the_company_database_when_one_is_set(
+    company: Settings,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    sign_mcp_token: Sign,
+) -> None:
+    settings = token_settings.model_copy(
+        update={
+            "data_host": company.data_host,
+            "data_port": company.data_port,
+            "data_name": company.data_name,
+            "data_password": company.data_password,
+        }
+    )
+    app = create_server(settings, token_signing_key, None).streamable_http_app()
+    token = sign_mcp_token({"preferred_username": "ana", "groups": ["north"]})
+
+    async with _connect(app, token) as client:
+        result = await client.call_tool("query_data", {"sql": "SELECT team, amount FROM sales"})
+
+    assert not result.is_error
+    [content] = result.content
+    assert isinstance(content, TextContent)
+    assert content.text == "team | amount\ngroup:north | 100\n(1 rows)"
+
+
 async def test_flagged_passages_never_reach_the_mcp_client(
     owner: psycopg.Connection[TupleRow],
     token_settings: Settings,

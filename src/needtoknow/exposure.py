@@ -1,8 +1,9 @@
 # The startup check: the API and the MCP server refuse to start while the app role can read a
 # relation that row-level security does not protect, or holds a privilege that gets around the
-# policies. It follows Supabase's rls_disabled_in_public lint and runs as the app role, so the
-# privilege functions answer for that role. A relation every employee may read goes on
-# NEEDTOKNOW_PUBLIC_RELATIONS. `python -m needtoknow.exposure` runs the same check for CI.
+# policies, in the needtoknow database and in the company database when one is set. It follows
+# Supabase's rls_disabled_in_public lint and runs as the app role, so the privilege functions
+# answer for that role. A relation every employee may read goes on NEEDTOKNOW_PUBLIC_RELATIONS.
+# `python -m needtoknow.exposure` runs the same check for CI.
 
 import sys
 from collections.abc import Collection
@@ -11,8 +12,8 @@ from typing import Any
 
 import psycopg
 
-from needtoknow.config import Settings, load_settings
-from needtoknow.db import connect_app
+from needtoknow.config import Settings, company_database, load_settings
+from needtoknow.db import APP_ROLE, connect
 from needtoknow.schema import check_schema
 
 _RELATIONS = r"""
@@ -69,6 +70,10 @@ NOT_PROVISIONED = (
     "the database is not provisioned or unreachable: run the load "
     "(docker compose -f compose.prod.yaml run --rm load) first"
 )
+DATA_NOT_SET_UP = (
+    "the company database is not set up or unreachable: its admin runs "
+    "python -m needtoknow.ingest data-setup first"
+)
 
 
 class Exposed(RuntimeError):
@@ -114,9 +119,9 @@ def find_exposures(connection: psycopg.Connection[Any], public: Collection[str])
     return problems
 
 
-def check_exposure(settings: Settings) -> None:
-    with connect_app(settings) as connection:
-        problems = find_exposures(connection, settings.public_relations)
+def check_exposure(settings: Settings, public: Collection[str]) -> None:
+    with connect(settings, APP_ROLE, settings.app_password) as connection:
+        problems = find_exposures(connection, public)
     if problems:
         raise Exposed(
             "the app role can read data that row-level security does not protect; protect it, "
@@ -127,10 +132,15 @@ def check_exposure(settings: Settings) -> None:
 
 def check_startup(settings: Settings) -> None:
     try:
-        check_exposure(settings)
+        check_exposure(settings, {*settings.public_relations, SCHEMA_INFO})
         check_schema(settings)
     except psycopg.OperationalError:
         sys.exit(NOT_PROVISIONED)
+    if settings.data_host is not None:
+        try:
+            check_exposure(company_database(settings), settings.public_relations)
+        except psycopg.OperationalError:
+            sys.exit(DATA_NOT_SET_UP)
 
 
 def _role_problems(connection: psycopg.Connection[Any]) -> list[str]:
@@ -150,7 +160,7 @@ def _role_problems(connection: psycopg.Connection[Any]) -> list[str]:
 
 
 def _is_public(relation: Relation, public: Collection[str]) -> bool:
-    return relation.name == SCHEMA_INFO or relation.schema in public or relation.name in public
+    return relation.schema in public or relation.name in public
 
 
 def _reasons(
@@ -188,7 +198,8 @@ def _reasons(
 
 def main() -> None:
     try:
-        check_exposure(load_settings())
+        settings = load_settings()
+        check_exposure(settings, {*settings.public_relations, SCHEMA_INFO})
     except Exposed as error:
         sys.exit(str(error))
     print("the app role reads only protected or public relations")

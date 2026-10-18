@@ -8,7 +8,7 @@ from pathlib import Path
 
 import needtoknow
 from needtoknow.bird import POLICIES
-from needtoknow.provision import READER_SCHEMA, SCHEMA
+from needtoknow.provision import IDENTITY, READER_SCHEMA, SCHEMA
 
 ROOT = Path(__file__).parent.parent
 EVAL_ONLY = {"scipy", "thefuzz", "pyarrow"}
@@ -21,7 +21,7 @@ def test_version_matches_pyproject() -> None:
 
 
 def test_the_sql_the_package_runs_ships_with_it() -> None:
-    for resource in (SCHEMA, READER_SCHEMA, POLICIES):
+    for resource in (SCHEMA, IDENTITY, READER_SCHEMA, POLICIES):
         assert resource.read_text(encoding="utf-8").strip()
 
 

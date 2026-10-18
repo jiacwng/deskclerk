@@ -1,9 +1,9 @@
 # The production stack in compose.prod.yaml and its realm template: only Caddy is public and
 # Keycloak's admin console is on the loopback address, Keycloak runs in production mode, every
-# password is required from the environment, the app and the MCP server get only the settings
-# they read and none of the admin, owner or bootstrap passwords, the realm holds no users and no
-# password client, and the addresses the app checks tokens against are the ones Keycloak stamps
-# into them.
+# password but the optional company database's is required from the environment, the app and
+# the MCP server get only the settings they read and none of the admin, owner or bootstrap
+# passwords, the realm holds no users and no password client, and the addresses the app checks
+# tokens against are the ones Keycloak stamps into them.
 
 import json
 import re
@@ -53,6 +53,9 @@ def test_every_password_is_required_from_the_environment() -> None:
     for name in SERVICES:
         for variable, value in SERVICES[name].get("environment", {}).items():
             if not variable.endswith("PASSWORD"):
+                continue
+            if variable == "NEEDTOKNOW_DATA_PASSWORD":
+                assert value is None, f"{name}: the company database is optional, pass it through"
                 continue
             reference = REFERENCE.match(value)
             assert reference, f"{name}: {variable} is {value!r}"
