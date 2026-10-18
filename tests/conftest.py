@@ -59,3 +59,8 @@ def sign_token(token_settings: Settings) -> Callable[[dict[str, object]], str]:
         return jwt.encode(merged, TOKEN_KEY, algorithm="RS256")
 
     return sign
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"

@@ -1,7 +1,8 @@
 # Settings read from NEEDTOKNOW_* environment variables by pydantic-settings: how employees sign
 # in, the Entra ID Graph credentials, the model and its prices, the budget, the audit log and the
-# request quota.
+# request quota, the MCP server list and the encrypted store of each employee's MCP tokens.
 
+from pathlib import Path
 from typing import Any
 
 from pydantic import SecretStr, field_validator, model_validator
@@ -32,6 +33,11 @@ class Settings(BaseSettings):
     audit_text: bool = False
     audit_key: SecretStr | None = None
     requests_per_minute: int = 20
+    servers_file: Path = Path("servers.toml")
+    token_file: Path = Path("data/tokens.sqlite")
+    token_key: SecretStr | None = None
+    redirect_url: str = "http://localhost:8000/oauth/callback"
+    mcp_client_name: str = "needtoknow"
 
     @model_validator(mode="before")
     @classmethod

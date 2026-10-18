@@ -14,3 +14,4 @@ ollama==0.6.3
 typesafe-sdk==0.7.5
 pydantic-settings==2.16.0
 limits==5.8.0
+mcp==2.3.0
