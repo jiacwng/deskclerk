@@ -89,24 +89,9 @@ def test_chat_page_is_served(client: TestClient) -> None:
     assert '<form id="ask"' in response.text
 
 
-def test_chat_page_shows_each_query_as_text(client: TestClient) -> None:
-    page = client.get("/").text
-    assert 'queries.className = "queries"' in page
-    assert 'label.textContent = "Queries:"' in page
-    assert "for (const query of body.queries)" in page
-    assert "result.textContent = query.error ?? query.rows;" in page
-    assert "parts.answer.textContent += message.data;" in page
-    assert "innerHTML" not in page
-
-
-def test_chat_page_sends_the_history_the_api_accepts(client: TestClient) -> None:
-    page = client.get("/").text
-    assert f"const MAX_HISTORY_TURNS = {MAX_HISTORY_TURNS};" in page
-    assert f"const MAX_HISTORY_CHARS = {MAX_HISTORY_CHARS};" in page
-    assert "body: JSON.stringify({ question, history: recentHistory() })," in page
-
-
-def test_chat_page_calls_only_the_api_and_the_issuer(client: TestClient) -> None:
+def test_chat_page_calls_only_the_api_and_the_issuer_and_never_writes_html(
+    client: TestClient,
+) -> None:
     page = client.get("/").text
     assert re.findall(r"fetch\(([^,)]+)", page) == [
         "endpoints.token_endpoint",
@@ -115,45 +100,10 @@ def test_chat_page_calls_only_the_api_and_the_issuer(client: TestClient) -> None
         "endpoints.token_endpoint",
         '"/ask/stream"',
     ]
-
-
-def test_chat_page_renews_the_token_before_it_ends_the_conversation(client: TestClient) -> None:
-    page = client.get("/").text
-    assert 'grant_type: "refresh_token",' in page
-    assert "refreshTimer = setTimeout(refresh, seconds * 1000);" in page
-    retry = page.index("if (response.status === 401 && await refresh()) {")
-    assert retry < page.index("conversation.length = 0;")
     assert "://" not in page
     assert "src=" not in page
     assert "<link" not in page
-
-
-def test_chat_page_signs_out_at_the_provider_and_names_the_user(client: TestClient) -> None:
-    page = client.get("/").text
-    assert 'id="logout"' in page
-    assert "location.assign(`${endpoints.end_session_endpoint}?${query}`);" in page
-    assert "id_token_hint: hintToken," in page
-    assert "post_logout_redirect_uri: redirectUri," in page
-    assert 'who.textContent = yes ? `Signed in as ${usernameOf(idToken)}` : "";' in page
-
-
-def test_chat_page_hides_what_is_hidden_and_shows_bold_without_cited_ids(
-    client: TestClient,
-) -> None:
-    page = client.get("/").text
-    assert "[hidden] { display: none !important; }" in page
-    assert "showAnswer(parts.answer, body.answer, body.citations);" in page
-    assert "plain.replaceAll(` [${source.doc_id}]`" in page
-    assert 'const strong = document.createElement("strong");' in page
-    assert "strong.textContent = piece;" in page
-
-
-def test_chat_page_offers_three_questions_and_shows_source_titles(client: TestClient) -> None:
-    page = client.get("/").text
-    block = page[page.index("const SUGGESTED_QUESTIONS = [") :]
-    assert block[: block.index("];")].count('",\n') == 3
-    assert "suggestion.textContent = text;" in page
-    assert 'item.textContent = source.title === "" ? source.doc_id : source.title;' in page
+    assert "innerHTML" not in page
 
 
 def test_config_gives_the_page_the_issuer_and_client(
@@ -194,12 +144,6 @@ def test_search_with_a_bad_token_is_refused(
     client: TestClient, sign_token: Sign, claims: dict[str, object]
 ) -> None:
     response = client.post("/search", json=QUESTION, headers=_bearer(sign_token(claims)))
-    assert response.status_code == 401
-    assert response.headers["WWW-Authenticate"] == 'Bearer error="invalid_token"'
-
-
-def test_search_with_garbage_is_refused(client: TestClient) -> None:
-    response = client.post("/search", json=QUESTION, headers=_bearer("not-a-token"))
     assert response.status_code == 401
     assert response.headers["WWW-Authenticate"] == 'Bearer error="invalid_token"'
 

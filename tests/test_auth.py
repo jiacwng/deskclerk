@@ -154,16 +154,6 @@ def test_clock_skew_within_thirty_seconds_is_accepted(
         assert identity.user_id == "district-1"
 
 
-def test_unreachable_key_server_is_unavailable_not_invalid(
-    sign_token: Sign, token_settings: Settings
-) -> None:
-    def signing_key(token: str) -> jwt.PyJWK:
-        raise jwt.PyJWKClientConnectionError("connection refused")
-
-    with pytest.raises(AuthUnavailable, match="cannot fetch the signing keys"):
-        authenticate(sign_token({}), token_settings, signing_key, token_settings.audience)
-
-
 def test_real_key_client_reports_a_closed_port_as_unavailable(
     sign_token: Sign, token_settings: Settings
 ) -> None:

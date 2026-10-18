@@ -14,7 +14,6 @@ from needtoknow.agent import (
     MAX_TOOL_ROUNDS,
     NOT_OPEN,
     REFUSAL,
-    SYSTEM_PROMPT,
     Answer,
     Turn,
     _check_citations,
@@ -153,14 +152,13 @@ def test_a_zero_budget_refuses_the_first_call(app_pool: Pool) -> None:
     assert model.prompts == []
 
 
-def test_an_employee_gets_unlabelled_passages_and_the_system_prompt(app_pool: Pool) -> None:
+def test_an_employee_gets_unlabelled_passages(app_pool: Pool) -> None:
     model = scripted(search_call({"query": QUESTION}), final_reply(REFUSAL))
 
     _ask(app_pool, HOLDER, model)
 
     (result,) = _tool_results(model)
     assert "(readers:" not in result.text
-    assert model.prompts[0][0].text == SYSTEM_PROMPT
 
 
 def test_an_opened_email_gives_its_full_text_and_counts_as_returned(

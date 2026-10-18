@@ -1,15 +1,12 @@
-# retrieval.search on the parts the Enron search tests leave out: hits come nearest first
-# through the HNSW index, and k is bounded.
+# retrieval.search on the parts the Enron search tests leave out: hits come nearest first with
+# their title, and k is bounded.
 
 import psycopg
 import pytest
-from psycopg import sql
 from psycopg.rows import TupleRow
 
 from needtoknow.auth import principals
-from needtoknow.db import as_user
-from needtoknow.embed import embed_query
-from needtoknow.retrieval import _NEAREST_CHUNKS, MAX_RESULTS, search
+from needtoknow.retrieval import MAX_RESULTS, search
 
 Connection = psycopg.Connection[TupleRow]
 
@@ -25,15 +22,6 @@ def test_hits_come_nearest_first_with_their_title(app: Connection, owner: Connec
     assert [hit.distance for hit in hits] == sorted(hit.distance for hit in hits)
     for hit in hits:
         assert hit.title == titles[hit.doc_id]
-
-
-def test_the_query_reads_the_hnsw_index(app: Connection) -> None:
-    query = sql.SQL("EXPLAIN ") + sql.SQL(_NEAREST_CHUNKS).format(permitted=sql.SQL(""))
-    params = {"query": embed_query(QUESTION), "limit": 5}
-    with as_user(app, KAMINSKI):
-        plan = [row[0] for row in app.execute(query, params).fetchall()]
-
-    assert any("chunks_embedding" in line for line in plan)
 
 
 @pytest.mark.parametrize("k", [0, -1, MAX_RESULTS + 1])

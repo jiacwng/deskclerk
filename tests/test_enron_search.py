@@ -51,14 +51,17 @@ def test_a_custodian_whose_nearest_chunks_are_all_denied_still_gets_k_results(
     rows = {}
     with as_user(app, kaminski):
         app.execute("SET LOCAL hnsw.ef_search = 1")
+        app.execute("SET LOCAL enable_seqscan = off")
         for mode in ("off", "strict_order"):
             app.execute(sql.SQL("SET LOCAL hnsw.iterative_scan = {}").format(sql.Literal(mode)))
             rows[mode] = len(app.execute(query, params).fetchall())
     app.execute("SET hnsw.ef_search = 1")
+    app.execute("SET enable_seqscan = off")
     try:
         hits = search(app, kaminski, RATE_FREEZE, MAX_RESULTS)
     finally:
         app.execute("RESET hnsw.ef_search")
+        app.execute("RESET enable_seqscan")
 
     assert rows["off"] < 5
     assert rows["strict_order"] == 5
