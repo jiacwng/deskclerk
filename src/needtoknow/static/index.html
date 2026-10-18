@@ -1,0 +1,154 @@
+<!doctype html>
+<!-- The chat page: sign in, connect servers, ask. Model and tool text is set with textContent only. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>needtoknow</title>
+<style>
+body { font: 16px/1.5 system-ui, sans-serif; max-width: 48rem; margin: 2rem auto; padding: 0 1rem; }
+h1, h2 { margin: 1.5rem 0 0.5rem; }
+li { margin: 0.25rem 0; }
+textarea { width: 100%; box-sizing: border-box; min-height: 6rem; }
+pre { white-space: pre-wrap; background: #f3f3f3; padding: 0.5rem; }
+.error { color: #b00020; }
+.muted { color: #666; }
+@media (prefers-color-scheme: dark) {
+  body { background: #161616; color: #eee; }
+  pre { background: #2a2a2a; }
+  a { color: #8ab4f8; }
+  .muted { color: #aaa; }
+  .error { color: #ff8a80; }
+}
+</style>
+</head>
+<body>
+<h1>needtoknow</h1>
+<p id="status" class="muted"></p>
+<p id="signin" hidden><a href="/login">Sign in</a></p>
+
+<section id="app" hidden>
+  <h2>Servers</h2>
+  <ul id="servers"></ul>
+
+  <h2>Ask</h2>
+  <textarea id="request" maxlength="4000"></textarea>
+  <p><button id="ask" type="button">Ask</button></p>
+  <p id="error" class="error"></p>
+  <div id="result" hidden>
+    <h2>Answer</h2>
+    <pre id="answer"></pre>
+    <h2>Calls</h2>
+    <ul id="calls"></ul>
+    <p id="cost" class="muted"></p>
+  </div>
+</section>
+
+<script>
+const post = (path, body) => fetch(path, {
+  method: "POST",
+  headers: { "X-Requested-With": "needtoknow", "Content-Type": "application/json" },
+  body: body === undefined ? undefined : JSON.stringify(body),
+});
+
+const el = (id) => document.getElementById(id);
+
+async function detail(response) {
+  try {
+    const body = await response.json();
+    return typeof body.detail === "string" ? body.detail : response.statusText;
+  } catch {
+    return response.statusText;
+  }
+}
+
+function showError(text) {
+  el("error").textContent = text;
+}
+
+function line(text) {
+  const item = document.createElement("li");
+  item.textContent = text;
+  return item;
+}
+
+function button(label, onClick) {
+  const control = document.createElement("button");
+  control.type = "button";
+  control.textContent = label;
+  control.addEventListener("click", onClick);
+  return control;
+}
+
+async function connect(name) {
+  const response = await post("/servers/" + encodeURIComponent(name) + "/connect");
+  if (!response.ok) return showError(await detail(response));
+  const target = new URL((await response.json()).authorization_url);
+  if (target.protocol !== "https:" && target.protocol !== "http:") return showError("bad link");
+  window.location.assign(target.href);
+}
+
+async function disconnect(name) {
+  const response = await post("/servers/" + encodeURIComponent(name) + "/disconnect");
+  if (!response.ok) return showError(await detail(response));
+  loadServers();
+}
+
+async function loadServers() {
+  const response = await fetch("/servers");
+  if (!response.ok) return showError(await detail(response));
+  const list = el("servers");
+  list.replaceChildren();
+  for (const server of await response.json()) {
+    const item = line(server.name + (server.connected ? " (connected) " : " (not connected) "));
+    item.append(
+      server.connected
+        ? button("Disconnect", () => disconnect(server.name))
+        : button("Connect", () => connect(server.name)),
+    );
+    list.append(item);
+  }
+}
+
+function showCalls(result) {
+  const calls = el("calls");
+  calls.replaceChildren();
+  for (const call of result.executed) {
+    const args = JSON.stringify(call.arguments);
+    calls.append(line(call.server + "." + call.tool + " " + args + " -> " + call.result));
+  }
+  for (const call of result.blocked) {
+    calls.append(line("blocked " + call.server + "." + call.tool + ": " + call.reason));
+  }
+  for (const name of result.not_connected) {
+    calls.append(line(name + " is not connected, so its tools were not offered"));
+  }
+}
+
+async function ask() {
+  showError("");
+  const response = await post("/ask", { request: el("request").value });
+  if (!response.ok) return showError(await detail(response));
+  const result = await response.json();
+  el("answer").textContent = result.answer;
+  showCalls(result);
+  el("cost").textContent = "Cost: " + result.cost_usd.toFixed(4) + " USD";
+  el("result").hidden = false;
+}
+
+async function start() {
+  const response = await fetch("/me");
+  if (!response.ok) {
+    el("signin").hidden = false;
+    return;
+  }
+  el("status").textContent = "Signed in as " + (await response.json()).user;
+  el("app").hidden = false;
+  el("ask").addEventListener("click", ask);
+  loadServers();
+}
+
+start();
+</script>
+</body>
+</html>

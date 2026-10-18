@@ -1,6 +1,7 @@
 # Settings read from NEEDTOKNOW_* environment variables by pydantic-settings: how employees sign
 # in, the Entra ID Graph credentials, the model and its prices, the budget, the audit log and the
-# request quota, the MCP server list and the encrypted store of each employee's MCP tokens.
+# request quota, the MCP server list, the encrypted store of each employee's MCP tokens and the
+# address and session of the web front.
 
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,12 @@ class Settings(BaseSettings):
     token_key: SecretStr | None = None
     redirect_url: str = "http://localhost:8000/oauth/callback"
     mcp_client_name: str = "needtoknow"
+    step_limit: int = 8
+    host: str = "127.0.0.1"
+    port: int = 8000
+    sign_in_redirect_url: str = "http://localhost:8000/login/callback"
+    session_key: SecretStr | None = None
+    session_hours: int = 8
 
     @model_validator(mode="before")
     @classmethod

@@ -20,6 +20,8 @@ dependencies = [
     "limits>=5.8",
     "mcp>=2.3",
     "jsonschema>=4.26",
+    "fastapi>=0.142",
+    "uvicorn>=0.54",
 ]
 
 [project.optional-dependencies]
@@ -30,12 +32,18 @@ ollama = ["langchain-ollama>=1.1"]
 package-dir = {"" = "src"}
 packages = ["needtoknow"]
 
+[tool.setuptools.package-data]
+needtoknow = ["static/*.html"]
+
 [tool.ruff]
 line-length = 100
 src = ["src", "tests", "bench"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "UP", "B", "S"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends"]
 
 [tool.ruff.lint.per-file-ignores]
 # assert and throwaway passwords are the pytest idiom
@@ -57,5 +65,6 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
     "llm: calls the paid model API, deselected by default, run with -m llm",
+    "keycloak: signs in against the development Keycloak from compose.yaml",
 ]
 addopts = "-m 'not llm'"
