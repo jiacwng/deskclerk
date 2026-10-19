@@ -17,11 +17,11 @@ from langchain_core.messages.ai import UsageMetadata
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 
+from deskclerk.agent import AgentResult, ProposedCall, Verdict, run_agent
+from deskclerk.connections import OAuthConnections
+from deskclerk.providers import Usage
+from deskclerk.servers import McpServer
 from mcp_server import RunningServer, running_mcp_server
-from needtoknow.agent import AgentResult, ProposedCall, Verdict, run_agent
-from needtoknow.connections import OAuthConnections
-from needtoknow.providers import Usage
-from needtoknow.servers import McpServer
 from test_connections import REDIRECT, connect, make_connections, server_record
 
 

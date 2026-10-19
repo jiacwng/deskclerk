@@ -8,11 +8,11 @@ from typing import Any, cast
 import pytest
 from cryptography.fernet import Fernet
 
+from deskclerk.agent import ProposedCall, run_agent
+from deskclerk.connections import ToolInfo
+from deskclerk.jev import Jev, JevError, jev_from_environment
+from deskclerk.writecheck import write_check
 from mcp_server import running_mcp_server
-from needtoknow.agent import ProposedCall, run_agent
-from needtoknow.connections import ToolInfo
-from needtoknow.jev import Jev, JevError, jev_from_environment
-from needtoknow.writecheck import write_check
 from test_agent import answer, calls, script
 from test_connections import REDIRECT, connect, make_connections, server_record
 

@@ -1,6 +1,6 @@
 {
-  "realm": "needtoknow",
-  "displayName": "needtoknow (development only, every user's password is needtoknow)",
+  "realm": "deskclerk",
+  "displayName": "deskclerk (development only, every user's password is deskclerk)",
   "enabled": true,
   "groups": [
     {
@@ -17,14 +17,14 @@
     {
       "username": "kaminski-v",
       "enabled": true,
-      "email": "kaminski-v@needtoknow.example",
+      "email": "kaminski-v@deskclerk.example",
       "emailVerified": true,
       "firstName": "Vince",
       "lastName": "Kaminski",
       "credentials": [
         {
           "type": "password",
-          "value": "needtoknow",
+          "value": "deskclerk",
           "temporary": false
         }
       ],
@@ -33,14 +33,14 @@
     {
       "username": "dasovich-j",
       "enabled": true,
-      "email": "dasovich-j@needtoknow.example",
+      "email": "dasovich-j@deskclerk.example",
       "emailVerified": true,
       "firstName": "Jeff",
       "lastName": "Dasovich",
       "credentials": [
         {
           "type": "password",
-          "value": "needtoknow",
+          "value": "deskclerk",
           "temporary": false
         }
       ],
@@ -49,14 +49,14 @@
     {
       "username": "kean-s",
       "enabled": true,
-      "email": "kean-s@needtoknow.example",
+      "email": "kean-s@deskclerk.example",
       "emailVerified": true,
       "firstName": "Steven",
       "lastName": "Kean",
       "credentials": [
         {
           "type": "password",
-          "value": "needtoknow",
+          "value": "deskclerk",
           "temporary": false
         }
       ],
@@ -65,14 +65,14 @@
     {
       "username": "district-1",
       "enabled": true,
-      "email": "district-1@needtoknow.example",
+      "email": "district-1@deskclerk.example",
       "emailVerified": true,
       "firstName": "Hl.m. Praha",
       "lastName": "District",
       "credentials": [
         {
           "type": "password",
-          "value": "needtoknow",
+          "value": "deskclerk",
           "temporary": false
         }
       ],
@@ -83,14 +83,14 @@
     {
       "username": "county-sierra",
       "enabled": true,
-      "email": "county-sierra@needtoknow.example",
+      "email": "county-sierra@deskclerk.example",
       "emailVerified": true,
       "firstName": "Sierra",
       "lastName": "County",
       "credentials": [
         {
           "type": "password",
-          "value": "needtoknow",
+          "value": "deskclerk",
           "temporary": false
         }
       ],
@@ -101,14 +101,14 @@
     {
       "username": "analyst",
       "enabled": true,
-      "email": "analyst@needtoknow.example",
+      "email": "analyst@deskclerk.example",
       "emailVerified": true,
       "firstName": "Data",
       "lastName": "Analyst",
       "credentials": [
         {
           "type": "password",
-          "value": "needtoknow",
+          "value": "deskclerk",
           "temporary": false
         }
       ],
@@ -119,8 +119,8 @@
   ],
   "clients": [
     {
-      "clientId": "needtoknow-api",
-      "name": "needtoknow",
+      "clientId": "deskclerk-api",
+      "name": "deskclerk",
       "enabled": true,
       "publicClient": true,
       "standardFlowEnabled": true,
@@ -156,7 +156,7 @@
           "protocol": "openid-connect",
           "protocolMapper": "oidc-audience-mapper",
           "config": {
-            "included.client.audience": "needtoknow-api",
+            "included.client.audience": "deskclerk-api",
             "access.token.claim": "true",
             "id.token.claim": "false",
             "introspection.token.claim": "true"
@@ -165,8 +165,8 @@
       ]
     },
     {
-      "clientId": "needtoknow-test",
-      "name": "needtoknow tests",
+      "clientId": "deskclerk-test",
+      "name": "deskclerk tests",
       "enabled": true,
       "publicClient": true,
       "standardFlowEnabled": false,
@@ -191,7 +191,7 @@
           "protocol": "openid-connect",
           "protocolMapper": "oidc-audience-mapper",
           "config": {
-            "included.client.audience": "needtoknow-api",
+            "included.client.audience": "deskclerk-api",
             "access.token.claim": "true",
             "id.token.claim": "false",
             "introspection.token.claim": "true"
@@ -278,8 +278,8 @@
       ]
     },
     {
-      "name": "needtoknow-mcp",
-      "description": "Access to the needtoknow MCP server",
+      "name": "deskclerk-mcp",
+      "description": "Access to the deskclerk MCP server",
       "protocol": "openid-connect",
       "attributes": {
         "include.in.token.scope": "true",
@@ -320,7 +320,7 @@
     "web-origins"
   ],
   "defaultOptionalClientScopes": [
-    "needtoknow-mcp"
+    "deskclerk-mcp"
   ],
   "components": {
     "org.keycloak.services.clientregistration.policy.ClientRegistrationPolicy": [

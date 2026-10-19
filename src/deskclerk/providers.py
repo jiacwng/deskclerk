@@ -1,4 +1,4 @@
-# The chat model behind the agent, and what it costs. NEEDTOKNOW_MODEL names any provider
+# The chat model behind the agent, and what it costs. DESKCLERK_MODEL names any provider
 # LangChain's init_chat_model knows, as provider:model. Every model call is priced from the
 # token usage in its response and counted against a spending cap that holds for the whole
 # process.
@@ -13,7 +13,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 
-from needtoknow.config import Settings
+from deskclerk.config import Settings
 
 MAX_TOKENS = 4096
 EXTRAS = frozenset({"openai", "ollama"})
@@ -96,7 +96,7 @@ def _anthropic_price(input_per_million: float, output_per_million: float, read: 
 
 
 # List prices in USD per million input and output tokens, for prompts up to 100,000 tokens.
-# A model missing here needs NEEDTOKNOW_PRICE_INPUT and NEEDTOKNOW_PRICE_OUTPUT, so no call
+# A model missing here needs DESKCLERK_PRICE_INPUT and DESKCLERK_PRICE_OUTPUT, so no call
 # can go unpriced.
 PRICES = {
     "anthropic:claude-haiku-5-5": _anthropic_price(0.10, 0.50, CACHE_READ_MULTIPLIER),
@@ -117,8 +117,8 @@ def price_of(settings: Settings) -> Price:
     if settings.model not in PRICES:
         known = ", ".join(sorted(PRICES))
         raise ValueError(
-            f"no price for model {settings.model!r}: set NEEDTOKNOW_PRICE_INPUT and "
-            f"NEEDTOKNOW_PRICE_OUTPUT in USD per million tokens, or use one of {known}"
+            f"no price for model {settings.model!r}: set DESKCLERK_PRICE_INPUT and "
+            f"DESKCLERK_PRICE_OUTPUT in USD per million tokens, or use one of {known}"
         )
     return PRICES[settings.model]
 
@@ -140,7 +140,7 @@ class Spending:
             if self.cost_usd >= self.budget_usd:
                 raise BudgetExceeded(
                     f"spent {self.cost_usd:.4f} USD, the budget is {self.budget_usd:.4f} USD "
-                    "(NEEDTOKNOW_BUDGET_USD)"
+                    "(DESKCLERK_BUDGET_USD)"
                 )
 
     def record(self, usage: Usage) -> None:
@@ -193,7 +193,7 @@ def chat_model(settings: Settings) -> BaseChatModel:
         if provider not in EXTRAS:
             raise
         raise MissingProvider(
-            f"NEEDTOKNOW_MODEL {settings.model!r} needs the {provider} package: "
-            f"pip install 'needtoknow[{provider}]'"
+            f"DESKCLERK_MODEL {settings.model!r} needs the {provider} package: "
+            f"pip install 'deskclerk[{provider}]'"
         ) from error
     return model

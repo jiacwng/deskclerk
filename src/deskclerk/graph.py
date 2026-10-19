@@ -9,7 +9,7 @@ import time
 import httpx
 from pydantic import SecretStr
 
-from needtoknow.config import Settings
+from deskclerk.config import Settings
 
 LOGIN = "https://login.microsoftonline.com"
 GRAPH = "https://graph.microsoft.com/v1.0"

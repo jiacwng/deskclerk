@@ -10,8 +10,8 @@ from jsonschema import Draft202012Validator, SchemaError
 from jsonschema.exceptions import best_match
 from jsonschema.validators import validator_for
 
-from needtoknow.agent import Gate, ProposedCall, Verdict
-from needtoknow.jev import Jev, JevError
+from deskclerk.agent import Gate, ProposedCall, Verdict
+from deskclerk.jev import Jev, JevError
 
 QUESTION = (
     "Does this tool call do what the employee asked for, "

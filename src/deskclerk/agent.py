@@ -8,9 +8,9 @@ from typing import Any
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
-from needtoknow.connections import NotConnected, OAuthConnections, ToolInfo
-from needtoknow.providers import Usage, usage_from
-from needtoknow.servers import McpServer
+from deskclerk.connections import NotConnected, OAuthConnections, ToolInfo
+from deskclerk.providers import Usage, usage_from
+from deskclerk.servers import McpServer
 
 
 @dataclass(frozen=True)

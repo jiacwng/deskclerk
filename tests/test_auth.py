@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from jwt.algorithms import ECAlgorithm, RSAAlgorithm
 
 from conftest import TOKEN_KEY
-from needtoknow.auth import (
+from deskclerk.auth import (
     AuthError,
     AuthUnavailable,
     SigningKeyLookup,
@@ -19,7 +19,7 @@ from needtoknow.auth import (
     discover_jwks_url,
     jwks_signing_key,
 )
-from needtoknow.config import Settings
+from deskclerk.config import Settings
 
 Sign = Callable[[dict[str, object]], str]
 OTHER_SERVICE = "https://agent.example.com"
@@ -67,7 +67,7 @@ def test_missing_groups_gives_user_and_everyone(
         pytest.param({"exp": -60}, "expired", id="expired"),
         pytest.param({"exp": None}, "exp", id="no-expiry"),
         pytest.param({"iat": 60}, "not yet valid", id="issued-in-the-future"),
-        pytest.param({"iss": "http://evil.test/realms/needtoknow"}, "issuer", id="wrong-issuer"),
+        pytest.param({"iss": "http://evil.test/realms/deskclerk"}, "issuer", id="wrong-issuer"),
         pytest.param({"aud": None}, '"aud"', id="no-audience"),
         pytest.param({"aud": "account"}, "Audience doesn't match", id="wrong-audience"),
         pytest.param({"typ": "ID"}, "typ is 'ID'", id="keycloak-id-token"),
@@ -121,11 +121,11 @@ def test_another_audience_accepts_any_registered_client_and_reads_the_scopes(
     claims: dict[str, object] = {
         "aud": OTHER_SERVICE,
         "azp": "a-registered-client",
-        "scope": "openid profile needtoknow-agent",
+        "scope": "openid profile deskclerk-agent",
     }
     identity = authenticate(sign_token(claims), token_settings, token_signing_key, OTHER_SERVICE)
     assert identity.user_id == "district-1"
-    assert identity.scopes == {"openid", "profile", "needtoknow-agent"}
+    assert identity.scopes == {"openid", "profile", "deskclerk-agent"}
     assert identity.client_id == "a-registered-client"
 
 
@@ -157,7 +157,7 @@ def test_real_key_client_reports_a_closed_port_as_unavailable(
     sign_token: Sign, token_settings: Settings
 ) -> None:
     # Nothing listens on port 9, so the connection is refused at once.
-    closed = token_settings.model_copy(update={"issuer": "http://127.0.0.1:9/realms/needtoknow"})
+    closed = token_settings.model_copy(update={"issuer": "http://127.0.0.1:9/realms/deskclerk"})
     lookup = jwks_signing_key(f"{closed.issuer}/protocol/openid-connect/certs")
     with pytest.raises(AuthUnavailable):
         authenticate(sign_token({}), closed, lookup, token_settings.audience)

@@ -1,4 +1,4 @@
-# Settings read from NEEDTOKNOW_* environment variables by pydantic-settings: how employees sign
+# Settings read from DESKCLERK_* environment variables by pydantic-settings: how employees sign
 # in, the Entra ID Graph credentials, the model and its prices, the budget, the audit log and the
 # request quota, the MCP server list, the encrypted store of each employee's MCP tokens and the
 # address and session of the web front.
@@ -13,13 +13,13 @@ MIN_SESSION_KEY_CHARS = 32
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="NEEDTOKNOW_", frozen=True)
+    model_config = SettingsConfigDict(env_prefix="DESKCLERK_", frozen=True)
 
-    issuer: str = "http://localhost:8080/realms/needtoknow"
+    issuer: str = "http://localhost:8080/realms/deskclerk"
     # Left unset, the signing keys are found from the issuer's OpenID configuration. Set it where
     # the API reaches the login server by another address than the issuer, as in a container.
     jwks_url: str | None = None
-    client_id: str = "needtoknow-api"
+    client_id: str = "deskclerk-api"
     audience: str
     login_scope: str = "openid"
     # The claim that names the employee. Keycloak's username is readable; on Entra ID use oid
@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     token_file: Path = Path("data/tokens.sqlite")
     token_key: SecretStr | None = None
     redirect_url: str = "http://localhost:8000/oauth/callback"
-    mcp_client_name: str = "needtoknow"
+    mcp_client_name: str = "deskclerk"
     step_limit: int = 8
     host: str = "127.0.0.1"
     port: int = 8000
@@ -61,17 +61,15 @@ class Settings(BaseSettings):
         given = [self.graph_tenant_id, self.graph_client_id, self.graph_client_secret]
         if any(value is None for value in given) and any(value is not None for value in given):
             raise ValueError(
-                "set NEEDTOKNOW_GRAPH_TENANT_ID, NEEDTOKNOW_GRAPH_CLIENT_ID and "
-                "NEEDTOKNOW_GRAPH_CLIENT_SECRET together or none of them"
+                "set DESKCLERK_GRAPH_TENANT_ID, DESKCLERK_GRAPH_CLIENT_ID and "
+                "DESKCLERK_GRAPH_CLIENT_SECRET together or none of them"
             )
         return self
 
     @model_validator(mode="after")
     def _both_prices_or_neither(self) -> "Settings":
         if (self.price_input is None) != (self.price_output is None):
-            raise ValueError(
-                "set both NEEDTOKNOW_PRICE_INPUT and NEEDTOKNOW_PRICE_OUTPUT or neither"
-            )
+            raise ValueError("set both DESKCLERK_PRICE_INPUT and DESKCLERK_PRICE_OUTPUT or neither")
         return self
 
     @field_validator("session_key")
@@ -79,7 +77,7 @@ class Settings(BaseSettings):
     def _session_key_is_long(cls, value: SecretStr | None) -> SecretStr | None:
         if value is not None and len(value.get_secret_value()) < MIN_SESSION_KEY_CHARS:
             raise ValueError(
-                f"NEEDTOKNOW_SESSION_KEY needs at least {MIN_SESSION_KEY_CHARS} characters"
+                f"DESKCLERK_SESSION_KEY needs at least {MIN_SESSION_KEY_CHARS} characters"
             )
         return value
 
@@ -89,7 +87,7 @@ class Settings(BaseSettings):
         provider, _, name = value.partition(":")
         if not provider or not name:
             raise ValueError(
-                f"NEEDTOKNOW_MODEL is provider:model, such as anthropic:claude-haiku-5-5, "
+                f"DESKCLERK_MODEL is provider:model, such as anthropic:claude-haiku-5-5, "
                 f"not {value!r}"
             )
         return value

@@ -11,8 +11,8 @@ from typing import Any
 import httpx
 import jwt
 
-from needtoknow.config import Settings
-from needtoknow.graph import GraphError, GraphGroups
+from deskclerk.config import Settings
+from deskclerk.graph import GraphError, GraphGroups
 
 SigningKeyLookup = Callable[[str], jwt.PyJWK]
 
@@ -147,8 +147,8 @@ def _groups(claims: dict[str, Any], claim: str, graph: GraphGroups | None) -> li
         if graph is None:
             raise AuthError(
                 "the token leaves out the groups because the user is in too many; set "
-                "NEEDTOKNOW_GRAPH_TENANT_ID, NEEDTOKNOW_GRAPH_CLIENT_ID and "
-                "NEEDTOKNOW_GRAPH_CLIENT_SECRET to read them from Microsoft Graph"
+                "DESKCLERK_GRAPH_TENANT_ID, DESKCLERK_GRAPH_CLIENT_ID and "
+                "DESKCLERK_GRAPH_CLIENT_SECRET to read them from Microsoft Graph"
             )
         try:
             return graph.groups_of(_object_id(claims))

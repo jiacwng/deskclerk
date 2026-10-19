@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from needtoknow.servers import McpServer, ServersError, load_servers
+from deskclerk.servers import McpServer, ServersError, load_servers
 
 
 def write(tmp_path: Path, text: str) -> Path:

@@ -16,8 +16,8 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.auth import AuthorizationCodeResult, OAuthClientMetadata
 from mcp.types import TextContent, Tool
 
-from needtoknow.servers import McpServer
-from needtoknow.tokens import ServerTokenStorage, TokenStore
+from deskclerk.servers import McpServer
+from deskclerk.tokens import ServerTokenStorage, TokenStore
 
 PUBLIC_CLIENT = "none"
 HTTP_TIMEOUT = httpx2.Timeout(30, read=300)

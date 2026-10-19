@@ -6,8 +6,8 @@ import pytest
 from cryptography.fernet import Fernet
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
-from needtoknow.servers import McpServer
-from needtoknow.tokens import TokenKeyError, TokenStore
+from deskclerk.servers import McpServer
+from deskclerk.tokens import TokenKeyError, TokenStore
 
 REDIRECT = "http://localhost:8000/oauth/callback"
 SERVER = McpServer("notes", "https://notes.test/mcp", None, None)
