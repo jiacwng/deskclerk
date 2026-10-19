@@ -22,6 +22,7 @@ from deskclerk.agent import Gate, ProposedCall, Verdict
 from deskclerk.connections import OAuthConnections
 from deskclerk.tokens import TokenStore
 from run_deskclerk import (
+    CUT_OFF_MESSAGE,
     WorkbenchText,
     Worker,
     allow_everything,
@@ -163,3 +164,12 @@ def test_the_server_is_reset_between_tasks(
     calls = ast.literal_eval(row["function_calls"])
     assert len(calls) == 1
     assert expected not in calls
+
+
+def test_a_reply_cut_off_at_the_output_limit_sets_the_cut_off_error(
+    url: str, connections: OAuthConnections, text: WorkbenchText
+) -> None:
+    task, _, _ = delete_task()
+    cut = AIMessage(content="The event is", response_metadata={"stop_reason": "max_tokens"})
+    row = run(worker_for(url, connections, scripted(cut), allow_everything), task, text)
+    assert row["error"] == CUT_OFF_MESSAGE

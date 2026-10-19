@@ -56,6 +56,7 @@ class AgentResult:
     not_connected: tuple[str, ...]
     usage: tuple[Usage, ...]
     step_limit_hit: bool
+    cut_off: bool
 
     @property
     def total_usage(self) -> Usage:
@@ -104,6 +105,7 @@ async def run_agent(
     usage: list[Usage] = []
     answer = ""
     step_limit_hit = True
+    cut_off = False
     for _ in range(step_limit):
         response: AIMessage = await chat_model.ainvoke(messages)
         messages.append(response)
@@ -113,6 +115,7 @@ async def run_agent(
         answer = response.text
         if not response.tool_calls:
             step_limit_hit = False
+            cut_off = response.response_metadata.get("stop_reason") == "max_tokens"
             break
         for call in response.tool_calls:
             arguments: dict[str, Any] = call["args"]
@@ -159,6 +162,7 @@ async def run_agent(
         tuple(not_connected),
         tuple(usage),
         step_limit_hit,
+        cut_off,
     )
 
 

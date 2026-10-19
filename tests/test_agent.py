@@ -196,6 +196,28 @@ async def test_the_step_limit_stops_a_model_that_keeps_calling_tools(
 
 
 @pytest.mark.anyio
+async def test_a_reply_cut_off_at_the_output_limit_ends_the_loop_and_is_reported(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    cut = AIMessage(content="The meeting is at", response_metadata={"stop_reason": "max_tokens"})
+    model = script(cut, answer("never asked for"))
+    result = await run(connections, [server_record(mcp_server)], model)
+    assert result.cut_off is True
+    assert result.step_limit_hit is False
+    assert result.answer == "The meeting is at"
+    assert len(result.usage) == 1
+
+
+@pytest.mark.anyio
+async def test_a_reply_that_ends_normally_is_not_cut_off(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    done = AIMessage(content="done", response_metadata={"stop_reason": "end_turn"})
+    result = await run(connections, [server_record(mcp_server)], script(done))
+    assert result.cut_off is False
+
+
+@pytest.mark.anyio
 async def test_usage_is_summed_with_cache_tokens(
     mcp_server: RunningServer, connections: OAuthConnections
 ) -> None:

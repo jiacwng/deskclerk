@@ -35,6 +35,7 @@ STEP_LIMIT = 20
 # WorkBench's reference loop retries a busy or failed model call up to 10 times.
 MODEL_RETRIES = 10
 USER = "bench"
+CUT_OFF_MESSAGE = "reply cut off at the output limit"
 PROVIDER_FAILURES = (anthropic.APIError, MCPError, httpx2.HTTPError)
 
 
@@ -88,7 +89,9 @@ async def run_task(worker: Worker, task: Task, text: WorkbenchText) -> dict[str,
                 blocked.append(
                     {"tool": call.tool, "arguments": call.arguments, "reason": call.reason}
                 )
-            if result.step_limit_hit:
+            if result.cut_off:
+                error = CUT_OFF_MESSAGE
+            elif result.step_limit_hit:
                 error = text.stopped_message
         except PROVIDER_FAILURES as failure:
             error = str(failure)

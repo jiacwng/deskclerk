@@ -1,4 +1,6 @@
 # Runs WorkBench's own reference agent loop, unchanged, on one split and writes one results file.
+# Two WorkBench functions are wrapped only to count tokens and to register the model; the loop,
+# the prompts and the tools are WorkBench's.
 import argparse
 import importlib
 import os

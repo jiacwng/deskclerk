@@ -129,6 +129,9 @@ function showCalls(result) {
   for (const name of result.not_connected) {
     calls.append(line(name + " is not connected, so its tools were not offered"));
   }
+  if (result.cut_off) {
+    calls.append(line("The reply was cut off at the output limit, so the answer above is incomplete"));
+  }
 }
 
 async function ask() {

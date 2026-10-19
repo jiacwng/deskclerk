@@ -26,6 +26,7 @@ import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage
 from langchain_core.messages.ai import UsageMetadata
 from pydantic import SecretStr
 
@@ -349,6 +350,19 @@ def test_an_ask_runs_the_agent_and_the_server_sees_the_write_under_that_employee
         other = ask(site, grace).json()
         assert other["not_connected"] == ["notes"]
         assert len(notes_server.notes) == 1
+
+
+def test_an_employee_is_told_when_the_reply_was_cut_off_at_the_output_limit(
+    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings)
+    cut = AIMessage(content="The meeting is at", response_metadata={"stop_reason": "max_tokens"})
+    ada = as_user(sign_token, "ada")
+    with web(settings, [], script(cut), token_signing_key, tmp_path) as site:
+        body = ask(site, ada).json()
+        page = site.client.get("/").text
+    assert (body["answer"], body["cut_off"]) == ("The meeting is at", True)
+    assert "cut off at the output limit" in page
 
 
 def test_asks_beyond_the_per_minute_quota_get_429_for_that_employee_only(

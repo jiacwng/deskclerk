@@ -80,7 +80,7 @@ def _verdicts(scored: pd.DataFrame, domain: str, has_error: pd.Series) -> pd.Dat
 
 
 def _score_results_file(metrics: Any, path: str, domain: str | None, version: str) -> pd.DataFrame:
-    results = pd.read_csv(path, dtype=str, engine="python", on_bad_lines="warn").fillna("")
+    results = pd.read_csv(path, dtype=str, engine="python", on_bad_lines="error").fillna("")
     domains = [domain] if domain else [d for d in DOMAINS if d in set(results["domain"])]
     frames = []
     for name in domains:
@@ -97,7 +97,7 @@ def _score_results_file(metrics: Any, path: str, domain: str | None, version: st
 def score_run(metrics: Any, name: str, path: str) -> ScoredRun:
     version = metrics.CURRENT_GROUND_TRUTH_VERSION
     tasks = _score_results_file(metrics, path, None, version)
-    results = pd.read_csv(path, dtype=str).fillna("")
+    results = pd.read_csv(path, dtype=str, engine="python", on_bad_lines="error").fillna("")
     return ScoredRun(name, tasks, float(results["cost_usd"].astype(float).sum()))
 
 
