@@ -19,6 +19,7 @@ dependencies = [
     "pydantic-settings>=2.16",
     "limits>=5.8",
     "mcp>=2.3",
+    "jsonschema>=4.26",
 ]
 
 [project.optional-dependencies]
@@ -46,6 +47,10 @@ files = ["src", "tests"]
 mypy_path = "src"
 strict = true
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = "jsonschema.*"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

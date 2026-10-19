@@ -16,7 +16,7 @@ from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 
 from mcp_server import RunningServer, running_mcp_server
-from needtoknow.agent import AgentResult, Verdict, allow_all, run_agent
+from needtoknow.agent import AgentResult, ProposedCall, Verdict, allow_all, run_agent
 from needtoknow.connections import OAuthConnections
 from needtoknow.servers import McpServer
 from test_connections import REDIRECT, connect, make_connections, server_record
@@ -64,12 +64,10 @@ class RecordingGate:
     def __init__(self, allowed: bool, reason: str = "") -> None:
         self.allowed = allowed
         self.reason = reason
-        self.asked: list[tuple[str, str, str, dict[str, Any]]] = []
+        self.asked: list[ProposedCall] = []
 
-    async def __call__(
-        self, request: str, server: str, tool: str, arguments: dict[str, Any]
-    ) -> Verdict:
-        self.asked.append((request, server, tool, arguments))
+    async def __call__(self, call: ProposedCall) -> Verdict:
+        self.asked.append(call)
         return Verdict(self.allowed, self.reason)
 
 
@@ -123,7 +121,14 @@ async def test_an_allowed_write_asks_the_gate_and_reaches_the_server(
     gate = RecordingGate(True)
     model = script(calls(("notes__write_note", {"text": "hi"})), answer("done"))
     result = await run(connections, [server_record(mcp_server)], model, gate)
-    assert gate.asked == [("save a note", "notes", "write_note", {"text": "hi"})]
+    [asked] = gate.asked
+    assert (asked.request, asked.server, asked.tool.name, asked.arguments) == (
+        "save a note",
+        "notes",
+        "write_note",
+        {"text": "hi"},
+    )
+    assert asked.observed == ()
     assert [note[1] for note in mcp_server.notes] == ["hi"]
     assert result.executed[0].result == "wrote hi"
     assert result.blocked == ()
@@ -222,4 +227,5 @@ async def test_a_server_without_sign_in_works_without_connecting(tmp_path: Path)
         result = await run(connections, [server], model, gate)
     assert result.not_connected == ()
     assert [call.result for call in result.executed] == ["the note", "wrote x"]
-    assert [tool for _, _, tool, _ in gate.asked] == ["write_note"]
+    assert [asked.tool.name for asked in gate.asked] == ["write_note"]
+    assert gate.asked[0].observed == ("the note",)
