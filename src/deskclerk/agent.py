@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from deskclerk.connections import NotConnected, OAuthConnections, ToolInfo
 from deskclerk.providers import Usage, usage_from
@@ -77,6 +77,7 @@ class _Tool:
 async def run_agent(
     user_id: str,
     request: str,
+    system: str,
     servers: list[McpServer],
     connections: OAuthConnections,
     model: BaseChatModel,
@@ -99,7 +100,7 @@ async def run_agent(
     if tools:
         chat_model = model.bind_tools([_tool_schema(name, tool) for name, tool in tools.items()])
 
-    messages: list[BaseMessage] = [HumanMessage(request)]
+    messages: list[BaseMessage] = [SystemMessage(system), HumanMessage(request)]
     executed: list[ExecutedCall] = []
     blocked: list[BlockedCall] = []
     usage: list[Usage] = []

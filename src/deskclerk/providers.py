@@ -13,6 +13,7 @@ from langchain_core.messages import AIMessage
 from deskclerk.config import Settings
 
 MAX_TOKENS = 16000
+EFFORT = "low"
 
 
 class BudgetExceeded(RuntimeError):
@@ -144,4 +145,4 @@ def chat_model(settings: Settings) -> BaseChatModel:
     name = settings.model.removeprefix("anthropic:")
     # Low effort keeps adaptive thinking short; thinking itself is left at the model's default
     # because some models refuse a request that turns it off.
-    return init_chat_model(name, model_provider="anthropic", max_tokens=MAX_TOKENS, effort="low")
+    return init_chat_model(name, model_provider="anthropic", max_tokens=MAX_TOKENS, effort=EFFORT)

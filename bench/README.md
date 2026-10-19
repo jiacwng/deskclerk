@@ -5,7 +5,7 @@ bench/ measures deskclerk's agent on WorkBench (olly-styles/WorkBench), a set of
 - `workbench.py`: the task files, the dev/test split, the date line WorkBench puts before every task, and the columns of a results file.
 - `workbench_server.py`: serves the WorkBench tools over MCP and logs each executed call in the format WorkBench's grader replays.
 - `run_reference.py`: runs WorkBench's own agent loop, unchanged, on one split.
-- `run_deskclerk.py`: runs deskclerk's agent loop on one split against the WorkBench MCP server, with the write gate set to none, rules or check.
+- `run_deskclerk.py`: runs deskclerk's agent loop on one split against the WorkBench MCP server, with the write gate set to none, rules or check, and with the settings the product uses: its system instructions (followed by WorkBench's date line and act-without-confirmation sentence), its output limit, its effort setting and its step limit.
 - `compare.py`: scores results files with WorkBench's own scorer and compares runs pairwise with an exact McNemar test.
 - `test_*.py`: tests for the files above. They need `WORKBENCH_PATH` and `SERVER_PYTHON` set (see below).
 - `requirements.txt`: what the bench virtualenv installs.
@@ -53,7 +53,7 @@ for gate in none rules check; do
 done
 ```
 
-Use `--split test` and the matching file names for the test split. The model defaults to `anthropic:claude-haiku-5-5`.
+Use `--split test` and the matching file names for the test split. The model defaults to `anthropic:claude-haiku-5-5`. The step limit is the default of `DESKCLERK_STEP_LIMIT`, and the task text is sent as the request with nothing added.
 
 Score and compare, here for dev:
 

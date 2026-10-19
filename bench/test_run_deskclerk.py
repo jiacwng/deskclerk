@@ -19,6 +19,7 @@ from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 
 from deskclerk.agent import Gate, ProposedCall, Verdict
+from deskclerk.config import Settings
 from deskclerk.connections import OAuthConnections
 from deskclerk.tokens import TokenStore
 from run_deskclerk import (
@@ -141,7 +142,9 @@ def test_the_step_limit_sets_the_stopped_error(
     model = ScriptedModel(messages=itertools.repeat(look))
     row = run(worker_for(url, connections, model, allow_everything), task, text)
     assert row["error"] == text.stopped_message
-    assert len(ast.literal_eval(row["function_calls"])) == 20
+    assert (
+        len(ast.literal_eval(row["function_calls"])) == Settings.model_fields["step_limit"].default
+    )
 
 
 def test_the_server_is_reset_between_tasks(

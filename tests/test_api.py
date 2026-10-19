@@ -15,6 +15,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -26,7 +27,7 @@ import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.messages.ai import UsageMetadata
 from pydantic import SecretStr
 
@@ -43,6 +44,7 @@ from deskclerk.api import (
 from deskclerk.auth import SigningKeyLookup, discover_jwks_url, jwks_signing_key
 from deskclerk.config import Settings
 from deskclerk.connections import OAuthConnections
+from deskclerk.instructions import system_prompt
 from deskclerk.servers import McpServer
 from deskclerk.tokens import TokenStore
 from deskclerk.writecheck import write_check
@@ -348,6 +350,21 @@ def test_an_ask_runs_the_agent_and_the_server_sees_the_write_under_that_employee
         other = ask(site, grace).json()
         assert other["not_connected"] == ["notes"]
         assert len(notes_server.notes) == 1
+
+
+def test_an_ask_gives_the_model_the_instructions_with_today_s_utc_date(
+    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings)
+    model = script(answer("ok"))
+    ada = as_user(sign_token, "ada")
+    days_around_the_call = {datetime.now(UTC).date()}
+    with web(settings, [], model, token_signing_key, tmp_path) as site:
+        assert ask(site, ada).status_code == 200
+    days_around_the_call.add(datetime.now(UTC).date())
+    sent = model.seen[0][0]
+    assert isinstance(sent, SystemMessage)
+    assert sent.content in {system_prompt(day) for day in days_around_the_call}
 
 
 def test_an_employee_is_told_when_the_reply_was_cut_off_at_the_output_limit(
