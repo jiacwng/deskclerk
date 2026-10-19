@@ -24,3 +24,24 @@ services:
       interval: 2s
       timeout: 5s
       retries: 60
+
+  # The web app on http://localhost:8000. It shares the host's network, so the issuer, the
+  # sign-in redirect and MCP servers on localhost keep the addresses the browser uses.
+  deskclerk:
+    build: .
+    network_mode: host
+    env_file: .env
+    volumes:
+      - type: bind
+        source: ./servers.toml
+        target: /app/servers.toml
+        read_only: true
+        bind:
+          create_host_path: false
+      - deskclerk-data:/app/data
+    depends_on:
+      keycloak:
+        condition: service_healthy
+
+volumes:
+  deskclerk-data:
