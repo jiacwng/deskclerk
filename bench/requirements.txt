@@ -1,4 +1,8 @@
 pandas==2.3.3
 numpy==1.26.4
 mcp==2.3.0
+openai==2.40.0
+tenacity==9.1.4
+httpx==0.28.1
+scipy==1.14.1
 pytest
