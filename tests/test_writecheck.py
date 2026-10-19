@@ -13,7 +13,7 @@ from typesafe_sdk import TypeSafeBadRequestError, TypeSafeClient
 from deskclerk.agent import ProposedCall, run_agent
 from deskclerk.connections import ToolInfo
 from deskclerk.jev import Jev, JevError, JevInputTooLong, jev_from_environment
-from deskclerk.writecheck import write_check
+from deskclerk.writecheck import jev_probability, write_check
 from mcp_server import running_mcp_server
 from test_agent import answer, calls, script
 from test_connections import REDIRECT, connect, make_connections, server_record
@@ -267,3 +267,13 @@ async def test_the_real_jev_separates_a_matching_call_from_a_mismatched_one() ->
     mismatched = proposed(WRITE_SCHEMA, {"text": "buy milk"}, False, "what is the weather today")
     assert (await gate(matching)).allowed
     assert not (await gate(mismatched)).allowed
+
+
+@pytest.mark.anyio
+async def test_jev_probability_returns_the_score_and_raises_when_it_cannot_judge() -> None:
+    call = proposed(WRITE_SCHEMA, {"text": "hi"}, observed=("r1",))
+    assert await jev_probability(as_jev(FakeJev(0.31)), call) == 0.31
+    with pytest.raises(JevError):
+        await jev_probability(as_jev(FakeJev(error="down")), call)
+    with pytest.raises(JevInputTooLong):
+        await jev_probability(as_jev(FakeJev(0.9, most_results=-1)), call)
