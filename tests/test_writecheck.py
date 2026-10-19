@@ -145,7 +145,7 @@ async def test_without_jev_only_the_deterministic_checks_run() -> None:
 @pytest.mark.anyio
 async def test_jev_is_asked_the_question_about_exactly_the_call() -> None:
     jev = FakeJev(0.9)
-    call = proposed(WRITE_SCHEMA, {"text": "hi"}, request="save hi")
+    call = proposed(WRITE_SCHEMA, {"text": "hi"}, request="save hi", observed=("n-1 groceries",))
     await write_check(as_jev(jev))(call)
     [(state, instructions)] = jev.asked
     assert state == {
@@ -153,6 +153,7 @@ async def test_jev_is_asked_the_question_about_exactly_the_call() -> None:
         "tool": "delete_note",
         "description": "Deletes a note",
         "arguments": {"text": "hi"},
+        "earlier_results": ["n-1 groceries"],
     }
     assert "without doing anything they did not ask for" in instructions
 

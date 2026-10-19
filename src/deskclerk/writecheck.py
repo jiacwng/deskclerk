@@ -80,6 +80,7 @@ async def _ask_jev(jev: Jev, call: ProposedCall) -> Verdict:
         "tool": call.tool.name,
         "description": call.tool.description,
         "arguments": call.arguments,
+        "earlier_results": list(call.observed),
     }
     try:
         probability = await asyncio.to_thread(jev.noul, state, QUESTION)
