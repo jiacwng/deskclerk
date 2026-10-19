@@ -27,4 +27,5 @@ jobs:
       - run: ruff format --check .
       - run: ruff check .
       - run: mypy
+      - run: docker compose up -d --wait keycloak
       - run: pytest

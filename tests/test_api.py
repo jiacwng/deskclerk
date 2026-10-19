@@ -10,10 +10,14 @@ import itertools
 import json
 import logging
 import re
+import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -27,7 +31,15 @@ from pydantic import SecretStr
 
 from mcp_server import RunningServer, running_mcp_server
 from needtoknow import cookies
-from needtoknow.api import CSRF_HEADER, CSRF_VALUE, SESSION_COOKIE, MissingSessionKey, create_app
+from needtoknow.api import (
+    BROWSER_AUTH_REFUSED,
+    CSRF_HEADER,
+    CSRF_VALUE,
+    LOGIN_COOKIE,
+    SESSION_COOKIE,
+    MissingSessionKey,
+    create_app,
+)
 from needtoknow.auth import SigningKeyLookup, discover_jwks_url, jwks_signing_key
 from needtoknow.config import Settings
 from needtoknow.connections import OAuthConnections
@@ -36,7 +48,7 @@ from needtoknow.tokens import TokenStore
 from test_agent import ScriptedModel, answer, calls, script
 from test_connections import REDIRECT
 
-SESSION_KEY = "a-session-key-of-some-length"
+SESSION_KEY = "a-session-key-of-at-least-32-characters"
 AUDIT_KEY = "an-audit-key"
 Sign = Callable[[dict[str, object]], str]
 
@@ -70,12 +82,58 @@ def web(
     model: BaseChatModel,
     signing_key: SigningKeyLookup,
     path: Path,
+    idp_transport: httpx.AsyncBaseTransport | None = None,
+    key: str | None = None,
 ) -> Iterator[Web]:
-    tokens = TokenStore(path / "tokens.sqlite", Fernet.generate_key().decode())
+    tokens = TokenStore(path / "tokens.sqlite", key or Fernet.generate_key().decode())
     connections = OAuthConnections(tokens, REDIRECT, "needtoknow test", 600)
-    app = create_app(settings, servers, connections, tokens, model, signing_key)
+    app = create_app(
+        settings, servers, connections, tokens, model, signing_key, idp_transport=idp_transport
+    )
     with TestClient(app) as client:
         yield Web(client, tokens)
+
+
+class FakeIdp:
+    def __init__(self, issuer: str, access_token: str) -> None:
+        self.issuer = issuer
+        self.access_token = access_token
+        self.discovery_calls = 0
+        self.token_calls: list[dict[str, str]] = []
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/.well-known/openid-configuration"):
+            self.discovery_calls += 1
+            return httpx.Response(
+                200,
+                json={
+                    "authorization_endpoint": f"{self.issuer}/auth",
+                    "token_endpoint": f"{self.issuer}/token",
+                },
+            )
+        assert request.url.path.endswith("/token")
+        form = parse_qs(request.content.decode())
+        self.token_calls.append({name: values[0] for name, values in form.items()})
+        return httpx.Response(200, json={"access_token": self.access_token})
+
+    @property
+    def transport(self) -> httpx.MockTransport:
+        return httpx.MockTransport(self.handle)
+
+
+class SlowModel(ScriptedModel):
+    def _generate(self, *args: Any, **kwargs: Any) -> Any:
+        time.sleep(0.3)
+        return super()._generate(*args, **kwargs)
+
+
+def begin_sign_in(site: Web) -> tuple[str, str, str]:
+    start = site.client.get("/login", follow_redirects=False)
+    assert start.status_code == 302
+    query = parse_qs(urlparse(start.headers["location"]).query)
+    pending = cookies.unsign(SESSION_KEY.encode(), "login", site.client.cookies[LOGIN_COOKIE])
+    assert pending is not None
+    return query["state"][0], pending["verifier"], query["code_challenge"][0]
 
 
 def notes(running: RunningServer) -> McpServer:
@@ -496,3 +554,164 @@ def test_an_employee_signs_in_through_keycloak_and_asks(tmp_path: Path) -> None:
         assert site.client.get("/me").json() == {"user": "analyst"}
         asked = ask(site, {CSRF_HEADER: CSRF_VALUE})
         assert asked.json()["answer"] == "hello analyst"
+
+
+def test_a_wrong_state_with_a_valid_login_cookie_never_reaches_the_token_endpoint(
+    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings)
+    idp = FakeIdp(settings.issuer, sign_token({}))
+    with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
+        begin_sign_in(site)
+        forged = site.client.get("/login/callback?code=c&state=forged", follow_redirects=False)
+        assert forged.status_code == 400
+        assert idp.token_calls == []
+        assert site.client.get("/me").status_code == 401
+
+
+def test_the_code_verifier_sent_to_the_token_endpoint_is_the_one_in_the_login_cookie(
+    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings)
+    idp = FakeIdp(settings.issuer, sign_token({}))
+    with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
+        state, verifier, challenge = begin_sign_in(site)
+        done = site.client.get(f"/login/callback?code=c&state={state}", follow_redirects=False)
+        assert done.status_code == 303
+    assert len(idp.token_calls) == 1
+    sent = idp.token_calls[0]
+    assert (sent["code"], sent["code_verifier"]) == ("c", verifier)
+    digest = hashlib.sha256(verifier.encode()).digest()
+    assert challenge == base64.urlsafe_b64encode(digest).decode().rstrip("=")
+
+
+def test_the_session_ends_when_the_access_token_does(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = make_settings(token_settings, session_hours=8)
+    idp = FakeIdp(settings.issuer, sign_token({"exp": int(time.time()) + 5}))
+    with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
+        state, _, _ = begin_sign_in(site)
+        site.client.get(f"/login/callback?code=c&state={state}", follow_redirects=False)
+        assert site.client.get("/me").json() == {"user": "district-1"}
+        now = time.time()
+        monkeypatch.setattr(cookies, "time", SimpleNamespace(time=lambda: now + 10))
+        assert site.client.get("/me").status_code == 401
+
+
+def test_a_refused_access_token_gives_a_fixed_message_on_the_browser_path(
+    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings)
+    idp = FakeIdp(settings.issuer, sign_token({"aud": "another-service"}))
+    with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
+        state, _, _ = begin_sign_in(site)
+        refused = site.client.get(f"/login/callback?code=c&state={state}", follow_redirects=False)
+    assert (refused.status_code, refused.json()["detail"]) == (401, BROWSER_AUTH_REFUSED)
+
+
+def test_the_discovery_document_is_fetched_once_per_process(
+    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings)
+    idp = FakeIdp(settings.issuer, sign_token({}))
+    with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
+        state, _, _ = begin_sign_in(site)
+        begin_sign_in(site)
+        site.client.get(f"/login/callback?code=c&state={state}", follow_redirects=False)
+    assert idp.discovery_calls == 1
+
+
+def test_one_ask_at_a_time_per_employee_so_the_cap_cannot_be_raced(
+    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(
+        token_settings, price_input=1_000_000.0, price_output=1_000_000.0, budget_usd=1.0
+    )
+    one_token = UsageMetadata(input_tokens=1, output_tokens=0, total_tokens=1)
+    model = SlowModel(messages=itertools.repeat(answer("ok", usage=one_token)))
+    ada = as_user(sign_token, "ada")
+    statuses: list[int] = []
+    with web(settings, [], model, token_signing_key, tmp_path) as site:
+        threads = [
+            threading.Thread(target=lambda: statuses.append(ask(site, ada).status_code))
+            for _ in range(2)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    assert sorted(statuses) == [200, 402]
+
+
+def test_an_mcp_server_that_stopped_gives_502_and_an_upstream_error_line(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="needtoknow.audit")
+    settings = make_settings(token_settings)
+    ada = as_user(sign_token, "ada")
+    key = Fernet.generate_key().decode()
+    with running_mcp_server(REDIRECT) as running:
+        with web(
+            settings, [notes(running)], script(), token_signing_key, tmp_path, key=key
+        ) as site:
+            connect(site, ada)
+        stopped = notes(running)
+    model = script(answer("x"))
+    with web(settings, [stopped], model, token_signing_key, tmp_path, key=key) as site:
+        response = ask(site, ada)
+    assert response.status_code == 502
+    outcomes = [line["outcome"] for line in audit_lines(caplog) if line["entry"] == "ask"]
+    assert outcomes == ["upstream_error"]
+
+
+def test_a_server_that_refuses_the_sign_in_cancels_the_pending_connection(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(token_settings)
+    ada = as_user(sign_token, "ada")
+    with web(settings, [notes(notes_server)], script(), token_signing_key, tmp_path) as site:
+        started = start_connect(site, ada)
+        refused = site.client.get(
+            "/oauth/callback",
+            params={"state": started["state"], "error": "access_denied"},
+            headers=ada,
+            follow_redirects=False,
+        )
+        assert refused.status_code == 400
+        late = site.client.get(
+            "/oauth/callback", params=started, headers=ada, follow_redirects=False
+        )
+        assert late.status_code == 400
+        assert site.tokens.get("ada", "notes", "tokens") is None
+
+
+def test_disconnecting_cancels_a_pending_connection_to_that_server(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(token_settings)
+    ada = as_user(sign_token, "ada")
+    with web(settings, [notes(notes_server)], script(), token_signing_key, tmp_path) as site:
+        started = start_connect(site, ada)
+        assert site.client.post("/servers/notes/disconnect", headers=ada).status_code == 204
+        late = site.client.get(
+            "/oauth/callback", params=started, headers=ada, follow_redirects=False
+        )
+        assert late.status_code == 400
+        assert site.tokens.get("ada", "notes", "tokens") is None

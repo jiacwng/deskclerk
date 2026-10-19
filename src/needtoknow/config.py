@@ -9,6 +9,8 @@ from typing import Any
 from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+MIN_SESSION_KEY_CHARS = 32
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="NEEDTOKNOW_", frozen=True)
@@ -70,6 +72,15 @@ class Settings(BaseSettings):
                 "set both NEEDTOKNOW_PRICE_INPUT and NEEDTOKNOW_PRICE_OUTPUT or neither"
             )
         return self
+
+    @field_validator("session_key")
+    @classmethod
+    def _session_key_is_long(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None and len(value.get_secret_value()) < MIN_SESSION_KEY_CHARS:
+            raise ValueError(
+                f"NEEDTOKNOW_SESSION_KEY needs at least {MIN_SESSION_KEY_CHARS} characters"
+            )
+        return value
 
     @field_validator("model")
     @classmethod

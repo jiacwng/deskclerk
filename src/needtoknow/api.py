@@ -2,6 +2,7 @@
 # connects their MCP servers and asks the agent. Browsers hold a signed session cookie; other
 # clients send a bearer token. Every dependency is passed to create_app.
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -13,12 +14,15 @@ from typing import Any
 
 import httpx
 import httpx2
+import jwt
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, RedirectResponse
 from langchain_core.language_models import BaseChatModel
-from mcp.client.auth import OAuthFlowError, OAuthRegistrationError, OAuthTokenError
+from mcp.client.auth import OAuthFlowError
+from mcp.client.streamable_http import StreamableHTTPError
+from mcp.shared.exceptions import MCPError
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.concurrency import run_in_threadpool
 
 from needtoknow import cookies, oidc
 from needtoknow.agent import allow_all, run_agent
@@ -29,6 +33,7 @@ from needtoknow.connections import (
     AlreadyConnected,
     FlowExpired,
     NoSignInNeeded,
+    NotConnected,
     OAuthConnections,
     UnknownState,
     WrongUser,
@@ -56,7 +61,14 @@ CONNECT_ERRORS: dict[type[Exception], int] = {
     AlreadyConnected: 409,
     NoSignInNeeded: 400,
 }
-UPSTREAM_ERRORS = (httpx2.HTTPError, OAuthFlowError, OAuthTokenError, OAuthRegistrationError)
+UPSTREAM_ERRORS = (
+    NotConnected,
+    MCPError,
+    StreamableHTTPError,
+    OAuthFlowError,
+    httpx2.HTTPError,
+)
+BROWSER_AUTH_REFUSED = "the login server's access token was refused"
 
 
 class MissingSessionKey(RuntimeError):
@@ -118,6 +130,10 @@ def _session_payload(identity: Identity) -> dict[str, Any]:
     }
 
 
+def _token_expiry(token: str) -> int:
+    return int(jwt.decode(token, options={"verify_signature": False})["exp"])
+
+
 def _identity_from(payload: dict[str, Any]) -> Identity | None:
     try:
         return Identity(
@@ -153,6 +169,7 @@ def create_app(
     model: BaseChatModel,
     signing_key: SigningKeyLookup,
     graph: GraphGroups | None = None,
+    idp_transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
     if settings.session_key is None:
         raise MissingSessionKey("NEEDTOKNOW_SESSION_KEY is not set; put it in .env")
@@ -163,6 +180,8 @@ def create_app(
     quota = Quota(settings.requests_per_minute)
     audit = Audit(settings.audit_text, settings.audit_key)
     spendings: dict[str, Spending] = {}
+    ask_locks: dict[str, asyncio.Lock] = {}
+    discovered: dict[str, oidc.Endpoints] = {}
     model_errors: tuple[type[Exception], ...] = (*provider_errors(), *UPSTREAM_ERRORS)
     server_by_name = {server.name: server for server in servers}
     page = resources.files("needtoknow").joinpath("static/index.html").read_text(encoding="utf-8")
@@ -207,18 +226,25 @@ def create_app(
             raise HTTPException(404, f"no server named {name}")
         return server
 
+    def idp_client() -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=idp_transport, timeout=oidc.TIMEOUT_SECONDS)
+
+    async def endpoints() -> oidc.Endpoints:
+        if "endpoints" not in discovered:
+            async with idp_client() as client:
+                try:
+                    discovered["endpoints"] = await oidc.discover(settings, client)
+                except AuthUnavailable:
+                    raise HTTPException(503, "the login server cannot be reached") from None
+        return discovered["endpoints"]
+
     @app.get("/", response_class=HTMLResponse)
     async def index() -> HTMLResponse:
         return HTMLResponse(page, headers=page_headers)
 
     @app.get("/login")
     async def login() -> Response:
-        async with httpx.AsyncClient(timeout=oidc.TIMEOUT_SECONDS) as client:
-            try:
-                endpoints = await oidc.discover(settings, client)
-            except AuthUnavailable:
-                raise HTTPException(503, "the login server cannot be reached") from None
-        begun = oidc.start(settings, endpoints)
+        begun = oidc.start(settings, await endpoints())
         pending = {"state": begun.state, "verifier": begun.verifier}
         value = cookies.sign(session_key, "login", pending, LOGIN_LIFETIME_SECONDS)
         response = RedirectResponse(begun.url, status_code=302)
@@ -242,11 +268,11 @@ def create_app(
             raise HTTPException(400, SIGN_IN_FAILED)
         if not hmac.compare_digest(str(pending.get("state", "")).encode(), state.encode()):
             raise HTTPException(400, SIGN_IN_FAILED)
-        async with httpx.AsyncClient(timeout=oidc.TIMEOUT_SECONDS) as client:
+        found = await endpoints()
+        async with idp_client() as client:
             try:
-                endpoints = await oidc.discover(settings, client)
                 verifier = str(pending.get("verifier", ""))
-                token = await oidc.exchange_code(settings, endpoints, client, code, verifier)
+                token = await oidc.exchange_code(settings, found, client, code, verifier)
             except oidc.SignInRefused:
                 raise HTTPException(400, SIGN_IN_FAILED) from None
             except AuthUnavailable:
@@ -255,17 +281,20 @@ def create_app(
             identity = await run_in_threadpool(
                 authenticate, token, settings, signing_key, settings.audience, graph
             )
-        except AuthError as error:
-            raise HTTPException(401, str(error)) from None
+        except AuthError:
+            raise HTTPException(401, BROWSER_AUTH_REFUSED) from None
         except AuthUnavailable:
             raise HTTPException(503, "the login server cannot be reached") from None
-        session = cookies.sign(session_key, "session", _session_payload(identity), session_seconds)
+        lifetime = min(session_seconds, _token_expiry(token) - int(time.time()))
+        if lifetime <= 0:
+            raise HTTPException(401, BROWSER_AUTH_REFUSED)
+        session = cookies.sign(session_key, "session", _session_payload(identity), lifetime)
         response = RedirectResponse("/", status_code=303)
         response.delete_cookie(LOGIN_COOKIE, path="/login")
         response.set_cookie(
             SESSION_COOKIE,
             session,
-            session_seconds,
+            lifetime,
             path="/",
             httponly=True,
             samesite="lax",
@@ -291,7 +320,7 @@ def create_app(
                 name=server.name,
                 url=server.url,
                 connected=server.auth == "none"
-                or tokens.get(user, server.name, "tokens") is not None,
+                or await run_in_threadpool(tokens.get, user, server.name, "tokens") is not None,
             )
             for server in servers
         ]
@@ -309,14 +338,21 @@ def create_app(
 
     @app.get("/oauth/callback")
     async def oauth_callback(
-        state: str, code: str | None = None, who: Caller = Depends(caller)
+        state: str,
+        code: str | None = None,
+        error: str | None = None,
+        who: Caller = Depends(caller),
     ) -> Response:
-        if code is None:
-            raise HTTPException(400, "the server did not send a code")
+        if error is not None or code is None:
+            try:
+                connections.cancel(who.identity.user_id, state)
+            except tuple(CONNECT_ERRORS) as refused:
+                raise HTTPException(CONNECT_ERRORS[type(refused)], str(refused)) from None
+            raise HTTPException(400, "the server did not give access, so nothing was connected")
         try:
             server_name = await connections.complete(who.identity.user_id, state, code)
-        except tuple(CONNECT_ERRORS) as error:
-            raise HTTPException(CONNECT_ERRORS[type(error)], str(error)) from None
+        except tuple(CONNECT_ERRORS) as failure:
+            raise HTTPException(CONNECT_ERRORS[type(failure)], str(failure)) from None
         except UPSTREAM_ERRORS:
             raise HTTPException(502, "the server did not accept the sign-in") from None
         audit.connection(who.identity, "connect", server_name)
@@ -325,7 +361,8 @@ def create_app(
     @app.post("/servers/{name}/disconnect", status_code=204)
     async def disconnect(name: str, who: Caller = Depends(posting_caller)) -> Response:
         server = known_server(name)
-        tokens.delete_tokens(who.identity.user_id, server.name)
+        connections.cancel_for(who.identity.user_id, server.name)
+        await run_in_threadpool(tokens.delete_tokens, who.identity.user_id, server.name)
         audit.connection(who.identity, "disconnect", server.name)
         return Response(status_code=204)
 
@@ -338,26 +375,33 @@ def create_app(
             raise HTTPException(
                 429, f"at most {settings.requests_per_minute} asks a minute", {"Retry-After": "60"}
             )
-        spending = spendings.setdefault(identity.user_id, Spending(price, settings.budget_usd))
-        try:
-            spending.check()
-        except BudgetExceeded as error:
-            audit.asked(identity, body.request, started, "over_budget", None, 0.0)
-            raise HTTPException(402, str(error)) from None
-        try:
-            result = await run_agent(
-                identity.user_id,
-                body.request,
-                servers,
-                connections,
-                model,
-                allow_all,
-                settings.step_limit,
-            )
-        except model_errors:
-            audit.asked(identity, body.request, started, "upstream_error", None, 0.0)
-            raise HTTPException(502, "the model or an MCP server did not answer") from None
-        spending.record(result.total_usage)
+        async with ask_locks.setdefault(identity.user_id, asyncio.Lock()):
+            spending = spendings.setdefault(identity.user_id, Spending(price, settings.budget_usd))
+            try:
+                spending.check()
+            except BudgetExceeded as error:
+                audit.asked(identity, body.request, started, "over_budget", None, 0.0)
+                raise HTTPException(402, str(error)) from None
+            result = None
+            try:
+                result = await run_agent(
+                    identity.user_id,
+                    body.request,
+                    servers,
+                    connections,
+                    model,
+                    allow_all,
+                    settings.step_limit,
+                )
+            except model_errors:
+                raise upstream_failure(identity, body.request, started) from None
+            except BaseExceptionGroup as group:
+                if group.subgroup(model_errors) is None:
+                    raise
+                raise upstream_failure(identity, body.request, started) from None
+            finally:
+                if result is not None:
+                    spending.record(result.total_usage)
         cost = price.cost(result.total_usage)
         audit.asked(identity, body.request, started, "answered", result, cost)
         return AskOut(
@@ -368,5 +412,9 @@ def create_app(
             step_limit_hit=result.step_limit_hit,
             cost_usd=cost,
         )
+
+    def upstream_failure(identity: Identity, request: str, started: float) -> HTTPException:
+        audit.asked(identity, request, started, "upstream_error", None, 0.0)
+        return HTTPException(502, "the model or an MCP server did not answer")
 
     return app
