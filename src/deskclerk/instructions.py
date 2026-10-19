@@ -1,5 +1,4 @@
-# The standing instructions the agent gets before every request, and the line that gives it the
-# date. Without them the model has no rules and does not know what day it is.
+# The standing instructions the agent gets before every request, with today's date.
 
 from datetime import date
 
