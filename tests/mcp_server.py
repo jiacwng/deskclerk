@@ -1,5 +1,6 @@
 # A real MCP server with OAuth for the tests: the SDK's server side on a free localhost port,
-# an authorization server that approves every request, one read tool and one write tool.
+# an authorization server that approves every request, a read tool, a write tool and a tool
+# that fails. With oauth=False it has no sign-in at all.
 
 import secrets
 import socket
@@ -23,6 +24,7 @@ from mcp.server.auth.provider import (
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
 from mcp.server.mcpserver import MCPServer
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+from mcp.types import ToolAnnotations
 
 PRESET_CLIENT_ID = "admin-registered"
 PRESET_CLIENT_SECRET = "admin-secret"  # noqa: S105
@@ -131,34 +133,40 @@ class RunningServer:
 
 
 @contextmanager
-def running_mcp_server(redirect_url: str) -> Iterator[RunningServer]:
+def running_mcp_server(redirect_url: str, oauth: bool = True) -> Iterator[RunningServer]:
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     base = f"http://127.0.0.1:{sock.getsockname()[1]}"
     provider = ApprovingProvider(redirect_url)
     running = RunningServer(f"{base}/mcp", redirect_url, provider)
 
-    mcp = MCPServer(
-        "notes",
-        auth_server_provider=provider,
-        auth=AuthSettings(
-            issuer_url=base,
-            resource_server_url=f"{base}/mcp",
-            validate_token_resource=True,
-            client_registration_options=ClientRegistrationOptions(enabled=True),
-        ),
-    )
+    if oauth:
+        mcp = MCPServer(
+            "notes",
+            auth_server_provider=provider,
+            auth=AuthSettings(
+                issuer_url=base,
+                resource_server_url=f"{base}/mcp",
+                validate_token_resource=True,
+                client_registration_options=ClientRegistrationOptions(enabled=True),
+            ),
+        )
+    else:
+        mcp = MCPServer("notes")
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
     def read_note() -> str:
         return "the note"
 
     @mcp.tool()
     def write_note(text: str) -> str:
         access = get_access_token()
-        assert access is not None
-        running.notes.append((access.token, text))
+        running.notes.append((access.token if access else "", text))
         return f"wrote {text}"
+
+    @mcp.tool()
+    def break_note() -> str:
+        raise ValueError("the note is locked")
 
     server = uvicorn.Server(uvicorn.Config(mcp.streamable_http_app(), log_level="warning"))
     thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]})
