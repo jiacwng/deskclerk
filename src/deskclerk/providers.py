@@ -15,7 +15,7 @@ from langchain_core.messages import AIMessage
 
 from deskclerk.config import Settings
 
-MAX_TOKENS = 4096
+MAX_TOKENS = 16000
 EXTRAS = frozenset({"openai", "ollama"})
 KEY_VARIABLES = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 

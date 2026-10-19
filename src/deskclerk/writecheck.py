@@ -11,7 +11,7 @@ from jsonschema.exceptions import best_match
 from jsonschema.validators import validator_for
 
 from deskclerk.agent import Gate, ProposedCall, Verdict
-from deskclerk.jev import Jev, JevError
+from deskclerk.jev import Jev, JevError, JevInputTooLong
 
 QUESTION = (
     "Does this tool call do what the employee asked for, "
@@ -75,16 +75,24 @@ def _identifiers(call: ProposedCall) -> dict[str, str]:
 
 
 async def _ask_jev(jev: Jev, call: ProposedCall) -> Verdict:
-    state = {
-        "request": call.request,
-        "tool": call.tool.name,
-        "description": call.tool.description,
-        "arguments": call.arguments,
-    }
-    try:
-        probability = await asyncio.to_thread(jev.noul, state, QUESTION)
-    except JevError as error:
-        return Verdict(False, f"Jev check failed closed: {error}")
+    earlier_results = list(call.observed)
+    while True:
+        state = {
+            "request": call.request,
+            "tool": call.tool.name,
+            "description": call.tool.description,
+            "arguments": call.arguments,
+            "earlier_results": earlier_results,
+        }
+        try:
+            probability = await asyncio.to_thread(jev.noul, state, QUESTION)
+            break
+        except JevInputTooLong as error:
+            if not earlier_results:
+                return Verdict(False, f"Jev check failed closed: {error}")
+            earlier_results = earlier_results[(len(earlier_results) + 1) // 2 :]
+        except JevError as error:
+            return Verdict(False, f"Jev check failed closed: {error}")
     if probability < THRESHOLD:
         return Verdict(False, f"Jev check: the call does not match the request ({probability:.2f})")
     return Verdict(True, f"Jev check passed ({probability:.2f})")

@@ -112,6 +112,7 @@ class AskOut(BaseModel):
     blocked: list[BlockedOut]
     not_connected: list[str]
     step_limit_hit: bool
+    cut_off: bool
     cost_usd: float
 
 
@@ -411,6 +412,7 @@ def create_app(
             blocked=[BlockedOut(**vars(call)) for call in result.blocked],
             not_connected=list(result.not_connected),
             step_limit_hit=result.step_limit_hit,
+            cut_off=result.cut_off,
             cost_usd=cost,
         )
 

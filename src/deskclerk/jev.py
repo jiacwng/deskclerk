@@ -7,7 +7,13 @@ import os
 import threading
 from typing import Any
 
-from typesafe_sdk import Noul, NoulCriteria, TypeSafeClient, TypeSafeError
+from typesafe_sdk import (
+    Noul,
+    NoulCriteria,
+    TypeSafeBadRequestError,
+    TypeSafeClient,
+    TypeSafeError,
+)
 
 MODEL = "jev-1.13.0"
 # TypeSafe bills input tokens only.
@@ -15,6 +21,10 @@ PRICE_PER_INPUT_TOKEN = 0.042 / 1_000_000
 
 
 class JevError(RuntimeError):
+    pass
+
+
+class JevInputTooLong(JevError):
     pass
 
 
@@ -37,6 +47,10 @@ class Jev:
         question = Noul(instructions=instructions, criteria=criteria)
         try:
             response = self._client.system_one(state, {"answer": question}, model=MODEL)
+        except TypeSafeBadRequestError as error:
+            if "max_tokens_exceeded" in str(error.body):
+                raise JevInputTooLong(f"Jev refused the state as too long: {error}") from None
+            raise JevError(f"Jev failed: {error}") from None
         except TypeSafeError as error:
             raise JevError(f"Jev failed: {error}") from None
         with self._lock:

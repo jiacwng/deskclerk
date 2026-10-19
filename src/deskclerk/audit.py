@@ -44,6 +44,7 @@ class Audit:
                 "blocked": [] if result is None else [self._blocked(c) for c in result.blocked],
                 "not_connected": [] if result is None else list(result.not_connected),
                 "step_limit_hit": False if result is None else result.step_limit_hit,
+                "cut_off": False if result is None else result.cut_off,
                 "input_tokens": 0 if result is None else result.total_usage.input_tokens,
                 "output_tokens": 0 if result is None else result.total_usage.output_tokens,
                 "cost_usd": cost_usd,
