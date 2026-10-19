@@ -6,6 +6,8 @@ from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
+import anthropic
+import httpx2
 import pytest
 from cryptography.fernet import Fernet
 from langchain_core.language_models import BaseChatModel
@@ -16,8 +18,9 @@ from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 
 from mcp_server import RunningServer, running_mcp_server
-from needtoknow.agent import AgentResult, ProposedCall, Verdict, allow_all, run_agent
+from needtoknow.agent import AgentResult, ProposedCall, Verdict, run_agent
 from needtoknow.connections import OAuthConnections
+from needtoknow.providers import Usage
 from needtoknow.servers import McpServer
 from test_connections import REDIRECT, connect, make_connections, server_record
 
@@ -39,6 +42,15 @@ class ScriptedModel(GenericFakeChatModel):
     def _generate(self, messages: list[BaseMessage], *args: Any, **kwargs: Any) -> Any:
         self.seen.append(list(messages))
         return super()._generate(messages, *args, **kwargs)
+
+
+class ProviderGoneAfterScript(ScriptedModel):
+    def _generate(self, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return super()._generate(*args, **kwargs)
+        except StopIteration:
+            request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+            raise anthropic.APIConnectionError(request=request) from None
 
 
 def script(*replies: AIMessage) -> ScriptedModel:
@@ -92,7 +104,14 @@ async def run(
     step_limit: int = 5,
 ) -> AgentResult:
     return await run_agent(
-        "ada", "save a note", servers, connections, model, gate or allow_all, step_limit
+        "ada",
+        "save a note",
+        servers,
+        connections,
+        model,
+        gate or RecordingGate(True),
+        step_limit,
+        lambda usage: None,
     )
 
 
@@ -198,6 +217,27 @@ async def test_usage_is_summed_with_cache_tokens(
     assert (total.input_tokens, total.output_tokens) == (250, 30)
     assert (total.cache_read_tokens, total.cache_write_tokens) == (60, 60)
     assert len(result.usage) == 2
+
+
+@pytest.mark.anyio
+async def test_usage_billed_before_a_provider_failure_is_recorded(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    billed: list[Usage] = []
+    first = UsageMetadata(input_tokens=7, output_tokens=3, total_tokens=10)
+    model = ProviderGoneAfterScript(messages=iter([calls(("notes__read_note", {}), usage=first)]))
+    with pytest.raises(anthropic.APIConnectionError):
+        await run_agent(
+            "ada",
+            "read my note",
+            [server_record(mcp_server)],
+            connections,
+            model,
+            RecordingGate(True),
+            5,
+            billed.append,
+        )
+    assert [(usage.input_tokens, usage.output_tokens) for usage in billed] == [(7, 3)]
 
 
 @pytest.mark.anyio

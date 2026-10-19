@@ -65,6 +65,7 @@ class ToolResult:
 @dataclass
 class _PendingFlow:
     user_id: str
+    server_name: str
     code: asyncio.Future[AuthorizationCodeResult]
     task: asyncio.Task[None]
     deadline: float
@@ -118,7 +119,7 @@ class OAuthConnections:
         async def redirect_handler(url: str) -> None:
             state = parse_qs(urlparse(url).query)["state"][0]
             self._pending[state] = _PendingFlow(
-                user_id, code, task, loop.time() + self._flow_timeout_seconds
+                user_id, server.name, code, task, loop.time() + self._flow_timeout_seconds
             )
             authorization_url.set_result(url)
 
@@ -145,7 +146,7 @@ class OAuthConnections:
         task.result()
         raise AlreadyConnected(f"{user_id} is already connected to {server.name}")
 
-    async def complete(self, user_id: str, state: str, code: str) -> None:
+    async def complete(self, user_id: str, state: str, code: str) -> str:
         flow = self._pending.get(state)
         if flow is None:
             raise UnknownState("no connection is waiting for this state")
@@ -157,6 +158,22 @@ class OAuthConnections:
             raise FlowExpired("the connection was not finished in time")
         flow.code.set_result(AuthorizationCodeResult(code=code, state=state))
         await flow.task
+        return flow.server_name
+
+    def cancel(self, user_id: str, state: str) -> None:
+        flow = self._pending.get(state)
+        if flow is None:
+            raise UnknownState("no connection is waiting for this state")
+        if flow.user_id != user_id:
+            raise WrongUser("this connection was started by another employee")
+        del self._pending[state]
+        flow.task.cancel()
+
+    def cancel_for(self, user_id: str, server_name: str) -> None:
+        for state, flow in list(self._pending.items()):
+            if flow.user_id == user_id and flow.server_name == server_name:
+                del self._pending[state]
+                flow.task.cancel()
 
     def _drop_expired_flows(self, now: float) -> None:
         for state, flow in list(self._pending.items()):

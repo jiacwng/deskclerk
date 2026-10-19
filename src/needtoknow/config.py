@@ -1,12 +1,15 @@
 # Settings read from NEEDTOKNOW_* environment variables by pydantic-settings: how employees sign
 # in, the Entra ID Graph credentials, the model and its prices, the budget, the audit log and the
-# request quota, the MCP server list and the encrypted store of each employee's MCP tokens.
+# request quota, the MCP server list, the encrypted store of each employee's MCP tokens and the
+# address and session of the web front.
 
 from pathlib import Path
 from typing import Any
 
 from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+MIN_SESSION_KEY_CHARS = 32
 
 
 class Settings(BaseSettings):
@@ -30,6 +33,7 @@ class Settings(BaseSettings):
     price_input: float | None = None
     price_output: float | None = None
     budget_usd: float = 2.0
+    jev_budget_usd: float = 1.0
     audit_text: bool = False
     audit_key: SecretStr | None = None
     requests_per_minute: int = 20
@@ -38,6 +42,12 @@ class Settings(BaseSettings):
     token_key: SecretStr | None = None
     redirect_url: str = "http://localhost:8000/oauth/callback"
     mcp_client_name: str = "needtoknow"
+    step_limit: int = 8
+    host: str = "127.0.0.1"
+    port: int = 8000
+    sign_in_redirect_url: str = "http://localhost:8000/login/callback"
+    session_key: SecretStr | None = None
+    session_hours: int = 8
 
     @model_validator(mode="before")
     @classmethod
@@ -63,6 +73,15 @@ class Settings(BaseSettings):
                 "set both NEEDTOKNOW_PRICE_INPUT and NEEDTOKNOW_PRICE_OUTPUT or neither"
             )
         return self
+
+    @field_validator("session_key")
+    @classmethod
+    def _session_key_is_long(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None and len(value.get_secret_value()) < MIN_SESSION_KEY_CHARS:
+            raise ValueError(
+                f"NEEDTOKNOW_SESSION_KEY needs at least {MIN_SESSION_KEY_CHARS} characters"
+            )
+        return value
 
     @field_validator("model")
     @classmethod

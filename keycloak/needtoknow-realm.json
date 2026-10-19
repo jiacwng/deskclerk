@@ -126,8 +126,8 @@
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
       "redirectUris": [
-        "http://localhost:8000/",
-        "http://127.0.0.1:8000/"
+        "http://localhost:8000/login/callback",
+        "http://127.0.0.1:8000/login/callback"
       ],
       "attributes": {
         "pkce.code.challenge.method": "S256"

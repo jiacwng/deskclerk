@@ -31,10 +31,6 @@ class ProposedCall:
 Gate = Callable[[ProposedCall], Awaitable[Verdict]]
 
 
-async def allow_all(call: ProposedCall) -> Verdict:
-    return Verdict(True, "no write check is configured")
-
-
 @dataclass(frozen=True)
 class ExecutedCall:
     server: str
@@ -85,6 +81,7 @@ async def run_agent(
     model: BaseChatModel,
     gate: Gate,
     step_limit: int,
+    record_usage: Callable[[Usage], None],
 ) -> AgentResult:
     tools: dict[str, _Tool] = {}
     not_connected: list[str] = []
@@ -110,7 +107,9 @@ async def run_agent(
     for _ in range(step_limit):
         response: AIMessage = await chat_model.ainvoke(messages)
         messages.append(response)
-        usage.append(usage_from(response))
+        step_usage = usage_from(response)
+        usage.append(step_usage)
+        record_usage(step_usage)
         answer = response.text
         if not response.tool_calls:
             step_limit_hit = False
