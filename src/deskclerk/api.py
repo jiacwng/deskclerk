@@ -9,6 +9,7 @@ import hmac
 import re
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from importlib import resources
 from typing import Any
 
@@ -39,6 +40,7 @@ from deskclerk.connections import (
     UnknownState,
     WrongUser,
 )
+from deskclerk.instructions import system_prompt
 from deskclerk.providers import BudgetExceeded, Spending, price_of
 from deskclerk.quota import Quota
 from deskclerk.servers import McpServer
@@ -384,6 +386,7 @@ def create_app(
                 result = await run_agent(
                     identity.user_id,
                     body.request,
+                    system_prompt(datetime.now(UTC).date()),
                     servers,
                     connections,
                     model,

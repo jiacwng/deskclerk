@@ -243,6 +243,7 @@ async def test_a_delete_of_an_unseen_id_never_reaches_the_server(tmp_path: Path)
         result = await run_agent(
             "ada",
             "clean up my notes",
+            "system",
             [server],
             connections,
             model,
