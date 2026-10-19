@@ -14,6 +14,7 @@ from deskclerk.auth import AuthUnavailable
 from deskclerk.config import Settings
 
 TIMEOUT_SECONDS = 10
+LOGIN_SCOPE = "openid"
 
 
 class SignInRefused(Exception):
@@ -56,7 +57,7 @@ def start(settings: Settings, endpoints: Endpoints) -> SignInStart:
             "response_type": "code",
             "client_id": settings.client_id,
             "redirect_uri": settings.sign_in_redirect_url,
-            "scope": settings.login_scope,
+            "scope": LOGIN_SCOPE,
             "state": state,
             "code_challenge": challenge.decode().rstrip("="),
             "code_challenge_method": "S256",

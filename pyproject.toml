@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "deskclerk"
 version = "0.0.0"
-description = "Sign-in, audit log, rate limit and billed model calls for an internal company agent."
+description = "An internal company agent that works on a company's MCP servers with each employee's own accounts."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 authors = [{ name = "Wang Jiacheng" }]
@@ -23,10 +23,6 @@ dependencies = [
     "fastapi>=0.142",
     "uvicorn>=0.54",
 ]
-
-[project.optional-dependencies]
-openai = ["langchain-openai>=1.7"]
-ollama = ["langchain-ollama>=1.1"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

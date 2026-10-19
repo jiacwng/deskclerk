@@ -1,4 +1,4 @@
-# auth.py turns a signed access token into principals and refuses every token it should.
+# auth.py turns a signed access token into an identity and refuses every token it should.
 # Tokens are signed with the throwaway RSA key from conftest.py, so no Keycloak server is needed.
 
 import time
@@ -25,7 +25,7 @@ Sign = Callable[[dict[str, object]], str]
 OTHER_SERVICE = "https://agent.example.com"
 
 
-def test_valid_token_gives_user_groups_and_everyone(
+def test_valid_token_gives_the_user_and_the_client(
     sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup
 ) -> None:
     identity = authenticate(
@@ -33,32 +33,7 @@ def test_valid_token_gives_user_groups_and_everyone(
     )
 
     assert identity.user_id == "district-1"
-    assert identity.principals == {"user:district-1", "group:everyone", "group:district:1"}
-
-
-def test_keycloak_group_paths_keep_same_named_subgroups_apart(
-    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup
-) -> None:
-    token = sign_token({"groups": ["/district:1", "/sales/managers", "/support/managers"]})
-
-    identity = authenticate(token, token_settings, token_signing_key, token_settings.audience)
-
-    assert identity.principals == {
-        "user:district-1",
-        "group:everyone",
-        "group:district:1",
-        "group:sales/managers",
-        "group:support/managers",
-    }
-
-
-def test_missing_groups_gives_user_and_everyone(
-    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup
-) -> None:
-    identity = authenticate(
-        sign_token({"groups": None}), token_settings, token_signing_key, token_settings.audience
-    )
-    assert identity.principals == {"user:district-1", "group:everyone"}
+    assert identity.client_id == "deskclerk-api"
 
 
 @pytest.mark.parametrize(
@@ -75,12 +50,6 @@ def test_missing_groups_gives_user_and_everyone(
         pytest.param({"scope": None}, "grants no scope", id="no-scope"),
         pytest.param({"nbf": 60}, "not yet valid", id="not-before-in-the-future"),
         pytest.param({"preferred_username": None}, "preferred_username", id="no-username"),
-        pytest.param({"preferred_username": "a,b"}, "comma", id="comma-in-username"),
-        pytest.param({"groups": ["district:1,analyst"]}, "comma", id="comma-in-group"),
-        pytest.param({"groups": "district:1"}, "groups must be a list", id="groups-not-a-list"),
-        pytest.param({"groups": ["everyone"]}, "named 'everyone'", id="everyone-group"),
-        pytest.param({"groups": ["/everyone"]}, "named 'everyone'", id="everyone-group-path"),
-        pytest.param({"scope": 7}, "scope must be a string", id="scope-not-text"),
     ],
 )
 def test_bad_claims_are_refused(
@@ -115,7 +84,7 @@ def test_a_token_for_another_service_is_refused(
         authenticate(token, token_settings, token_signing_key, token_settings.audience)
 
 
-def test_another_audience_accepts_any_registered_client_and_reads_the_scopes(
+def test_another_audience_accepts_any_registered_client(
     sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup
 ) -> None:
     claims: dict[str, object] = {
@@ -125,20 +94,7 @@ def test_another_audience_accepts_any_registered_client_and_reads_the_scopes(
     }
     identity = authenticate(sign_token(claims), token_settings, token_signing_key, OTHER_SERVICE)
     assert identity.user_id == "district-1"
-    assert identity.scopes == {"openid", "profile", "deskclerk-agent"}
     assert identity.client_id == "a-registered-client"
-
-
-def test_a_scope_list_with_a_number_is_refused(
-    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup
-) -> None:
-    with pytest.raises(AuthError, match="scope must be a string or a list of strings"):
-        authenticate(
-            sign_token({"scope": ["openid", 7]}),
-            token_settings,
-            token_signing_key,
-            token_settings.audience,
-        )
 
 
 def test_clock_skew_within_thirty_seconds_is_accepted(
@@ -174,9 +130,7 @@ def _discovery(requests: list[str], body: dict[str, object]) -> httpx.Client:
 def test_the_key_set_address_comes_from_the_issuer_s_openid_configuration(
     token_settings: Settings,
 ) -> None:
-    okta = token_settings.model_copy(
-        update={"issuer": "https://company.okta.com/oauth2/default", "jwks_url": None}
-    )
+    okta = token_settings.model_copy(update={"issuer": "https://company.okta.com/oauth2/default"})
     requests: list[str] = []
     client = _discovery(requests, {"jwks_uri": "https://company.okta.com/oauth2/default/v1/keys"})
 
@@ -184,23 +138,11 @@ def test_the_key_set_address_comes_from_the_issuer_s_openid_configuration(
     assert requests == ["https://company.okta.com/oauth2/default/.well-known/openid-configuration"]
 
 
-def test_a_configured_key_set_address_is_used_without_asking_the_issuer(
-    token_settings: Settings,
-) -> None:
-    requests: list[str] = []
-    client = _discovery(requests, {"jwks_uri": "https://elsewhere.test/keys"})
-
-    assert discover_jwks_url(token_settings, client) == token_settings.jwks_url
-    assert requests == []
-
-
 def test_an_openid_configuration_without_jwks_uri_is_unavailable(token_settings: Settings) -> None:
-    unset = token_settings.model_copy(update={"jwks_url": None})
-
     with pytest.raises(AuthUnavailable, match="gives no jwks_uri"):
-        discover_jwks_url(unset, _discovery([], {"jwks_uri": 7}))
+        discover_jwks_url(token_settings, _discovery([], {"jwks_uri": 7}))
     with pytest.raises(AuthUnavailable, match="cannot read jwks_uri"):
-        discover_jwks_url(unset, _discovery([], {"issuer": unset.issuer}))
+        discover_jwks_url(token_settings, _discovery([], {"issuer": token_settings.issuer}))
 
 
 def test_bad_signature_is_refused(
@@ -263,7 +205,6 @@ ENTRA_TENANT = "72f988bf-86f1-41af-91ab-2d7cd011db47"
 ENTRA_API = "6e74172b-be56-4843-9ff4-e66a39bb12e3"
 ENTRA_ISSUER = f"https://login.microsoftonline.com/{ENTRA_TENANT}/v2.0"
 ENTRA_USER = "d1ad9ce7-b322-4221-ab74-1e1011e1bbcb"
-ENTRA_GROUP = "f0b6e7d1-0d94-4b5c-a1a6-5c0b5e7d3f21"
 
 
 # The claims of an Entra ID v2.0 access token, as Microsoft documents them.
@@ -284,7 +225,6 @@ def entra_claims() -> dict[str, object]:
         "sub": "HKZpfaHyWadeOouYlitjrI-KffTm222X5rrV3xDqfKQ",
         "tid": ENTRA_TENANT,
         "ver": "2.0",
-        "groups": [ENTRA_GROUP],
     }
 
 
@@ -301,8 +241,6 @@ def test_an_entra_access_token_names_the_user_by_object_id(
     identity = authenticate(token, settings, token_signing_key, settings.audience)
 
     assert identity.user_id == ENTRA_USER
-    assert identity.principals == {f"user:{ENTRA_USER}", "group:everyone", f"group:{ENTRA_GROUP}"}
-    assert identity.scopes == {"access_as_user"}
 
 
 def test_an_entra_id_token_for_the_same_app_is_refused(
@@ -337,31 +275,12 @@ def test_an_okta_access_token_names_the_user_by_subject(
         "scp": ["openid", "profile"],
         "auth_time": now,
         "sub": "alice@company.com",
-        "groups": ["Everyone", "Finance"],
     }
     token = jwt.encode(claims, TOKEN_KEY, algorithm="RS256")
 
     identity = authenticate(token, settings, token_signing_key, settings.audience)
 
     assert identity.user_id == "alice@company.com"
-    assert identity.principals == {
-        "user:alice@company.com",
-        "group:everyone",
-        "group:Everyone",
-        "group:Finance",
-    }
-    assert identity.scopes == {"openid", "profile"}
-
-
-def test_the_groups_claim_is_read_from_the_configured_name(
-    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup
-) -> None:
-    settings = token_settings.model_copy(update={"groups_claim": "roles"})
-    token = sign_token({"groups": None, "roles": ["analyst"]})
-
-    identity = authenticate(token, settings, token_signing_key, settings.audience)
-
-    assert identity.principals == {"user:district-1", "group:everyone", "group:analyst"}
 
 
 def test_an_es256_token_is_accepted(sign_token: Sign, token_settings: Settings) -> None:

@@ -20,7 +20,6 @@ def token_settings() -> Settings:
     settings = load_settings()
     return settings.model_copy(
         update={
-            "jwks_url": f"{settings.issuer}/protocol/openid-connect/certs",
             "issuer": "http://keycloak.test/realms/deskclerk",
             "client_id": "deskclerk-api",
             "audience": "deskclerk-api",
@@ -53,7 +52,6 @@ def sign_token(token_settings: Settings) -> Callable[[dict[str, object]], str]:
             "iat": now,
             "exp": now + 300,
             "preferred_username": "district-1",
-            "groups": ["district:1"],
         }
         merged = {name: value for name, value in (base | claims).items() if value is not None}
         return jwt.encode(merged, TOKEN_KEY, algorithm="RS256")

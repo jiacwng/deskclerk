@@ -12,14 +12,16 @@ from deskclerk.audit import log_to_stdout
 from deskclerk.auth import AuthUnavailable, discover_jwks_url, jwks_signing_key
 from deskclerk.config import load_settings
 from deskclerk.connections import OAuthConnections
-from deskclerk.graph import graph_from_settings
 from deskclerk.jev import jev_from_environment
-from deskclerk.providers import MissingApiKey, MissingProvider, chat_model
+from deskclerk.providers import MissingApiKey, chat_model
 from deskclerk.servers import ServersError, load_servers
 from deskclerk.tokens import TokenKeyError, TokenStore
 from deskclerk.writecheck import write_check
 
 FLOW_TIMEOUT_SECONDS = 600
+MCP_CLIENT_NAME = "deskclerk"
+HOST = "127.0.0.1"
+PORT = 8000
 
 
 def main() -> None:
@@ -30,7 +32,7 @@ def main() -> None:
         servers = load_servers(settings.servers_file)
         tokens = TokenStore(settings.token_file, settings.token_key.get_secret_value())
         connections = OAuthConnections(
-            tokens, settings.redirect_url, settings.mcp_client_name, FLOW_TIMEOUT_SECONDS
+            tokens, settings.redirect_url, MCP_CLIENT_NAME, FLOW_TIMEOUT_SECONDS
         )
         with httpx.Client() as client:
             jwks_url = discover_jwks_url(settings, client)
@@ -49,7 +51,6 @@ def main() -> None:
             chat_model(settings),
             write_check(jev),
             jwks_signing_key(jwks_url),
-            graph_from_settings(settings),
         )
     except (
         ValidationError,
@@ -57,13 +58,12 @@ def main() -> None:
         TokenKeyError,
         MissingSessionKey,
         MissingApiKey,
-        MissingProvider,
         AuthUnavailable,
         ValueError,
     ) as error:
         sys.exit(f"deskclerk: {error}")
     log_to_stdout()
-    uvicorn.run(app, host=settings.host, port=settings.port)
+    uvicorn.run(app, host=HOST, port=PORT)
 
 
 if __name__ == "__main__":

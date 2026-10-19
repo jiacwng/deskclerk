@@ -18,6 +18,6 @@ def test_version_matches_pyproject() -> None:
 def test_every_module_imports() -> None:
     names = [module.name for module in pkgutil.iter_modules(deskclerk.__path__)]
 
-    assert {"auth", "audit", "config", "graph", "jev", "providers", "quota"} <= set(names)
+    assert {"auth", "audit", "config", "jev", "providers", "quota"} <= set(names)
     for name in names:
         importlib.import_module(f"deskclerk.{name}")
