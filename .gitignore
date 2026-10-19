@@ -3,6 +3,7 @@ local/
 data/
 *.local.md
 .env
+servers.toml
 runs/
 documents/
 

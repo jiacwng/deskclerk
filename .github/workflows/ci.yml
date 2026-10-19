@@ -29,3 +29,14 @@ jobs:
       - run: mypy
       - run: docker compose up -d --wait keycloak
       - run: pytest
+      - name: container sends sign-in to keycloak
+        run: |
+          {
+            echo "ANTHROPIC_API_KEY=unused"
+            echo "DESKCLERK_TOKEN_KEY=$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+            echo "DESKCLERK_SESSION_KEY=$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+          } > .env
+          touch servers.toml
+          docker compose up -d --wait deskclerk
+          curl -fsS -o /dev/null -w '%{redirect_url}' http://localhost:8000/login \
+            | grep '^http://localhost:8080/realms/deskclerk/protocol/openid-connect/auth?'
