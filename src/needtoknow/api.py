@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from needtoknow import cookies, oidc
-from needtoknow.agent import allow_all, run_agent
+from needtoknow.agent import Gate, run_agent
 from needtoknow.audit import Audit
 from needtoknow.auth import AuthError, AuthUnavailable, Identity, SigningKeyLookup, authenticate
 from needtoknow.config import Settings
@@ -167,6 +167,7 @@ def create_app(
     connections: OAuthConnections,
     tokens: TokenStore,
     model: BaseChatModel,
+    gate: Gate,
     signing_key: SigningKeyLookup,
     graph: GraphGroups | None = None,
     idp_transport: httpx.AsyncBaseTransport | None = None,
@@ -382,7 +383,7 @@ def create_app(
             except BudgetExceeded as error:
                 audit.asked(identity, body.request, started, "over_budget", None, 0.0)
                 raise HTTPException(402, str(error)) from None
-            result = None
+            spent_before = spending.cost_usd
             try:
                 result = await run_agent(
                     identity.user_id,
@@ -390,18 +391,18 @@ def create_app(
                     servers,
                     connections,
                     model,
-                    allow_all,
+                    gate,
                     settings.step_limit,
+                    spending.record,
                 )
             except model_errors:
-                raise upstream_failure(identity, body.request, started) from None
+                cost = spending.cost_usd - spent_before
+                raise upstream_failure(identity, body.request, started, cost) from None
             except BaseExceptionGroup as group:
                 if group.subgroup(model_errors) is None:
                     raise
-                raise upstream_failure(identity, body.request, started) from None
-            finally:
-                if result is not None:
-                    spending.record(result.total_usage)
+                cost = spending.cost_usd - spent_before
+                raise upstream_failure(identity, body.request, started, cost) from None
         cost = price.cost(result.total_usage)
         audit.asked(identity, body.request, started, "answered", result, cost)
         return AskOut(
@@ -413,8 +414,10 @@ def create_app(
             cost_usd=cost,
         )
 
-    def upstream_failure(identity: Identity, request: str, started: float) -> HTTPException:
-        audit.asked(identity, request, started, "upstream_error", None, 0.0)
+    def upstream_failure(
+        identity: Identity, request: str, started: float, cost: float
+    ) -> HTTPException:
+        audit.asked(identity, request, started, "upstream_error", None, cost)
         return HTTPException(502, "the model or an MCP server did not answer")
 
     return app

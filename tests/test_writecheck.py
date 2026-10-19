@@ -165,7 +165,14 @@ async def test_a_delete_of_an_unseen_id_never_reaches_the_server(tmp_path: Path)
         await connect(connections, "ada", server)
         model = script(calls(("notes__delete_note", {"note_id": "n-7"})), answer("could not"))
         result = await run_agent(
-            "ada", "clean up my notes", [server], connections, model, write_check(None), 5
+            "ada",
+            "clean up my notes",
+            [server],
+            connections,
+            model,
+            write_check(None),
+            5,
+            lambda usage: None,
         )
     assert running.deleted == []
     assert result.executed == ()

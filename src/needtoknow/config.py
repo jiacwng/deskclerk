@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     price_input: float | None = None
     price_output: float | None = None
     budget_usd: float = 2.0
+    jev_budget_usd: float = 1.0
     audit_text: bool = False
     audit_key: SecretStr | None = None
     requests_per_minute: int = 20

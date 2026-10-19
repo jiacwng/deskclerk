@@ -45,7 +45,8 @@ from needtoknow.config import Settings
 from needtoknow.connections import OAuthConnections
 from needtoknow.servers import McpServer
 from needtoknow.tokens import TokenStore
-from test_agent import ScriptedModel, answer, calls, script
+from needtoknow.writecheck import write_check
+from test_agent import ProviderGoneAfterScript, ScriptedModel, answer, calls, script
 from test_connections import REDIRECT
 
 SESSION_KEY = "a-session-key-of-at-least-32-characters"
@@ -88,7 +89,14 @@ def web(
     tokens = TokenStore(path / "tokens.sqlite", key or Fernet.generate_key().decode())
     connections = OAuthConnections(tokens, REDIRECT, "needtoknow test", 600)
     app = create_app(
-        settings, servers, connections, tokens, model, signing_key, idp_transport=idp_transport
+        settings,
+        servers,
+        connections,
+        tokens,
+        model,
+        write_check(None),
+        signing_key,
+        idp_transport=idp_transport,
     )
     with TestClient(app) as client:
         yield Web(client, tokens)
@@ -373,6 +381,55 @@ def test_an_employee_who_spent_the_cap_is_stopped_with_402_and_others_are_not(
         assert stopped.status_code == 402
         assert "NEEDTOKNOW_BUDGET_USD" in stopped.json()["detail"]
         assert ask(site, grace).status_code == 200
+
+
+def test_tokens_billed_before_a_provider_failure_count_against_the_cap(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="needtoknow.audit")
+    settings = make_settings(
+        token_settings, price_input=1_000_000.0, price_output=1_000_000.0, budget_usd=1.0
+    )
+    one_token = UsageMetadata(input_tokens=1, output_tokens=0, total_tokens=1)
+    model = ProviderGoneAfterScript(
+        messages=iter([calls(("notes__read_note", {}), usage=one_token)])
+    )
+    ada = as_user(sign_token, "ada")
+    with web(settings, [notes(notes_server)], model, token_signing_key, tmp_path) as site:
+        connect(site, ada)
+        failed = ask(site, ada)
+        stopped = ask(site, ada)
+    assert (failed.status_code, stopped.status_code) == (502, 402)
+    asks = [line for line in audit_lines(caplog) if line["entry"] == "ask"]
+    assert [(line["outcome"], line["cost_usd"]) for line in asks] == [
+        ("upstream_error", 1.0),
+        ("over_budget", 0.0),
+    ]
+
+
+def test_a_write_that_fails_the_write_check_never_reaches_the_server(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(token_settings)
+    model = script(calls(("notes__write_note", {})), answer("I could not save it"))
+    ada = as_user(sign_token, "ada")
+    with web(settings, [notes(notes_server)], model, token_signing_key, tmp_path) as site:
+        connect(site, ada)
+        body = ask(site, ada).json()
+    assert notes_server.notes == []
+    assert body["executed"] == []
+    [blocked] = body["blocked"]
+    assert blocked["tool"] == "write_note"
+    assert blocked["reason"].startswith("schema check:")
 
 
 def test_a_request_must_be_between_1_and_4000_characters(
