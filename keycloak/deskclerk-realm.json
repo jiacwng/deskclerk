@@ -2,17 +2,6 @@
   "realm": "deskclerk",
   "displayName": "deskclerk (development only, every user's password is deskclerk)",
   "enabled": true,
-  "groups": [
-    {
-      "name": "district:1"
-    },
-    {
-      "name": "county:Sierra"
-    },
-    {
-      "name": "analyst"
-    }
-  ],
   "users": [
     {
       "username": "kaminski-v",
@@ -27,8 +16,7 @@
           "value": "deskclerk",
           "temporary": false
         }
-      ],
-      "groups": []
+      ]
     },
     {
       "username": "dasovich-j",
@@ -43,8 +31,7 @@
           "value": "deskclerk",
           "temporary": false
         }
-      ],
-      "groups": []
+      ]
     },
     {
       "username": "kean-s",
@@ -59,8 +46,7 @@
           "value": "deskclerk",
           "temporary": false
         }
-      ],
-      "groups": []
+      ]
     },
     {
       "username": "district-1",
@@ -75,9 +61,6 @@
           "value": "deskclerk",
           "temporary": false
         }
-      ],
-      "groups": [
-        "/district:1"
       ]
     },
     {
@@ -93,9 +76,6 @@
           "value": "deskclerk",
           "temporary": false
         }
-      ],
-      "groups": [
-        "/county:Sierra"
       ]
     },
     {
@@ -111,9 +91,6 @@
           "value": "deskclerk",
           "temporary": false
         }
-      ],
-      "groups": [
-        "/analyst"
       ]
     }
   ],
@@ -139,19 +116,6 @@
       "protocol": "openid-connect",
       "protocolMappers": [
         {
-          "name": "groups",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-group-membership-mapper",
-          "config": {
-            "claim.name": "groups",
-            "full.path": "true",
-            "access.token.claim": "true",
-            "id.token.claim": "false",
-            "userinfo.token.claim": "false",
-            "introspection.token.claim": "true"
-          }
-        },
-        {
           "name": "audience",
           "protocol": "openid-connect",
           "protocolMapper": "oidc-audience-mapper",
@@ -173,19 +137,6 @@
       "directAccessGrantsEnabled": true,
       "protocol": "openid-connect",
       "protocolMappers": [
-        {
-          "name": "groups",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-group-membership-mapper",
-          "config": {
-            "claim.name": "groups",
-            "full.path": "true",
-            "access.token.claim": "true",
-            "id.token.claim": "false",
-            "userinfo.token.claim": "false",
-            "introspection.token.claim": "true"
-          }
-        },
         {
           "name": "audience",
           "protocol": "openid-connect",
@@ -287,19 +238,6 @@
         "consent.screen.text": "Work on your connected accounts"
       },
       "protocolMappers": [
-        {
-          "name": "groups",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-group-membership-mapper",
-          "config": {
-            "claim.name": "groups",
-            "full.path": "true",
-            "access.token.claim": "true",
-            "id.token.claim": "false",
-            "userinfo.token.claim": "false",
-            "introspection.token.claim": "true"
-          }
-        },
         {
           "name": "audience",
           "protocol": "openid-connect",

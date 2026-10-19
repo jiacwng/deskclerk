@@ -25,7 +25,7 @@ Linux and WSL supports.
 
    A server without sign-in takes `auth = "none"`. A server that needs a registered OAuth
    client takes `client_id` and `client_secret_env`, the name of the variable in `.env` that
-   holds the secret.
+   holds the secret. deskclerk trusts the read-only marks of the servers you list.
 3. Start both services:
 
    ```
