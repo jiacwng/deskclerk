@@ -10,10 +10,10 @@ import pytest
 from pydantic import SecretStr
 
 from conftest import TOKEN_KEY
-from needtoknow import graph as graph_module
-from needtoknow.auth import AuthError, AuthUnavailable, SigningKeyLookup, authenticate
-from needtoknow.config import Settings
-from needtoknow.graph import (
+from deskclerk import graph as graph_module
+from deskclerk.auth import AuthError, AuthUnavailable, SigningKeyLookup, authenticate
+from deskclerk.config import Settings
+from deskclerk.graph import (
     CACHE_SECONDS,
     GRAPH,
     LOGIN,
@@ -61,7 +61,7 @@ def test_an_overflow_token_without_graph_credentials_is_refused(
     token_settings: Settings, token_signing_key: SigningKeyLookup
 ) -> None:
     settings = entra_settings(token_settings)
-    with pytest.raises(AuthError, match="NEEDTOKNOW_GRAPH_TENANT_ID"):
+    with pytest.raises(AuthError, match="DESKCLERK_GRAPH_TENANT_ID"):
         authenticate(_overflow_token(), settings, token_signing_key, settings.audience)
 
 

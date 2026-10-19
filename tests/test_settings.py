@@ -4,19 +4,19 @@
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from needtoknow.config import Settings
+from deskclerk.config import Settings
 
 
 @pytest.mark.parametrize("model_name", ["claude-haiku-5-5", ":claude-haiku-5-5", "anthropic:"])
 def test_the_model_needs_a_provider_and_a_name(model_name: str) -> None:
-    with pytest.raises(ValidationError, match="NEEDTOKNOW_MODEL is provider:model"):
+    with pytest.raises(ValidationError, match="DESKCLERK_MODEL is provider:model"):
         Settings(model=model_name)
 
 
 def test_one_price_without_the_other_is_refused() -> None:
-    with pytest.raises(ValidationError, match="set both NEEDTOKNOW_PRICE_INPUT"):
+    with pytest.raises(ValidationError, match="set both DESKCLERK_PRICE_INPUT"):
         Settings(price_input=1.0)
-    with pytest.raises(ValidationError, match="set both NEEDTOKNOW_PRICE_INPUT"):
+    with pytest.raises(ValidationError, match="set both DESKCLERK_PRICE_INPUT"):
         Settings(price_output=1.0)
 
 
@@ -26,7 +26,7 @@ def test_the_audience_is_the_client_unless_set() -> None:
 
 
 def test_graph_credentials_come_all_three_or_none() -> None:
-    with pytest.raises(ValidationError, match="NEEDTOKNOW_GRAPH_CLIENT_SECRET together"):
+    with pytest.raises(ValidationError, match="DESKCLERK_GRAPH_CLIENT_SECRET together"):
         Settings(graph_tenant_id="tenant", graph_client_id="client")
 
     complete = Settings(

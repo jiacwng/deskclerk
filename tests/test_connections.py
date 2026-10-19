@@ -11,8 +11,7 @@ import pytest
 from cryptography.fernet import Fernet
 from mcp.shared.auth import OAuthToken
 
-from mcp_server import PRESET_CLIENT_ID, PRESET_CLIENT_SECRET, RunningServer, running_mcp_server
-from needtoknow.connections import (
+from deskclerk.connections import (
     AlreadyConnected,
     FlowExpired,
     NoSignInNeeded,
@@ -21,8 +20,9 @@ from needtoknow.connections import (
     UnknownState,
     WrongUser,
 )
-from needtoknow.servers import McpServer
-from needtoknow.tokens import TokenStore
+from deskclerk.servers import McpServer
+from deskclerk.tokens import TokenStore
+from mcp_server import PRESET_CLIENT_ID, PRESET_CLIENT_SECRET, RunningServer, running_mcp_server
 
 REDIRECT = "http://localhost:8000/oauth/callback"
 
@@ -44,7 +44,7 @@ def key() -> str:
 
 
 def make_connections(path: Path, key: str, timeout: float = 600) -> OAuthConnections:
-    return OAuthConnections(TokenStore(path, key), REDIRECT, "needtoknow test", timeout)
+    return OAuthConnections(TokenStore(path, key), REDIRECT, "deskclerk test", timeout)
 
 
 def server_record(running: RunningServer, preregistered: bool = False) -> McpServer:
@@ -120,7 +120,7 @@ async def test_a_restart_keeps_the_connection_and_the_stored_expiry_triggers_a_r
     mcp_server.provider.access_tokens.pop(old.access_token)
     await storage.set_tokens(old.model_copy(update={"expires_in": -10}))
 
-    restarted = OAuthConnections(TokenStore(token_path, key), REDIRECT, "needtoknow test", 600)
+    restarted = OAuthConnections(TokenStore(token_path, key), REDIRECT, "deskclerk test", 600)
     assert {tool.name for tool in await restarted.tools("ada", server)} == {
         "read_note",
         "write_note",

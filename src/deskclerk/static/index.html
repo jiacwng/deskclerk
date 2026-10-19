@@ -4,7 +4,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>needtoknow</title>
+<title>deskclerk</title>
 <style>
 body { font: 16px/1.5 system-ui, sans-serif; max-width: 48rem; margin: 2rem auto; padding: 0 1rem; }
 h1, h2 { margin: 1.5rem 0 0.5rem; }
@@ -23,7 +23,7 @@ pre { white-space: pre-wrap; background: #f3f3f3; padding: 0.5rem; }
 </style>
 </head>
 <body>
-<h1>needtoknow</h1>
+<h1>deskclerk</h1>
 <p id="status" class="muted"></p>
 <p id="signin" hidden><a href="/login">Sign in</a></p>
 
@@ -53,7 +53,7 @@ async function api(path, options) {
 
 const post = (path, body) => api(path, {
   method: "POST",
-  headers: { "X-Requested-With": "needtoknow", "Content-Type": "application/json" },
+  headers: { "X-Requested-With": "deskclerk", "Content-Type": "application/json" },
   body: body === undefined ? undefined : JSON.stringify(body),
 });
 

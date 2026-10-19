@@ -11,9 +11,9 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableBinding
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
-from needtoknow import providers
-from needtoknow.config import Settings
-from needtoknow.providers import (
+from deskclerk import providers
+from deskclerk.config import Settings
+from deskclerk.providers import (
     MAX_TOKENS,
     BudgetExceeded,
     InconsistentUsage,
@@ -104,7 +104,7 @@ def test_an_ollama_model_keeps_the_colon_in_its_tag_and_caps_its_answer() -> Non
 def test_a_model_outside_the_table_without_prices_is_refused(model_name: str) -> None:
     settings = Settings(model=model_name)
 
-    with pytest.raises(ValueError, match="NEEDTOKNOW_PRICE_INPUT and NEEDTOKNOW_PRICE_OUTPUT"):
+    with pytest.raises(ValueError, match="DESKCLERK_PRICE_INPUT and DESKCLERK_PRICE_OUTPUT"):
         price_of(settings)
     with pytest.raises(ValueError, match="no price for model"):
         chat_model(settings)
@@ -129,7 +129,7 @@ def test_a_missing_provider_package_names_its_extra(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(providers, "init_chat_model", not_installed)
 
-    with pytest.raises(MissingProvider, match=r"pip install 'needtoknow\[ollama\]'"):
+    with pytest.raises(MissingProvider, match=r"pip install 'deskclerk\[ollama\]'"):
         chat_model(_priced("ollama:llama3.2:3b"))
 
 

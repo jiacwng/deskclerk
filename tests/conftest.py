@@ -9,8 +9,8 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from jwt.algorithms import RSAAlgorithm
 
-from needtoknow.auth import SigningKeyLookup
-from needtoknow.config import Settings, load_settings
+from deskclerk.auth import SigningKeyLookup
+from deskclerk.config import Settings, load_settings
 
 TOKEN_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
@@ -21,9 +21,9 @@ def token_settings() -> Settings:
     return settings.model_copy(
         update={
             "jwks_url": f"{settings.issuer}/protocol/openid-connect/certs",
-            "issuer": "http://keycloak.test/realms/needtoknow",
-            "client_id": "needtoknow-api",
-            "audience": "needtoknow-api",
+            "issuer": "http://keycloak.test/realms/deskclerk",
+            "client_id": "deskclerk-api",
+            "audience": "deskclerk-api",
             "requests_per_minute": 10_000,
         }
     )

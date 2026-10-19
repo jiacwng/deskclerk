@@ -10,8 +10,8 @@ from urllib.parse import urlencode
 
 import httpx
 
-from needtoknow.auth import AuthUnavailable
-from needtoknow.config import Settings
+from deskclerk.auth import AuthUnavailable
+from deskclerk.config import Settings
 
 TIMEOUT_SECONDS = 10
 

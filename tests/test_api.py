@@ -29,9 +29,8 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages.ai import UsageMetadata
 from pydantic import SecretStr
 
-from mcp_server import RunningServer, running_mcp_server
-from needtoknow import cookies
-from needtoknow.api import (
+from deskclerk import cookies
+from deskclerk.api import (
     BROWSER_AUTH_REFUSED,
     CSRF_HEADER,
     CSRF_VALUE,
@@ -40,12 +39,13 @@ from needtoknow.api import (
     MissingSessionKey,
     create_app,
 )
-from needtoknow.auth import SigningKeyLookup, discover_jwks_url, jwks_signing_key
-from needtoknow.config import Settings
-from needtoknow.connections import OAuthConnections
-from needtoknow.servers import McpServer
-from needtoknow.tokens import TokenStore
-from needtoknow.writecheck import write_check
+from deskclerk.auth import SigningKeyLookup, discover_jwks_url, jwks_signing_key
+from deskclerk.config import Settings
+from deskclerk.connections import OAuthConnections
+from deskclerk.servers import McpServer
+from deskclerk.tokens import TokenStore
+from deskclerk.writecheck import write_check
+from mcp_server import RunningServer, running_mcp_server
 from test_agent import ProviderGoneAfterScript, ScriptedModel, answer, calls, script
 from test_connections import REDIRECT
 
@@ -87,7 +87,7 @@ def web(
     key: str | None = None,
 ) -> Iterator[Web]:
     tokens = TokenStore(path / "tokens.sqlite", key or Fernet.generate_key().decode())
-    connections = OAuthConnections(tokens, REDIRECT, "needtoknow test", 600)
+    connections = OAuthConnections(tokens, REDIRECT, "deskclerk test", 600)
     app = create_app(
         settings,
         servers,
@@ -177,7 +177,7 @@ def ask(site: Web, headers: dict[str, str], request: str = "save a note") -> htt
 
 
 def audit_lines(caplog: pytest.LogCaptureFixture) -> list[dict[str, object]]:
-    return [json.loads(r.getMessage()) for r in caplog.records if r.name == "needtoknow.audit"]
+    return [json.loads(r.getMessage()) for r in caplog.records if r.name == "deskclerk.audit"]
 
 
 def session_cookie(user: str) -> str:
@@ -185,7 +185,7 @@ def session_cookie(user: str) -> str:
         "user": user,
         "principals": [f"user:{user}", "group:everyone"],
         "scopes": ["openid"],
-        "client": "needtoknow-api",
+        "client": "deskclerk-api",
     }
     return cookies.sign(SESSION_KEY.encode(), "session", payload, 3600)
 
@@ -379,7 +379,7 @@ def test_an_employee_who_spent_the_cap_is_stopped_with_402_and_others_are_not(
         assert (first.status_code, first.json()["cost_usd"]) == (200, 1.0)
         stopped = ask(site, ada)
         assert stopped.status_code == 402
-        assert "NEEDTOKNOW_BUDGET_USD" in stopped.json()["detail"]
+        assert "DESKCLERK_BUDGET_USD" in stopped.json()["detail"]
         assert ask(site, grace).status_code == 200
 
 
@@ -391,7 +391,7 @@ def test_tokens_billed_before_a_provider_failure_count_against_the_cap(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.INFO, logger="needtoknow.audit")
+    caplog.set_level(logging.INFO, logger="deskclerk.audit")
     settings = make_settings(
         token_settings, price_input=1_000_000.0, price_output=1_000_000.0, budget_usd=1.0
     )
@@ -452,7 +452,7 @@ def test_the_audit_log_holds_no_argument_values_unless_audit_text_is_set(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.INFO, logger="needtoknow.audit")
+    caplog.set_level(logging.INFO, logger="deskclerk.audit")
     settings = make_settings(token_settings, audit_key=SecretStr(AUDIT_KEY))
     model = script(calls(("notes__write_note", {"text": "secret-text"})), answer("saved"))
     ada = as_user(sign_token, "ada")
@@ -482,7 +482,7 @@ def test_the_audit_log_holds_arguments_and_results_when_audit_text_is_set(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.INFO, logger="needtoknow.audit")
+    caplog.set_level(logging.INFO, logger="deskclerk.audit")
     settings = make_settings(token_settings, audit_text=True)
     model = script(calls(("notes__write_note", {"text": "secret-text"})), answer("saved"))
     ada = as_user(sign_token, "ada")
@@ -510,7 +510,7 @@ def test_a_refused_ask_is_audited_with_its_outcome(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.INFO, logger="needtoknow.audit")
+    caplog.set_level(logging.INFO, logger="deskclerk.audit")
     settings = make_settings(token_settings, requests_per_minute=1)
     model = ScriptedModel(messages=itertools.repeat(answer("ok")))
     ada = as_user(sign_token, "ada")
@@ -596,7 +596,7 @@ def test_an_employee_signs_in_through_keycloak_and_asks(tmp_path: Path) -> None:
             assert form is not None
             submitted = browser.post(
                 html.unescape(form.group(1)),
-                data={"username": "analyst", "password": "needtoknow"},
+                data={"username": "analyst", "password": "deskclerk"},
             )
         assert submitted.status_code == 302
         landing = urlparse(submitted.headers["location"])
@@ -712,7 +712,7 @@ def test_an_mcp_server_that_stopped_gives_502_and_an_upstream_error_line(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.INFO, logger="needtoknow.audit")
+    caplog.set_level(logging.INFO, logger="deskclerk.audit")
     settings = make_settings(token_settings)
     ada = as_user(sign_token, "ada")
     key = Fernet.generate_key().decode()

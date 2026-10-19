@@ -11,11 +11,11 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from mcp.shared.auth_utils import calculate_token_expiry
 from pydantic import BaseModel
 
-from needtoknow.servers import McpServer
+from deskclerk.servers import McpServer
 
 Kind = Literal["tokens", "client"]
 
-KEY_CHECK_TEXT = b"needtoknow"
+KEY_CHECK_TEXT = b"deskclerk"
 
 
 class TokenKeyError(Exception):

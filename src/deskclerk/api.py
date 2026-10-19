@@ -24,12 +24,12 @@ from mcp.shared.exceptions import MCPError
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
-from needtoknow import cookies, oidc
-from needtoknow.agent import Gate, run_agent
-from needtoknow.audit import Audit
-from needtoknow.auth import AuthError, AuthUnavailable, Identity, SigningKeyLookup, authenticate
-from needtoknow.config import Settings
-from needtoknow.connections import (
+from deskclerk import cookies, oidc
+from deskclerk.agent import Gate, run_agent
+from deskclerk.audit import Audit
+from deskclerk.auth import AuthError, AuthUnavailable, Identity, SigningKeyLookup, authenticate
+from deskclerk.config import Settings
+from deskclerk.connections import (
     AlreadyConnected,
     FlowExpired,
     NoSignInNeeded,
@@ -38,16 +38,16 @@ from needtoknow.connections import (
     UnknownState,
     WrongUser,
 )
-from needtoknow.graph import GraphGroups
-from needtoknow.providers import BudgetExceeded, Spending, price_of, provider_errors
-from needtoknow.quota import Quota
-from needtoknow.servers import McpServer
-from needtoknow.tokens import TokenStore
+from deskclerk.graph import GraphGroups
+from deskclerk.providers import BudgetExceeded, Spending, price_of, provider_errors
+from deskclerk.quota import Quota
+from deskclerk.servers import McpServer
+from deskclerk.tokens import TokenStore
 
 SESSION_COOKIE = "ntk_session"
 LOGIN_COOKIE = "ntk_login"
 CSRF_HEADER = "X-Requested-With"
-CSRF_VALUE = "needtoknow"
+CSRF_VALUE = "deskclerk"
 MAX_REQUEST_CHARS = 4000
 LOGIN_LIFETIME_SECONDS = 600
 SECONDS_PER_HOUR = 3600
@@ -173,7 +173,7 @@ def create_app(
     idp_transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
     if settings.session_key is None:
-        raise MissingSessionKey("NEEDTOKNOW_SESSION_KEY is not set; put it in .env")
+        raise MissingSessionKey("DESKCLERK_SESSION_KEY is not set; put it in .env")
     session_key = settings.session_key.get_secret_value().encode()
     secure_cookies = settings.sign_in_redirect_url.startswith("https://")
     session_seconds = settings.session_hours * SECONDS_PER_HOUR
@@ -185,7 +185,7 @@ def create_app(
     discovered: dict[str, oidc.Endpoints] = {}
     model_errors: tuple[type[Exception], ...] = (*provider_errors(), *UPSTREAM_ERRORS)
     server_by_name = {server.name: server for server in servers}
-    page = resources.files("needtoknow").joinpath("static/index.html").read_text(encoding="utf-8")
+    page = resources.files("deskclerk").joinpath("static/index.html").read_text(encoding="utf-8")
     page_headers = {
         "Content-Security-Policy": _content_security_policy(page),
         "Cache-Control": "no-store",
@@ -193,7 +193,7 @@ def create_app(
         "Referrer-Policy": "no-referrer",
     }
 
-    app = FastAPI(title="needtoknow", docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(title="deskclerk", docs_url=None, redoc_url=None, openapi_url=None)
 
     async def caller(request: Request) -> Caller:
         header = request.headers.get("authorization")

@@ -1,7 +1,7 @@
 # The audit log: one JSON line per ask and one per connect or disconnect, naming who did it and
 # which tools the agent called. The request, each call's arguments and results, and a gate's
-# reason are logged only when NEEDTOKNOW_AUDIT_TEXT is set; otherwise only the request's length
-# and, when NEEDTOKNOW_AUDIT_KEY is set, its HMAC-SHA256. Tokens are never logged.
+# reason are logged only when DESKCLERK_AUDIT_TEXT is set; otherwise only the request's length
+# and, when DESKCLERK_AUDIT_KEY is set, its HMAC-SHA256. Tokens are never logged.
 
 import hashlib
 import hmac
@@ -14,8 +14,8 @@ from typing import Any
 
 from pydantic import SecretStr
 
-from needtoknow.agent import AgentResult, BlockedCall, ExecutedCall
-from needtoknow.auth import Identity
+from deskclerk.agent import AgentResult, BlockedCall, ExecutedCall
+from deskclerk.auth import Identity
 
 _log = logging.getLogger(__name__)
 
