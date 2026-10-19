@@ -7,10 +7,6 @@ langchain==1.4.6
 langchain-core==1.6.12
 langchain-anthropic==1.7.5
 anthropic==1.12.0
-langchain-openai==1.7.2
-openai==3.32.0
-langchain-ollama==1.1.0
-ollama==0.6.3
 typesafe-sdk==0.7.5
 pydantic-settings==2.16.0
 limits==5.8.0

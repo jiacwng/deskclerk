@@ -184,8 +184,6 @@ def audit_lines(caplog: pytest.LogCaptureFixture) -> list[dict[str, object]]:
 def session_cookie(user: str) -> str:
     payload = {
         "user": user,
-        "principals": [f"user:{user}", "group:everyone"],
-        "scopes": ["openid"],
         "client": "deskclerk-api",
     }
     return cookies.sign(SESSION_KEY.encode(), "session", payload, 3600)
@@ -382,15 +380,14 @@ def test_asks_beyond_the_per_minute_quota_get_429_for_that_employee_only(
 def test_an_employee_who_spent_the_cap_is_stopped_with_402_and_others_are_not(
     sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
 ) -> None:
-    settings = make_settings(
-        token_settings, price_input=1_000_000.0, price_output=1_000_000.0, budget_usd=1.0
-    )
-    one_token = UsageMetadata(input_tokens=1, output_tokens=0, total_tokens=1)
-    model = ScriptedModel(messages=itertools.repeat(answer("ok", usage=one_token)))
+    settings = make_settings(token_settings, budget_usd=0.05)
+    million_tokens = UsageMetadata(input_tokens=1_000_000, output_tokens=0, total_tokens=1_000_000)
+    model = ScriptedModel(messages=itertools.repeat(answer("ok", usage=million_tokens)))
     ada, grace = as_user(sign_token, "ada"), as_user(sign_token, "grace")
     with web(settings, [], model, token_signing_key, tmp_path) as site:
         first = ask(site, ada)
-        assert (first.status_code, first.json()["cost_usd"]) == (200, 1.0)
+        assert first.status_code == 200
+        assert first.json()["cost_usd"] == pytest.approx(0.10)
         stopped = ask(site, ada)
         assert stopped.status_code == 402
         assert "DESKCLERK_BUDGET_USD" in stopped.json()["detail"]
@@ -406,12 +403,10 @@ def test_tokens_billed_before_a_provider_failure_count_against_the_cap(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger="deskclerk.audit")
-    settings = make_settings(
-        token_settings, price_input=1_000_000.0, price_output=1_000_000.0, budget_usd=1.0
-    )
-    one_token = UsageMetadata(input_tokens=1, output_tokens=0, total_tokens=1)
+    settings = make_settings(token_settings, budget_usd=0.05)
+    million_tokens = UsageMetadata(input_tokens=1_000_000, output_tokens=0, total_tokens=1_000_000)
     model = ProviderGoneAfterScript(
-        messages=iter([calls(("notes__read_note", {}), usage=one_token)])
+        messages=iter([calls(("notes__read_note", {}), usage=million_tokens)])
     )
     ada = as_user(sign_token, "ada")
     with web(settings, [notes(notes_server)], model, token_signing_key, tmp_path) as site:
@@ -420,10 +415,8 @@ def test_tokens_billed_before_a_provider_failure_count_against_the_cap(
         stopped = ask(site, ada)
     assert (failed.status_code, stopped.status_code) == (502, 402)
     asks = [line for line in audit_lines(caplog) if line["entry"] == "ask"]
-    assert [(line["outcome"], line["cost_usd"]) for line in asks] == [
-        ("upstream_error", 1.0),
-        ("over_budget", 0.0),
-    ]
+    assert [line["outcome"] for line in asks] == ["upstream_error", "over_budget"]
+    assert [line["cost_usd"] for line in asks] == [pytest.approx(0.10), 0.0]
 
 
 def test_a_write_that_fails_the_write_check_never_reaches_the_server(
@@ -556,7 +549,7 @@ def test_a_forged_expired_or_misplaced_cookie_is_not_a_session(
 ) -> None:
     settings = make_settings(token_settings)
     key = SESSION_KEY.encode()
-    payload = {"user": "ada", "principals": [], "scopes": [], "client": "c"}
+    payload = {"user": "ada", "client": "c"}
     refused = [
         session_cookie("ada")[:-2] + "xx",
         cookies.sign(b"another key", "session", payload, 3600),
@@ -700,11 +693,9 @@ def test_the_discovery_document_is_fetched_once_per_process(
 def test_one_ask_at_a_time_per_employee_so_the_cap_cannot_be_raced(
     sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
 ) -> None:
-    settings = make_settings(
-        token_settings, price_input=1_000_000.0, price_output=1_000_000.0, budget_usd=1.0
-    )
-    one_token = UsageMetadata(input_tokens=1, output_tokens=0, total_tokens=1)
-    model = SlowModel(messages=itertools.repeat(answer("ok", usage=one_token)))
+    settings = make_settings(token_settings, budget_usd=0.05)
+    million_tokens = UsageMetadata(input_tokens=1_000_000, output_tokens=0, total_tokens=1_000_000)
+    model = SlowModel(messages=itertools.repeat(answer("ok", usage=million_tokens)))
     ada = as_user(sign_token, "ada")
     statuses: list[int] = []
     with web(settings, [], model, token_signing_key, tmp_path) as site:

@@ -1,14 +1,11 @@
-# The chat model behind the agent, and what it costs. DESKCLERK_MODEL names any provider
-# LangChain's init_chat_model knows, as provider:model. Every model call is priced from the
-# token usage in its response and counted against a spending cap that holds for the whole
-# process.
+# The chat model behind the agent, and what it costs. DESKCLERK_MODEL names an Anthropic model
+# as anthropic:model. Every model call is priced from the token usage in its response and
+# counted against the spending cap of the employee who asked.
 
 import os
 import threading
 from dataclasses import dataclass
-from typing import Any
 
-import anthropic
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
@@ -16,15 +13,9 @@ from langchain_core.messages import AIMessage
 from deskclerk.config import Settings
 
 MAX_TOKENS = 16000
-EXTRAS = frozenset({"openai", "ollama"})
-KEY_VARIABLES = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 
 
 class BudgetExceeded(RuntimeError):
-    pass
-
-
-class MissingProvider(ImportError):
     pass
 
 
@@ -96,8 +87,6 @@ def _anthropic_price(input_per_million: float, output_per_million: float, read: 
 
 
 # List prices in USD per million input and output tokens, for prompts up to 100,000 tokens.
-# A model missing here needs DESKCLERK_PRICE_INPUT and DESKCLERK_PRICE_OUTPUT, so no call
-# can go unpriced.
 PRICES = {
     "anthropic:claude-haiku-5-5": _anthropic_price(0.10, 0.50, CACHE_READ_MULTIPLIER),
     "anthropic:claude-sonnet-5-5": _anthropic_price(2.00, 10.00, CACHE_READ_MULTIPLIER),
@@ -106,20 +95,9 @@ PRICES = {
 
 
 def price_of(settings: Settings) -> Price:
-    if settings.price_input is not None and settings.price_output is not None:
-        if settings.model.startswith("anthropic:"):
-            return _anthropic_price(
-                settings.price_input, settings.price_output, CACHE_READ_MULTIPLIER
-            )
-        return Price(
-            settings.price_input, settings.price_output, settings.price_input, settings.price_input
-        )
     if settings.model not in PRICES:
         known = ", ".join(sorted(PRICES))
-        raise ValueError(
-            f"no price for model {settings.model!r}: set DESKCLERK_PRICE_INPUT and "
-            f"DESKCLERK_PRICE_OUTPUT in USD per million tokens, or use one of {known}"
-        )
+        raise ValueError(f"no price for model {settings.model!r}: use one of {known}")
     return PRICES[settings.model]
 
 
@@ -128,7 +106,6 @@ class Spending:
         self.price = price
         self.budget_usd = budget_usd
         self.usage = Usage(0, 0, 0, 0)
-        # The API answers requests on a thread pool, and every request records here.
         self._lock = threading.Lock()
 
     @property
@@ -153,47 +130,18 @@ class Spending:
             )
 
 
-def _options(provider: str) -> dict[str, Any]:
-    # Each client reads its API key from the environment, such as ANTHROPIC_API_KEY. Low effort
-    # keeps Anthropic's adaptive thinking short; thinking itself is left at the model's default
-    # because some models refuse a request that turns it off. Ollama ignores max_tokens and
-    # caps the answer with num_predict.
-    if provider == "anthropic":
-        return {"max_tokens": MAX_TOKENS, "effort": "low"}
-    if provider == "ollama":
-        return {"num_predict": MAX_TOKENS}
-    return {"max_tokens": MAX_TOKENS}
-
-
-def provider_errors() -> tuple[type[Exception], ...]:
-    try:
-        import openai
-    except ImportError:
-        return (anthropic.APIError,)
-    return (anthropic.APIError, openai.APIError)
-
-
-def missing_api_key(settings: Settings) -> str | None:
-    provider = settings.model.partition(":")[0]
-    variable = KEY_VARIABLES.get(provider)
-    if variable is not None and not os.environ.get(variable):
-        return f"{variable} is not set; put it in .env"
+def missing_api_key() -> str | None:
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return "ANTHROPIC_API_KEY is not set; put it in .env"
     return None
 
 
 def chat_model(settings: Settings) -> BaseChatModel:
     price_of(settings)
-    provider, _, name = settings.model.partition(":")
-    missing = missing_api_key(settings)
+    missing = missing_api_key()
     if missing is not None:
         raise MissingApiKey(missing)
-    try:
-        model: BaseChatModel = init_chat_model(name, model_provider=provider, **_options(provider))
-    except ImportError as error:
-        if provider not in EXTRAS:
-            raise
-        raise MissingProvider(
-            f"DESKCLERK_MODEL {settings.model!r} needs the {provider} package: "
-            f"pip install 'deskclerk[{provider}]'"
-        ) from error
-    return model
+    name = settings.model.removeprefix("anthropic:")
+    # Low effort keeps adaptive thinking short; thinking itself is left at the model's default
+    # because some models refuse a request that turns it off.
+    return init_chat_model(name, model_provider="anthropic", max_tokens=MAX_TOKENS, effort="low")

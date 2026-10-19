@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from importlib import resources
 from typing import Any
 
+import anthropic
 import httpx
 import httpx2
 import jwt
@@ -38,14 +39,13 @@ from deskclerk.connections import (
     UnknownState,
     WrongUser,
 )
-from deskclerk.graph import GraphGroups
-from deskclerk.providers import BudgetExceeded, Spending, price_of, provider_errors
+from deskclerk.providers import BudgetExceeded, Spending, price_of
 from deskclerk.quota import Quota
 from deskclerk.servers import McpServer
 from deskclerk.tokens import TokenStore
 
-SESSION_COOKIE = "ntk_session"
-LOGIN_COOKIE = "ntk_login"
+SESSION_COOKIE = "deskclerk_session"
+LOGIN_COOKIE = "deskclerk_login"
 CSRF_HEADER = "X-Requested-With"
 CSRF_VALUE = "deskclerk"
 MAX_REQUEST_CHARS = 4000
@@ -125,8 +125,6 @@ class Caller:
 def _session_payload(identity: Identity) -> dict[str, Any]:
     return {
         "user": identity.user_id,
-        "principals": sorted(identity.principals),
-        "scopes": sorted(identity.scopes),
         "client": identity.client_id,
     }
 
@@ -139,8 +137,6 @@ def _identity_from(payload: dict[str, Any]) -> Identity | None:
     try:
         return Identity(
             user_id=str(payload["user"]),
-            principals=frozenset(payload["principals"]),
-            scopes=frozenset(payload["scopes"]),
             client_id=str(payload["client"]),
         )
     except (KeyError, TypeError):
@@ -170,7 +166,6 @@ def create_app(
     model: BaseChatModel,
     gate: Gate,
     signing_key: SigningKeyLookup,
-    graph: GraphGroups | None = None,
     idp_transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
     if settings.session_key is None:
@@ -184,7 +179,7 @@ def create_app(
     spendings: dict[str, Spending] = {}
     ask_locks: dict[str, asyncio.Lock] = {}
     discovered: dict[str, oidc.Endpoints] = {}
-    model_errors: tuple[type[Exception], ...] = (*provider_errors(), *UPSTREAM_ERRORS)
+    model_errors: tuple[type[Exception], ...] = (anthropic.APIError, *UPSTREAM_ERRORS)
     server_by_name = {server.name: server for server in servers}
     page = resources.files("deskclerk").joinpath("static/index.html").read_text(encoding="utf-8")
     page_headers = {
@@ -204,7 +199,7 @@ def create_app(
                 raise HTTPException(401, "send Authorization: Bearer <access token>", BEARER)
             try:
                 identity = await run_in_threadpool(
-                    authenticate, token, settings, signing_key, settings.audience, graph
+                    authenticate, token, settings, signing_key, settings.audience
                 )
             except AuthError as error:
                 raise HTTPException(401, str(error), BEARER) from None
@@ -281,7 +276,7 @@ def create_app(
                 raise HTTPException(503, "the login server cannot be reached") from None
         try:
             identity = await run_in_threadpool(
-                authenticate, token, settings, signing_key, settings.audience, graph
+                authenticate, token, settings, signing_key, settings.audience
             )
         except AuthError:
             raise HTTPException(401, BROWSER_AUTH_REFUSED) from None

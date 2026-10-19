@@ -1,10 +1,8 @@
-# Validates an OpenID Connect access token and turns it into the principals documents
-# are filtered on.
+# Validates an OpenID Connect access token and names the employee it was issued to.
 
 import threading
 import time
-import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,12 +10,8 @@ import httpx
 import jwt
 
 from deskclerk.config import Settings
-from deskclerk.graph import GraphError, GraphGroups
 
 SigningKeyLookup = Callable[[str], jwt.PyJWK]
-
-EVERYONE_GROUP = "everyone"
-EVERYONE = f"group:{EVERYONE_GROUP}"
 
 JWKS_TIMEOUT_SECONDS = 5
 JWKS_REFETCH_SECONDS = 60
@@ -35,18 +29,10 @@ class AuthUnavailable(Exception):
 @dataclass(frozen=True)
 class Identity:
     user_id: str
-    principals: frozenset[str]
-    scopes: frozenset[str]
     client_id: str
 
 
-def principals(user_id: str, groups: Iterable[str]) -> frozenset[str]:
-    return frozenset({f"user:{user_id}", EVERYONE, *(f"group:{g}" for g in groups)})
-
-
 def discover_jwks_url(settings: Settings, client: httpx.Client) -> str:
-    if settings.jwks_url is not None:
-        return settings.jwks_url
     discovery = f"{settings.issuer}/.well-known/openid-configuration"
     try:
         response = client.get(discovery)
@@ -86,7 +72,6 @@ def authenticate(
     settings: Settings,
     signing_key: SigningKeyLookup,
     audience: str,
-    graph: GraphGroups | None = None,
 ) -> Identity:
     try:
         claims = jwt.decode(
@@ -105,33 +90,17 @@ def authenticate(
 
     _refuse_id_token(claims)
     username = claims[settings.user_claim]
-    scope = claims.get("scope", claims.get("scp", ""))
     if not isinstance(username, str) or not username:
         raise AuthError(f"{settings.user_claim} must be a non-empty string")
-    if isinstance(scope, list) and all(isinstance(s, str) for s in scope):
-        scope = " ".join(scope)
-    if not isinstance(scope, str):
-        raise AuthError("scope must be a string or a list of strings")
     client = claims.get("azp", claims.get("cid", ""))
     if not isinstance(client, str):
         raise AuthError("azp must be a string")
-    groups = _groups(claims, settings.groups_claim, graph)
-    # The database receives the principals joined by commas.
-    for name in [username, *groups]:
-        if "," in name:
-            raise AuthError(f"{name!r} contains a comma")
 
-    return Identity(
-        user_id=username,
-        principals=principals(username, groups),
-        scopes=frozenset(scope.split()),
-        client_id=client,
-    )
+    return Identity(user_id=username, client_id=client)
 
 
-# An ID token is signed by the same keys and can name the API as its audience, as Keycloak's
-# does. Keycloak marks its tokens with typ, Cognito with token_use, and only access tokens carry
-# the granted scopes: scope in Keycloak and RFC 9068, scp in Entra ID and Okta.
+# An ID token is signed by the same keys and can name the API as its audience. Only access tokens
+# carry the granted scopes: scope in Keycloak and RFC 9068, scp in Entra ID and Okta.
 def _refuse_id_token(claims: dict[str, Any]) -> None:
     if claims.get("typ", "Bearer") != "Bearer":
         raise AuthError(f"not an access token: typ is {claims['typ']!r}")
@@ -139,34 +108,3 @@ def _refuse_id_token(claims: dict[str, Any]) -> None:
         raise AuthError(f"not an access token: token_use is {claims['token_use']!r}")
     if "scope" not in claims and "scp" not in claims:
         raise AuthError("not an access token: it grants no scope")
-
-
-def _groups(claims: dict[str, Any], claim: str, graph: GraphGroups | None) -> list[str]:
-    overflow = claims.get("_claim_names")
-    if claim not in claims and isinstance(overflow, dict) and claim in overflow:
-        if graph is None:
-            raise AuthError(
-                "the token leaves out the groups because the user is in too many; set "
-                "DESKCLERK_GRAPH_TENANT_ID, DESKCLERK_GRAPH_CLIENT_ID and "
-                "DESKCLERK_GRAPH_CLIENT_SECRET to read them from Microsoft Graph"
-            )
-        try:
-            return graph.groups_of(_object_id(claims))
-        except GraphError as error:
-            raise AuthUnavailable(str(error)) from error
-    groups = claims.get(claim, [])
-    if not isinstance(groups, list) or not all(isinstance(g, str) and g for g in groups):
-        raise AuthError(f"{claim} must be a list of non-empty strings")
-    # Keycloak sends each group's full path, /parent/child, so two groups of the same name under
-    # different parents stay apart; a top-level /analyst becomes analyst.
-    names = [group.removeprefix("/") for group in groups]
-    if EVERYONE_GROUP in names:
-        raise AuthError(f"a group named {EVERYONE_GROUP!r} would read every public document")
-    return names
-
-
-def _object_id(claims: dict[str, Any]) -> str:
-    try:
-        return str(uuid.UUID(claims.get("oid")))
-    except (AttributeError, TypeError, ValueError):
-        raise AuthError("oid must be the user's object id to read their groups") from None

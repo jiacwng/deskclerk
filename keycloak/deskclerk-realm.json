@@ -284,7 +284,7 @@
       "attributes": {
         "include.in.token.scope": "true",
         "display.on.consent.screen": "true",
-        "consent.screen.text": "Search the documents and data you may read"
+        "consent.screen.text": "Work on your connected accounts"
       },
       "protocolMappers": [
         {
