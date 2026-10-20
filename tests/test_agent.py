@@ -12,7 +12,7 @@ import pytest
 from cryptography.fernet import Fernet
 from langchain_core.language_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.messages.ai import UsageMetadata
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
@@ -23,6 +23,8 @@ from deskclerk.providers import Usage
 from deskclerk.servers import McpServer
 from mcp_server import RunningServer, running_mcp_server
 from test_connections import REDIRECT, connect, make_connections, server_record
+
+SYSTEM = "Be careful."
 
 
 class ScriptedModel(GenericFakeChatModel):
@@ -106,6 +108,7 @@ async def run(
     return await run_agent(
         "ada",
         "save a note",
+        SYSTEM,
         servers,
         connections,
         model,
@@ -113,6 +116,16 @@ async def run(
         step_limit,
         lambda usage: None,
     )
+
+
+@pytest.mark.anyio
+async def test_the_model_gets_the_system_message_before_the_request(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    model = script(answer("done"))
+    await run(connections, [server_record(mcp_server)], model)
+    first_call = model.seen[0]
+    assert first_call == [SystemMessage(SYSTEM), HumanMessage("save a note")]
 
 
 @pytest.mark.anyio
@@ -252,6 +265,7 @@ async def test_usage_billed_before_a_provider_failure_is_recorded(
         await run_agent(
             "ada",
             "read my note",
+            SYSTEM,
             [server_record(mcp_server)],
             connections,
             model,

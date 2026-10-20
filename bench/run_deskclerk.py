@@ -22,16 +22,17 @@ from langchain_core.language_models import BaseChatModel
 from mcp.shared.exceptions import MCPError
 
 from deskclerk.agent import AgentResult, Gate, ProposedCall, Verdict, run_agent
+from deskclerk.config import Settings
 from deskclerk.connections import OAuthConnections
+from deskclerk.instructions import INSTRUCTIONS
 from deskclerk.jev import Jev, jev_from_environment
-from deskclerk.providers import MAX_TOKENS, PRICES, Usage
+from deskclerk.providers import EFFORT, MAX_TOKENS, PRICES, Usage
 from deskclerk.servers import McpServer
 from deskclerk.tokens import TokenStore
 from deskclerk.writecheck import write_check
 from workbench import Task, date_line, split_tasks, write_results
 
 SERVER = Path(__file__).parent / "workbench_server.py"
-STEP_LIMIT = 20
 # WorkBench's reference loop retries a busy or failed model call up to 10 times.
 MODEL_RETRIES = 10
 USER = "bench"
@@ -41,7 +42,7 @@ PROVIDER_FAILURES = (anthropic.APIError, MCPError, httpx2.HTTPError)
 
 @dataclass(frozen=True)
 class WorkbenchText:
-    request_prefix: str
+    system: str
     stopped_message: str
 
 
@@ -60,8 +61,9 @@ def load_workbench_text(workbench: Path) -> WorkbenchText:
     from src.data_generation.data_generation_utils import HARDCODED_CURRENT_TIME
     from src.evals.agent import ACT_WITHOUT_CONFIRMATION_SUFFIX, AGENT_STOPPED_MESSAGE
 
-    prefix = f"{date_line(HARDCODED_CURRENT_TIME)} {ACT_WITHOUT_CONFIRMATION_SUFFIX.strip()}"
-    return WorkbenchText(prefix, AGENT_STOPPED_MESSAGE)
+    suffix = ACT_WITHOUT_CONFIRMATION_SUFFIX.strip()
+    system = f"{INSTRUCTIONS}\n{date_line(HARDCODED_CURRENT_TIME)} {suffix}"
+    return WorkbenchText(system, AGENT_STOPPED_MESSAGE)
 
 
 async def run_task(worker: Worker, task: Task, text: WorkbenchText) -> dict[str, Any]:
@@ -76,12 +78,13 @@ async def run_task(worker: Worker, task: Task, text: WorkbenchText) -> dict[str,
         try:
             result: AgentResult = await run_agent(
                 USER,
-                f"{text.request_prefix}\n\n{task.text}",
+                task.text,
+                text.system,
                 [server],
                 worker.connections,
                 worker.model,
                 worker.gate,
-                STEP_LIMIT,
+                Settings.model_fields["step_limit"].default,
                 usage.append,
             )
             answer = result.answer
@@ -221,7 +224,11 @@ def main() -> None:
                 start_server(stack, arguments.server_python, workbench),
                 connections,
                 init_chat_model(
-                    name, model_provider=provider, max_tokens=MAX_TOKENS, max_retries=MODEL_RETRIES
+                    name,
+                    model_provider=provider,
+                    max_tokens=MAX_TOKENS,
+                    effort=EFFORT,
+                    max_retries=MODEL_RETRIES,
                 ),
                 gate,
                 arguments.model,
