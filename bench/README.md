@@ -9,6 +9,10 @@ bench/ measures deskclerk's agent on WorkBench (olly-styles/WorkBench), a set of
 - `compare.py`: scores results files with WorkBench's own scorer and compares runs pairwise with an exact McNemar test.
 - `jev_calls.py`: replays the calls logged in results files and lists every write call with its request, arguments, earlier results and whether the ground truth contains it.
 - `jev_score.py`: scores those write calls with Jev and with Claude Haiku 5.5 and reports how well each score separates wanted from unwanted calls.
+- `run_agentdojo.py`: runs the agent through AgentDojo v1.2.2 with one defense (none, spotlighting, deberta, promptguard or jev) and writes a JSON summary.
+- `compare_agentdojo.py`: prints one table of the summaries and an exact McNemar test of each defense against no defense.
+- `dojo_summary.py`: the summary arithmetic and the model cost used by the two files above.
+- `agentdojo-requirements.txt`: what the AgentDojo virtualenv installs.
 - `test_*.py`: tests for the files above. They need `WORKBENCH_PATH` and `SERVER_PYTHON` set (see below).
 - `requirements.txt`: what the bench virtualenv installs.
 
@@ -84,6 +88,34 @@ PYTHONPATH=src python bench/jev_score.py --calls runs/jev-calls.jsonl   --scores
 ```
 
 The report gives, per judge and per split, the ROC AUC with a 95% bootstrap interval. It then applies one rule: the threshold is the highest unwanted score on dev, and a test call runs without confirmation when its score is strictly above it.
+
+## Measure prompt injection defenses on AgentDojo
+
+AgentDojo needs its own virtualenv, because it pins versions the other bench scripts do not:
+
+```
+python3 -m venv ~/.venvs/dojo
+~/.venvs/dojo/bin/pip install -r bench/agentdojo-requirements.txt
+~/.venvs/dojo/bin/pip install -e .
+```
+
+Run one defense on all four suites. Each run reads `ANTHROPIC_API_KEY`, and `--defense jev` also reads `TYPESAFE_API_KEY`. The deberta and promptguard defenses download their models from Hugging Face on first use, and promptguard needs a Hugging Face login that has accepted Meta's licence for Llama Prompt Guard 2. Run the defenses one at a time, because a second run in parallel reaches the model's input token rate limit:
+
+```
+for defense in none spotlighting deberta promptguard jev; do
+  ~/.venvs/dojo/bin/python bench/run_agentdojo.py --suite all --defense $defense \
+    --logdir runs/dojo --out runs/dojo-$defense.json
+done
+```
+
+Compare the summaries. The first file is the baseline:
+
+```
+~/.venvs/dojo/bin/python bench/compare_agentdojo.py runs/dojo-none.json runs/dojo-spotlighting.json \
+  runs/dojo-deberta.json runs/dojo-promptguard.json runs/dojo-jev.json > runs/dojo-compare.md
+```
+
+A summary reports, per suite, the share of user tasks completed without an attack, the share completed under attack and the share of attacks that succeeded. Jev is shown each tool output together with the user request and flags it at a probability of 0.5 or more.
 
 ## Run the bench tests
 
