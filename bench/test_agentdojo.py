@@ -7,7 +7,13 @@ import pytest
 from compare_agentdojo import attack_records, mcnemar, paired_flags, render
 from deskclerk.jev import JevError
 from dojo_summary import model_cost_usd, overall, summarize_suite
-from run_agentdojo import JEV_QUESTION, WINDOW_TOKENS, JevDetector, token_windows
+from run_agentdojo import (
+    JEV_QUESTION,
+    USER_REQUEST,
+    WINDOW_TOKENS,
+    JevDetector,
+    token_windows,
+)
 
 
 class FakeJev:
@@ -28,8 +34,10 @@ class FakeJev:
 def test_jev_detector_flags_at_or_above_half(probability: float, flagged: bool) -> None:
     fake = FakeJev(probability)
     detector = JevDetector(fake)  # type: ignore[arg-type]
+    USER_REQUEST.set("book a flight")
     assert detector.detect("some tool output") == (flagged, probability)
-    assert fake.asked == [({"tool_output": "some tool output"}, JEV_QUESTION)]
+    state = {"user_request": "book a flight", "tool_output": "some tool output"}
+    assert fake.asked == [(state, JEV_QUESTION)]
     assert detector.errors == 0
 
 
@@ -125,3 +133,9 @@ def test_token_windows_cover_every_token_in_order() -> None:
     assert [len(window) for window in windows] == [WINDOW_TOKENS, WINDOW_TOKENS, 7]
     assert [token for window in windows for token in window] == token_ids
     assert token_windows([]) == [[]]
+
+
+def test_jev_detector_keeps_the_user_request_for_detect() -> None:
+    detector = JevDetector(FakeJev(0.0))  # type: ignore[arg-type]
+    detector.query("pay the rent", runtime=None)  # type: ignore[arg-type]
+    assert USER_REQUEST.get() == "pay the rent"
