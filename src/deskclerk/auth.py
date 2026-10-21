@@ -1,5 +1,7 @@
-# Validates an OpenID Connect access token and names the employee it was issued to.
+# Names the employee an OpenID Connect token was issued to: authenticate checks the access token a
+# bearer caller sends, identify checks the ID token that browser sign-in receives.
 
+import hmac
 import threading
 import time
 from collections.abc import Callable
@@ -97,6 +99,42 @@ def authenticate(
         raise AuthError("azp must be a string")
 
     return Identity(user_id=username, client_id=client)
+
+
+def identify(
+    id_token: str,
+    settings: Settings,
+    signing_key: SigningKeyLookup,
+    nonce: str,
+) -> Identity:
+    try:
+        claims = jwt.decode(
+            id_token,
+            signing_key(id_token),
+            algorithms=["RS256", "ES256"],
+            audience=settings.client_id,
+            issuer=settings.issuer,
+            leeway=CLOCK_SKEW_SECONDS,
+            options={"require": ["exp", "iat", "iss", "aud", "nonce", settings.user_claim]},
+        )
+    except jwt.PyJWKClientConnectionError as error:
+        raise AuthUnavailable(f"cannot fetch the signing keys: {error}") from error
+    except jwt.PyJWTError as error:
+        raise AuthError(f"invalid token: {error}") from error
+
+    sent_nonce = claims["nonce"]
+    if not isinstance(sent_nonce, str) or not hmac.compare_digest(
+        sent_nonce.encode(), nonce.encode()
+    ):
+        raise AuthError("nonce does not match the sign-in")
+    if isinstance(claims["aud"], list) and len(claims["aud"]) > 1:
+        if claims.get("azp") != settings.client_id:
+            raise AuthError("azp must be this client when the token has several audiences")
+    username = claims[settings.user_claim]
+    if not isinstance(username, str) or not username:
+        raise AuthError(f"{settings.user_claim} must be a non-empty string")
+
+    return Identity(user_id=username, client_id=settings.client_id)
 
 
 # An ID token is signed by the same keys and can name the API as its audience. Only access tokens

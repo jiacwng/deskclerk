@@ -1,4 +1,4 @@
-# auth.py turns a signed access token into an identity and refuses every token it should.
+# auth.py turns a signed access token or ID token into an identity and refuses every bad one.
 # Tokens are signed with the throwaway RSA key from conftest.py, so no Keycloak server is needed.
 
 import time
@@ -17,6 +17,7 @@ from deskclerk.auth import (
     SigningKeyLookup,
     authenticate,
     discover_jwks_url,
+    identify,
     jwks_signing_key,
 )
 from deskclerk.config import Settings
@@ -292,3 +293,58 @@ def test_an_es256_token_is_accepted(sign_token: Sign, token_settings: Settings) 
     identity = authenticate(token, token_settings, lambda _: public, token_settings.audience)
 
     assert identity.user_id == "district-1"
+
+
+def test_an_id_token_names_the_user_and_this_client(
+    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup
+) -> None:
+    token = sign_token({"nonce": "n-1", "aud": "deskclerk-api", "azp": None, "scope": None})
+    identity = identify(token, token_settings, token_signing_key, "n-1")
+    assert (identity.user_id, identity.client_id) == ("district-1", "deskclerk-api")
+
+
+@pytest.mark.parametrize(
+    ("claims", "reason"),
+    [
+        pytest.param({"nonce": "other"}, "nonce does not match", id="wrong-nonce"),
+        pytest.param({"nonce": None}, "nonce", id="no-nonce"),
+        pytest.param({"aud": "account"}, "Audience doesn't match", id="wrong-audience"),
+        pytest.param({"iss": "http://evil.test/realms/deskclerk"}, "issuer", id="wrong-issuer"),
+        pytest.param({"exp": -60}, "expired", id="expired"),
+        pytest.param({"aud": ["deskclerk-api", "x"], "azp": None}, "azp", id="no-azp"),
+        pytest.param({"aud": ["deskclerk-api", "x"], "azp": "x"}, "azp", id="other-azp"),
+        pytest.param({"preferred_username": None}, "preferred_username", id="no-username"),
+    ],
+)
+def test_a_bad_id_token_is_refused(
+    claims: dict[str, object],
+    reason: str,
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+) -> None:
+    offset = claims.get("exp")
+    if isinstance(offset, int):
+        claims = claims | {"exp": int(time.time()) + offset}
+    token = sign_token({"nonce": "n-1"} | claims)
+    with pytest.raises(AuthError, match=reason):
+        identify(token, token_settings, token_signing_key, "n-1")
+
+
+def test_an_id_token_is_not_accepted_as_a_bearer_token(
+    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup
+) -> None:
+    token = sign_token({"nonce": "n-1", "typ": "ID", "scope": None})
+    with pytest.raises(AuthError, match="typ is 'ID'"):
+        authenticate(token, token_settings, token_signing_key, token_settings.audience)
+
+
+def test_an_id_token_is_checked_against_the_client_id_not_the_api_audience(
+    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup
+) -> None:
+    settings = token_settings.model_copy(update={"audience": "api://default"})
+    accepted = sign_token({"nonce": "n-1", "aud": settings.client_id})
+    assert identify(accepted, settings, token_signing_key, "n-1").user_id == "district-1"
+    refused = sign_token({"nonce": "n-1", "aud": "api://default", "azp": None})
+    with pytest.raises(AuthError, match="Audience doesn't match"):
+        identify(refused, settings, token_signing_key, "n-1")

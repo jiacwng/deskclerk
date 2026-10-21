@@ -210,6 +210,31 @@
       ]
     },
     {
+      "name": "email",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "${emailScopeConsentText}"
+      },
+      "protocolMappers": [
+        {
+          "name": "email",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "email",
+            "claim.name": "email",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
       "name": "web-origins",
       "protocol": "openid-connect",
       "attributes": {
@@ -255,6 +280,7 @@
   "defaultDefaultClientScopes": [
     "basic",
     "profile",
+    "email",
     "web-origins"
   ],
   "defaultOptionalClientScopes": [

@@ -52,8 +52,10 @@ The employees' MCP tokens are stored in the `deskclerk-data` volume, encrypted w
 
 For your company login, set `DESKCLERK_ISSUER`, `DESKCLERK_CLIENT_ID` and
 `DESKCLERK_SIGN_IN_REDIRECT_URL` in `.env` and start the app alone with
-`docker compose up -d --no-deps deskclerk`. The `DESKCLERK_` settings are listed in
-`src/deskclerk/config.py`.
+`docker compose up -d --no-deps deskclerk`. Register deskclerk there with that redirect URL.
+If the provider gives the app a client secret, set `DESKCLERK_CLIENT_SECRET`. If your provider has
+no `preferred_username` claim, as with Google, set `DESKCLERK_USER_CLAIM=email`. The `DESKCLERK_`
+settings are listed in `src/deskclerk/config.py`.
 
 ## Serving it over HTTPS
 
