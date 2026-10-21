@@ -57,8 +57,9 @@ For your company login, set `DESKCLERK_ISSUER`, `DESKCLERK_CLIENT_ID` and
 
 ## Serving it over HTTPS
 
-deskclerk listens on 127.0.0.1:8000 only, so put a reverse proxy on the same machine in front
-of it. With Caddy, which gets a TLS certificate by itself, this Caddyfile is enough:
+deskclerk listens on 127.0.0.1:8000 by default, so put a reverse proxy on the same machine in
+front of it, or set DESKCLERK_HOST=0.0.0.0 when the proxy runs in another container. With
+Caddy, which gets a TLS certificate by itself, this Caddyfile is enough:
 
 ```
 deskclerk.example.com {

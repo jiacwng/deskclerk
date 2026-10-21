@@ -22,8 +22,6 @@ from deskclerk.writecheck import write_check
 
 FLOW_TIMEOUT_SECONDS = 600
 MCP_CLIENT_NAME = "deskclerk"
-HOST = "127.0.0.1"
-PORT = 8000
 SPENDING_FILE = "spending.sqlite"
 
 
@@ -79,7 +77,7 @@ def main() -> None:
     ) as error:
         sys.exit(f"deskclerk: {error}")
     log_to_stdout()
-    uvicorn.run(app, host=HOST, port=PORT)
+    uvicorn.run(app, host=settings.host, port=settings.port)
     if tracing is not None:
         tracing.flush()
 

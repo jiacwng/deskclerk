@@ -28,3 +28,25 @@ def test_a_short_session_key_is_refused() -> None:
     with pytest.raises(ValidationError, match="at least 32 characters"):
         Settings(session_key=SecretStr("short"))
     assert Settings(session_key=SecretStr("k" * 32)).session_key is not None
+
+
+def test_deskclerk_listens_on_localhost_port_8000_by_default() -> None:
+    settings = Settings()
+    assert settings.host == "127.0.0.1"
+    assert settings.port == 8000
+
+
+def test_the_listen_address_and_port_are_read_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DESKCLERK_HOST", "10.1.2.3")
+    monkeypatch.setenv("DESKCLERK_PORT", "9000")
+    settings = Settings()
+    assert settings.host == "10.1.2.3"
+    assert settings.port == 9000
+
+
+@pytest.mark.parametrize("port", [0, 70000])
+def test_a_port_outside_1_to_65535_is_refused(port: int) -> None:
+    with pytest.raises(ValidationError):
+        Settings(port=port)
