@@ -15,6 +15,7 @@ from deskclerk.connections import OAuthConnections
 from deskclerk.jev import jev_from_environment
 from deskclerk.providers import MissingApiKey, chat_model
 from deskclerk.servers import ServersError, load_servers
+from deskclerk.spending import SpendingStore
 from deskclerk.tokens import TokenKeyError, TokenStore
 from deskclerk.tracing import TracingNotInstalled, tracing_from_environment
 from deskclerk.writecheck import write_check
@@ -23,6 +24,7 @@ FLOW_TIMEOUT_SECONDS = 600
 MCP_CLIENT_NAME = "deskclerk"
 HOST = "127.0.0.1"
 PORT = 8000
+SPENDING_FILE = "spending.sqlite"
 
 
 def main() -> None:
@@ -32,6 +34,7 @@ def main() -> None:
             raise TokenKeyError("DESKCLERK_TOKEN_KEY is not set; put it in .env")
         servers = load_servers(settings.servers_file)
         tokens = TokenStore(settings.token_file, settings.token_key.get_secret_value())
+        spending_store = SpendingStore(settings.token_file.parent / SPENDING_FILE)
         connections = OAuthConnections(
             tokens, settings.redirect_url, MCP_CLIENT_NAME, FLOW_TIMEOUT_SECONDS
         )
@@ -57,6 +60,7 @@ def main() -> None:
             servers,
             connections,
             tokens,
+            spending_store,
             chat_model(settings),
             write_check(),
             jev,

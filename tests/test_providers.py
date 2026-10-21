@@ -11,14 +11,10 @@ from langchain_core.runnables import RunnableBinding
 
 from deskclerk import providers
 from deskclerk.config import Settings
-from deskclerk.jev import PRICE_PER_INPUT_TOKEN
 from deskclerk.providers import (
     MAX_TOKENS,
-    BudgetExceeded,
     InconsistentUsage,
     MissingApiKey,
-    Price,
-    Spending,
     Usage,
     chat_model,
     price_of,
@@ -133,35 +129,3 @@ def test_cache_tokens_beyond_the_input_tokens_are_refused() -> None:
 
     with pytest.raises(InconsistentUsage, match="exceed the 1000 input tokens"):
         price.cost(usage)
-
-
-def test_the_budget_counts_cache_costs() -> None:
-    price = Price(1.0, 0.0, 0.0, 10.0)
-    spending = Spending(price, budget_usd=5.0)
-
-    spending.record(usage_from(_message(1_000_000, 0, cache_read=1_000_000)))
-    spending.check()
-    spending.record(usage_from(_message(1_000_000, 0, cache_creation=1_000_000)))
-
-    assert spending.cost_usd == pytest.approx(10.0)
-    with pytest.raises(BudgetExceeded):
-        spending.check()
-
-
-def test_jev_tokens_raise_the_cost_and_count_against_the_budget() -> None:
-    spending = Spending(Price(1.0, 0.0, 0.0, 0.0), budget_usd=0.04)
-
-    spending.record_jev(1_000_000)
-    assert spending.cost_usd == pytest.approx(1_000_000 * PRICE_PER_INPUT_TOKEN)
-    with pytest.raises(BudgetExceeded):
-        spending.check()
-
-
-def test_the_cost_is_the_model_plus_jev() -> None:
-    spending = Spending(Price(1.0, 0.0, 0.0, 0.0), budget_usd=5.0)
-
-    spending.record(Usage(1_000_000, 0, 0, 0))
-    spending.record_jev(500_000)
-
-    assert spending.cost_usd == pytest.approx(1.0 + 500_000 * PRICE_PER_INPUT_TOKEN)
-    spending.check()

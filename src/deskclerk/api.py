@@ -43,10 +43,11 @@ from deskclerk.connections import (
 )
 from deskclerk.instructions import system_prompt
 from deskclerk.jev import Jev
-from deskclerk.providers import BudgetExceeded, Spending, price_of
+from deskclerk.providers import BudgetExceeded, price_of
 from deskclerk.quota import Quota
 from deskclerk.screen import jev_screen
 from deskclerk.servers import McpServer
+from deskclerk.spending import Spending, SpendingStore, month_of
 from deskclerk.tokens import TokenStore
 from deskclerk.tracing import Tracing
 
@@ -170,6 +171,7 @@ def create_app(
     servers: list[McpServer],
     connections: OAuthConnections,
     tokens: TokenStore,
+    spending_store: SpendingStore,
     model: BaseChatModel,
     gate: Gate,
     jev: Jev | None,
@@ -185,7 +187,7 @@ def create_app(
     price = price_of(settings)
     quota = Quota(settings.requests_per_minute)
     audit = Audit(settings.audit_text, settings.audit_key)
-    spendings: dict[str, Spending] = {}
+    spendings: dict[tuple[str, str], Spending] = {}
     ask_locks: dict[str, asyncio.Lock] = {}
     discovered: dict[str, oidc.Endpoints] = {}
     model_errors: tuple[type[Exception], ...] = (anthropic.APIError, *UPSTREAM_ERRORS)
@@ -382,7 +384,12 @@ def create_app(
                 429, f"at most {settings.requests_per_minute} asks a minute", {"Retry-After": "60"}
             )
         async with ask_locks.setdefault(identity.user_id, asyncio.Lock()):
-            spending = spendings.setdefault(identity.user_id, Spending(price, settings.budget_usd))
+            month = month_of(datetime.now(UTC))
+            if (identity.user_id, month) not in spendings:
+                spendings[identity.user_id, month] = Spending(
+                    price, settings.budget_usd, spending_store, identity.user_id, month
+                )
+            spending = spendings[identity.user_id, month]
             try:
                 spending.check()
             except BudgetExceeded as error:
