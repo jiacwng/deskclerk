@@ -377,14 +377,14 @@ def test_an_ask_gives_the_model_the_instructions_with_today_s_utc_date(
 
 class RecordingTracing(Tracing):
     def __init__(self) -> None:
-        super().__init__(None, "test")
+        super().__init__(None, "test", True, None)
         self.users: list[str] = []
         self.withheld: list[int] = []
 
     @contextmanager
     def ask(self, user_id: str) -> Iterator[AskTrace]:
         self.users.append(user_id)
-        trace = AskTrace({}, SimpleNamespace(update=self._record))
+        trace = AskTrace({}, SimpleNamespace(update=self._record), None)
         yield trace
 
     def _record(self, metadata: dict[str, int]) -> None:

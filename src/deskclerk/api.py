@@ -28,7 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from deskclerk import cookies, oidc
-from deskclerk.agent import Gate, run_agent
+from deskclerk.agent import Gate, no_tool_span, run_agent
 from deskclerk.audit import Audit
 from deskclerk.auth import AuthError, AuthUnavailable, Identity, SigningKeyLookup, authenticate
 from deskclerk.config import Settings
@@ -403,6 +403,7 @@ def create_app(
                         settings.step_limit,
                         spending.record,
                         trace.config if trace else None,
+                        trace.tool_span if trace else no_tool_span,
                     )
                     if trace:
                         trace.finish(result.withheld)

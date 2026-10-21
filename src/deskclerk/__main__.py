@@ -44,7 +44,7 @@ def main() -> None:
                 "so tool outputs are not screened for prompt injection",
                 file=sys.stderr,
             )
-        tracing = tracing_from_environment(settings.audit_text)
+        tracing = tracing_from_environment(settings.audit_text, settings.audit_key)
         if tracing is None:
             print(
                 "deskclerk: LANGFUSE keys are not set, so requests are not traced",

@@ -20,6 +20,10 @@ from deskclerk.auth import Identity
 _log = logging.getLogger(__name__)
 
 
+def hmac_hex(key: SecretStr, text: str) -> str:
+    return hmac.new(key.get_secret_value().encode(), text.encode(), hashlib.sha256).hexdigest()
+
+
 class Audit:
     def __init__(self, include_text: bool, key: SecretStr | None) -> None:
         self.include_text = include_text
@@ -88,8 +92,7 @@ class Audit:
     def _hmac(self, text: str) -> str | None:
         if self.key is None:
             return None
-        key = self.key.get_secret_value().encode()
-        return hmac.new(key, text.encode(), hashlib.sha256).hexdigest()
+        return hmac_hex(self.key, text)
 
 
 # The server entry point calls this once: the process writes its audit lines to stdout and the
