@@ -20,6 +20,7 @@ from langchain_core.tools import BaseTool
 from deskclerk.agent import AgentResult, ProposedCall, Verdict, run_agent
 from deskclerk.connections import OAuthConnections
 from deskclerk.providers import Usage
+from deskclerk.screen import WITHHELD, Screen, pass_through
 from deskclerk.servers import McpServer
 from mcp_server import RunningServer, running_mcp_server
 from test_connections import REDIRECT, connect, make_connections, server_record
@@ -103,6 +104,7 @@ async def run(
     servers: list[McpServer],
     model: BaseChatModel,
     gate: RecordingGate | None = None,
+    screen: Screen = pass_through,
     step_limit: int = 5,
 ) -> AgentResult:
     return await run_agent(
@@ -113,6 +115,7 @@ async def run(
         connections,
         model,
         gate or RecordingGate(True),
+        screen,
         step_limit,
         lambda usage: None,
     )
@@ -270,6 +273,7 @@ async def test_usage_billed_before_a_provider_failure_is_recorded(
             connections,
             model,
             RecordingGate(True),
+            pass_through,
             5,
             billed.append,
         )
@@ -305,3 +309,54 @@ async def test_a_server_without_sign_in_works_without_connecting(tmp_path: Path)
     assert [call.result for call in result.executed] == ["the note", "wrote x"]
     assert [asked.tool.name for asked in gate.asked] == ["write_note"]
     assert gate.asked[0].observed == ("the note",)
+
+
+class RecordingScreen:
+    def __init__(self, replace_with: str | None) -> None:
+        self.replace_with = replace_with
+        self.asked: list[tuple[str, str]] = []
+
+    async def __call__(self, request: str, output: str) -> str:
+        self.asked.append((request, output))
+        return output if self.replace_with is None else self.replace_with
+
+
+@pytest.mark.anyio
+async def test_a_withheld_result_reaches_neither_the_model_nor_the_record(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    screen = RecordingScreen(WITHHELD)
+    model = script(calls(("notes__read_note", {})), answer("done"))
+    result = await run(connections, [server_record(mcp_server)], model, screen=screen)
+    assert screen.asked == [("save a note", "the note")]
+    reply = model.seen[1][-1]
+    assert isinstance(reply, ToolMessage)
+    assert reply.content == WITHHELD
+    assert result.executed[0].result == WITHHELD
+    assert result.withheld == 1
+
+
+@pytest.mark.anyio
+async def test_a_tool_error_is_screened_too(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    screen = RecordingScreen(WITHHELD)
+    model = script(calls(("notes__break_note", {})), answer("done"))
+    result = await run(connections, [server_record(mcp_server)], model, screen=screen)
+    reply = model.seen[1][-1]
+    assert isinstance(reply, ToolMessage)
+    assert (reply.content, reply.status) == (WITHHELD, "error")
+    assert result.executed[0].result == WITHHELD
+    assert result.withheld == 1
+
+
+@pytest.mark.anyio
+async def test_a_result_that_passes_the_screen_is_not_counted_as_withheld(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    model = script(calls(("notes__read_note", {})), answer("done"))
+    result = await run(
+        connections, [server_record(mcp_server)], model, screen=RecordingScreen(None)
+    )
+    assert result.executed[0].result == "the note"
+    assert result.withheld == 0

@@ -25,8 +25,8 @@ from deskclerk.agent import AgentResult, Gate, ProposedCall, Verdict, run_agent
 from deskclerk.config import Settings
 from deskclerk.connections import OAuthConnections
 from deskclerk.instructions import INSTRUCTIONS
-from deskclerk.jev import Jev, jev_from_environment
 from deskclerk.providers import EFFORT, MAX_TOKENS, PRICES, Usage
+from deskclerk.screen import pass_through
 from deskclerk.servers import McpServer
 from deskclerk.tokens import TokenStore
 from deskclerk.writecheck import write_check
@@ -53,7 +53,6 @@ class Worker:
     model: BaseChatModel
     gate: Gate
     price_key: str
-    jev: Jev | None
 
 
 def load_workbench_text(workbench: Path) -> WorkbenchText:
@@ -70,7 +69,6 @@ async def run_task(worker: Worker, task: Task, text: WorkbenchText) -> dict[str,
     base = worker.url.removesuffix("/mcp")
     server = McpServer("workbench", worker.url, None, None, "none")
     usage: list[Usage] = []
-    jev_cost_before = worker.jev.cost_usd if worker.jev else 0.0
     answer, error = "", ""
     blocked: list[dict[str, Any]] = []
     async with httpx.AsyncClient() as http:
@@ -84,6 +82,7 @@ async def run_task(worker: Worker, task: Task, text: WorkbenchText) -> dict[str,
                 worker.connections,
                 worker.model,
                 worker.gate,
+                pass_through,
                 Settings.model_fields["step_limit"].default,
                 usage.append,
             )
@@ -106,7 +105,6 @@ async def run_task(worker: Worker, task: Task, text: WorkbenchText) -> dict[str,
         sum(step.cache_read_tokens for step in usage),
         sum(step.cache_write_tokens for step in usage),
     )
-    jev_cost = (worker.jev.cost_usd - jev_cost_before) if worker.jev else 0.0
     return {
         "domain": task.domain,
         "task": task.text,
@@ -117,7 +115,7 @@ async def run_task(worker: Worker, task: Task, text: WorkbenchText) -> dict[str,
         "output_tokens": total.output_tokens,
         "cache_read_tokens": total.cache_read_tokens,
         "cache_write_tokens": total.cache_write_tokens,
-        "cost_usd": PRICES[worker.price_key].cost(total) + jev_cost,
+        "cost_usd": PRICES[worker.price_key].cost(total),
         "blocked": json.dumps(blocked),
     }
 
@@ -185,11 +183,10 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run deskclerk's agent on a WorkBench split.")
     parser.add_argument("--workbench", type=Path, required=True)
     parser.add_argument("--split", choices=["dev", "test"], required=True)
-    parser.add_argument("--gate", choices=["none", "rules", "check"], required=True)
+    parser.add_argument("--gate", choices=["none", "rules"], required=True)
     parser.add_argument("--model", default="anthropic:claude-haiku-5-5", choices=sorted(PRICES))
     parser.add_argument("--server-python", required=True)
     parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--jev-budget-usd", type=float, default=2.0)
     parser.add_argument("--out", type=Path, required=True)
     return parser.parse_args()
 
@@ -198,22 +195,17 @@ async def allow_everything(call: ProposedCall) -> Verdict:
     return Verdict(True, "no check")
 
 
-def make_gate(kind: str, budget_usd: float) -> tuple[Gate, Jev | None]:
+def make_gate(kind: str) -> Gate:
     if kind == "none":
-        return allow_everything, None
-    if kind == "rules":
-        return write_check(None), None
-    jev = jev_from_environment(budget_usd)
-    if jev is None:
-        raise SystemExit("--gate check needs TYPESAFE_API_KEY in the environment")
-    return write_check(jev), jev
+        return allow_everything
+    return write_check()
 
 
 def main() -> None:
     arguments = parse_arguments()
     workbench: Path = arguments.workbench.resolve()
     provider, name = arguments.model.split(":", 1)
-    gates = [make_gate(arguments.gate, arguments.jev_budget_usd) for _ in range(arguments.workers)]
+    gate = make_gate(arguments.gate)
     text = load_workbench_text(workbench)
     tasks = split_tasks(workbench, arguments.split)
     with ExitStack() as stack, tempfile.TemporaryDirectory() as scratch:
@@ -232,9 +224,8 @@ def main() -> None:
                 ),
                 gate,
                 arguments.model,
-                jev,
             )
-            for gate, jev in gates
+            for _ in range(arguments.workers)
         ]
         rows = asyncio.run(run_split(workers, tasks, text))
     write_results(arguments.out, rows)

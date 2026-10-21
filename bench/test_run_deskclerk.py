@@ -94,7 +94,7 @@ def run(worker: Worker, task: Task, text: WorkbenchText) -> dict[str, Any]:
 
 
 def worker_for(url: str, connections: OAuthConnections, model: Any, gate: Gate) -> Worker:
-    return Worker(url, connections, model, gate, MODEL, None)
+    return Worker(url, connections, model, gate, MODEL)
 
 
 def test_an_allowed_write_is_logged_in_workbench_format(

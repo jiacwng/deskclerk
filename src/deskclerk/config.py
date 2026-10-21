@@ -22,7 +22,6 @@ class Settings(BaseSettings):
     user_claim: str = "preferred_username"
     model: str = "anthropic:claude-haiku-5-5"
     budget_usd: float = 2.0
-    jev_budget_usd: float = 1.0
     audit_text: bool = False
     audit_key: SecretStr | None = None
     requests_per_minute: int = 20

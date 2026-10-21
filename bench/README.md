@@ -5,11 +5,11 @@ bench/ measures deskclerk's agent on WorkBench (olly-styles/WorkBench), a set of
 - `workbench.py`: the task files, the dev/test split, the date line WorkBench puts before every task, and the columns of a results file.
 - `workbench_server.py`: serves the WorkBench tools over MCP and logs each executed call in the format WorkBench's grader replays.
 - `run_reference.py`: runs WorkBench's own agent loop, unchanged, on one split.
-- `run_deskclerk.py`: runs deskclerk's agent loop on one split against the WorkBench MCP server, with the write gate set to none, rules or check, and with the settings the product uses: its system instructions (followed by WorkBench's date line and act-without-confirmation sentence), its output limit, its effort setting and its step limit.
+- `run_deskclerk.py`: runs deskclerk's agent loop on one split against the WorkBench MCP server, with the write gate set to none or rules, and with the settings the product uses: its system instructions (followed by WorkBench's date line and act-without-confirmation sentence), its output limit, its effort setting and its step limit.
 - `compare.py`: scores results files with WorkBench's own scorer and compares runs pairwise with an exact McNemar test.
 - `jev_calls.py`: replays the calls logged in results files and lists every write call with its request, arguments, earlier results and whether the ground truth contains it.
 - `jev_score.py`: scores those write calls with Jev and with Claude Haiku 5.5 and reports how well each score separates wanted from unwanted calls.
-- `run_agentdojo.py`: runs the agent through AgentDojo v1.2.2 with one defense (none, spotlighting, deberta, promptguard or jev) and writes a JSON summary.
+- `run_agentdojo.py`: runs the agent through AgentDojo v1.2.2 with one defense (none, spotlighting, deberta, promptguard or jev) and writes a JSON summary. The jev defense asks Jev through `src/deskclerk/screen.py`, the file the product screens tool outputs with.
 - `compare_agentdojo.py`: prints one table of the summaries and an exact McNemar test of each defense against no defense.
 - `dojo_summary.py`: the summary arithmetic and the model cost used by the two files above.
 - `agentdojo-requirements.txt`: what the AgentDojo virtualenv installs.
@@ -39,7 +39,7 @@ python3 -m venv ~/.venvs/bench
 
 Start nothing by hand. `run_deskclerk.py` starts one WorkBench server per worker and stops it at the end.
 
-The model is Claude Haiku 5.5. The runners read `ANTHROPIC_API_KEY` from the environment, and `--gate check` also reads `TYPESAFE_API_KEY`.
+The model is Claude Haiku 5.5. The runners read `ANTHROPIC_API_KEY` from the environment, and `--defense jev` of run_agentdojo.py also reads `TYPESAFE_API_KEY`.
 
 Reference loop, one results file per split:
 
@@ -49,10 +49,10 @@ Reference loop, one results file per split:
   --price-input 0.10 --price-output 0.50 --out runs/reference-dev.csv
 ```
 
-deskclerk, one run per gate:
+deskclerk, one run per gate. The M5.10 results also have a check arm, which ran at commit 7dafdbf with the write gate asking Jev about each write call; that gate no longer exists:
 
 ```
-for gate in none rules check; do
+for gate in none rules; do
   ~/.venvs/bench/bin/python bench/run_deskclerk.py --workbench WorkBench --split dev \
     --gate $gate --server-python ~/.venvs/bench/bin/python \
     --out runs/deskclerk-$gate-dev.csv
@@ -68,8 +68,7 @@ Score and compare, here for dev:
   --run reference=runs/reference-dev.csv \
   --run none=runs/deskclerk-none-dev.csv \
   --run rules=runs/deskclerk-rules-dev.csv \
-  --run check=runs/deskclerk-check-dev.csv \
-  --pair reference:none --pair none:rules --pair none:check \
+  --pair reference:none --pair none:rules \
   --out runs/compare-dev.md
 ```
 
