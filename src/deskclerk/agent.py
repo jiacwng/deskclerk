@@ -11,7 +11,13 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 
-from deskclerk.connections import NotConnected, OAuthConnections, ToolInfo
+from deskclerk.connections import (
+    UPSTREAM_ERRORS,
+    NotConnected,
+    OAuthConnections,
+    ToolInfo,
+    first_leaf,
+)
 from deskclerk.providers import Usage, usage_from
 from deskclerk.screen import UNCHECKED, WITHHELD, Screen
 from deskclerk.servers import McpServer
@@ -83,6 +89,22 @@ def no_tool_span(
     yield lambda output: None
 
 
+class McpServerFailed(Exception):
+    def __init__(self, server_name: str, cause: str) -> None:
+        super().__init__(f"{server_name} failed ({cause})")
+        self.server_name = server_name
+        self.cause = cause
+
+
+def _server_failure(server_name: str, error: BaseException) -> McpServerFailed | None:
+    if isinstance(error, BaseExceptionGroup):
+        matching = error.subgroup(UPSTREAM_ERRORS)
+        if matching is None:
+            return None
+        error = first_leaf(matching)
+    return McpServerFailed(server_name, type(error).__name__)
+
+
 @dataclass(frozen=True)
 class _Tool:
     server: McpServer
@@ -111,6 +133,11 @@ async def run_agent(
         except NotConnected:
             not_connected.append(server.name)
             continue
+        except (*UPSTREAM_ERRORS, BaseExceptionGroup) as error:
+            failure = _server_failure(server.name, error)
+            if failure is None:
+                raise
+            raise failure from None
         for info in listed:
             tools[f"{server.name}__{info.name}"] = _Tool(server, info)
 
@@ -163,7 +190,15 @@ async def run_agent(
                     continue
             try:
                 with tool_span(server_name, tool_name, arguments) as record_output:
-                    result = await connections.call(user_id, tool.server, tool_name, arguments)
+                    try:
+                        result = await connections.call(user_id, tool.server, tool_name, arguments)
+                    except NotConnected:
+                        raise
+                    except (*UPSTREAM_ERRORS, BaseExceptionGroup) as error:
+                        failure = _server_failure(server_name, error)
+                        if failure is None:
+                            raise
+                        raise failure from None
                     result_text = await screen(request, result.text)
                     record_output(result_text)
                 is_error = result.is_error

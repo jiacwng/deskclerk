@@ -37,6 +37,7 @@ class Audit:
         outcome: str,
         result: AgentResult | None,
         cost_usd: float,
+        cause: str | None = None,
     ) -> None:
         line = self._line(identity, "ask")
         line.update(
@@ -56,6 +57,8 @@ class Audit:
                 "latency_ms": round((time.monotonic() - started) * 1000),
             }
         )
+        if cause is not None:
+            line["cause"] = cause
         if self.include_text:
             line["text"] = request
         _log.info(json.dumps(line))

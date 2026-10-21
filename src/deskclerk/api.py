@@ -16,30 +16,27 @@ from typing import Any
 
 import anthropic
 import httpx
-import httpx2
 import jwt
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from langchain_core.language_models import BaseChatModel
-from mcp.client.auth import OAuthFlowError
-from mcp.client.streamable_http import StreamableHTTPError
-from mcp.shared.exceptions import MCPError
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from deskclerk import cookies, oidc
-from deskclerk.agent import Gate, no_tool_span, run_agent
+from deskclerk.agent import Gate, McpServerFailed, no_tool_span, run_agent
 from deskclerk.audit import Audit
 from deskclerk.auth import AuthError, AuthUnavailable, Identity, SigningKeyLookup, authenticate
 from deskclerk.config import Settings
 from deskclerk.connections import (
+    UPSTREAM_ERRORS,
     AlreadyConnected,
     FlowExpired,
     NoSignInNeeded,
-    NotConnected,
     OAuthConnections,
     UnknownState,
     WrongUser,
+    first_leaf,
 )
 from deskclerk.instructions import system_prompt
 from deskclerk.jev import Jev
@@ -68,14 +65,15 @@ CONNECT_ERRORS: dict[type[Exception], int] = {
     AlreadyConnected: 409,
     NoSignInNeeded: 400,
 }
-UPSTREAM_ERRORS = (
-    NotConnected,
-    MCPError,
-    StreamableHTTPError,
-    OAuthFlowError,
-    httpx2.HTTPError,
-)
 BROWSER_AUTH_REFUSED = "the login server's access token was refused"
+
+
+def _upstream_detail(error: BaseException) -> str:
+    if isinstance(error, McpServerFailed):
+        return f"the MCP server {error.server_name} did not answer ({error.cause})"
+    if isinstance(error, anthropic.APIError):
+        return f"the model did not answer ({type(error).__name__})"
+    return f"an MCP server did not answer ({type(error).__name__})"
 
 
 class MissingSessionKey(RuntimeError):
@@ -190,7 +188,11 @@ def create_app(
     spendings: dict[tuple[str, str], Spending] = {}
     ask_locks: dict[str, asyncio.Lock] = {}
     discovered: dict[str, oidc.Endpoints] = {}
-    model_errors: tuple[type[Exception], ...] = (anthropic.APIError, *UPSTREAM_ERRORS)
+    ask_failures: tuple[type[Exception], ...] = (
+        McpServerFailed,
+        anthropic.APIError,
+        *UPSTREAM_ERRORS,
+    )
     server_by_name = {server.name: server for server in servers}
     page = resources.files("deskclerk").joinpath("static/index.html").read_text(encoding="utf-8")
     page_headers = {
@@ -414,14 +416,17 @@ def create_app(
                     )
                     if trace:
                         trace.finish(result.withheld)
-            except model_errors:
+            except ask_failures as error:
                 cost = spending.cost_usd - spent_before
-                raise upstream_failure(identity, body.request, started, cost) from None
+                raise upstream_failure(identity, body.request, started, cost, error) from None
             except BaseExceptionGroup as group:
-                if group.subgroup(model_errors) is None:
+                failed = group.subgroup(ask_failures)
+                if failed is None:
                     raise
                 cost = spending.cost_usd - spent_before
-                raise upstream_failure(identity, body.request, started, cost) from None
+                raise upstream_failure(
+                    identity, body.request, started, cost, first_leaf(failed)
+                ) from None
         cost = spending.cost_usd - spent_before
         audit.asked(identity, body.request, started, "answered", result, cost)
         return AskOut(
@@ -436,9 +441,10 @@ def create_app(
         )
 
     def upstream_failure(
-        identity: Identity, request: str, started: float, cost: float
+        identity: Identity, request: str, started: float, cost: float, error: BaseException
     ) -> HTTPException:
-        audit.asked(identity, request, started, "upstream_error", None, cost)
-        return HTTPException(502, "the model or an MCP server did not answer")
+        detail = _upstream_detail(error)
+        audit.asked(identity, request, started, "upstream_error", None, cost, detail)
+        return HTTPException(502, detail)
 
     return app

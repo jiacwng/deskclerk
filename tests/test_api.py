@@ -817,8 +817,29 @@ def test_an_mcp_server_that_stopped_gives_502_and_an_upstream_error_line(
     with web(settings, [stopped], model, token_signing_key, tmp_path, key=key) as site:
         response = ask(site, ada)
     assert response.status_code == 502
-    outcomes = [line["outcome"] for line in audit_lines(caplog) if line["entry"] == "ask"]
-    assert outcomes == ["upstream_error"]
+    detail = response.json()["detail"]
+    assert detail.startswith("the MCP server notes did not answer (")
+    asks = [line for line in audit_lines(caplog) if line["entry"] == "ask"]
+    assert [line["outcome"] for line in asks] == ["upstream_error"]
+    assert asks[0]["cause"] == detail
+
+
+def test_a_model_that_fails_gives_502_naming_the_model_and_the_audit_cause(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="deskclerk.audit")
+    settings = make_settings(token_settings)
+    model = ProviderGoneAfterScript(messages=iter([]))
+    with web(settings, [], model, token_signing_key, tmp_path) as site:
+        response = ask(site, as_user(sign_token, "ada"))
+    assert response.status_code == 502
+    assert response.json()["detail"] == "the model did not answer (APIConnectionError)"
+    asks = [line for line in audit_lines(caplog) if line["entry"] == "ask"]
+    assert asks[0]["cause"] == "the model did not answer (APIConnectionError)"
 
 
 def test_a_server_that_refuses_the_sign_in_cancels_the_pending_connection(

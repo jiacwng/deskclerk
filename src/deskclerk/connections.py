@@ -11,9 +11,10 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx2
 from mcp.client import Client
-from mcp.client.auth import OAuthClientProvider
-from mcp.client.streamable_http import streamable_http_client
+from mcp.client.auth import OAuthClientProvider, OAuthFlowError
+from mcp.client.streamable_http import StreamableHTTPError, streamable_http_client
 from mcp.shared.auth import AuthorizationCodeResult, OAuthClientMetadata
+from mcp.shared.exceptions import MCPError
 from mcp.types import TextContent, Tool
 
 from deskclerk.servers import McpServer
@@ -25,6 +26,21 @@ HTTP_TIMEOUT = httpx2.Timeout(30, read=300)
 
 class NotConnected(Exception):
     pass
+
+
+UPSTREAM_ERRORS = (
+    NotConnected,
+    MCPError,
+    StreamableHTTPError,
+    OAuthFlowError,
+    httpx2.HTTPError,
+)
+
+
+def first_leaf(error: BaseException) -> BaseException:
+    while isinstance(error, BaseExceptionGroup):
+        error = error.exceptions[0]
+    return error
 
 
 class NoSignInNeeded(Exception):
