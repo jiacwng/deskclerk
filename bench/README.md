@@ -1,4 +1,4 @@
-bench/ measures deskclerk's agent on WorkBench (olly-styles/WorkBench), a set of workplace tasks with ground-truth outcomes, and compares it with WorkBench's own agent loop.
+bench/ measures deskclerk's agent on WorkBench (olly-styles/WorkBench), a set of workplace tasks with ground-truth outcomes, against WorkBench's own agent loop, and measures prompt injection screens on AgentDojo.
 
 ## Files
 
@@ -20,7 +20,7 @@ bench/ measures deskclerk's agent on WorkBench (olly-styles/WorkBench), a set of
 
 Per domain, tasks are ordered by the sha256 of `<domain>-<index>`. The first third is dev (231 tasks) and the rest is test (459 tasks).
 
-## Reproduce M5.10
+## Reproduce the WorkBench runs
 
 Clone WorkBench at the commit the runs used:
 
@@ -46,16 +46,16 @@ Reference loop, one results file per split:
 ```
 ~/.venvs/bench/bin/python bench/run_reference.py --workbench WorkBench --split dev \
   --model claude-haiku-5.5 --model-id claude-haiku-5-5 \
-  --price-input 0.10 --price-output 0.50 --out runs/reference-dev.csv
+  --price-input 0.10 --price-output 0.50 --out runs/haiku55_dev_reference.csv
 ```
 
-deskclerk, one run per gate. The M5.10 results also have a check arm, which ran at commit 7dafdbf with the write gate asking Jev about each write call; that gate no longer exists:
+deskclerk, one run per gate. The README row is the none gate on the test split with the standing instructions of commit f25341c. The first runs also had a check arm, which asked Jev about each write call; 7dafdbf is the last commit with that gate:
 
 ```
 for gate in none rules; do
   ~/.venvs/bench/bin/python bench/run_deskclerk.py --workbench WorkBench --split dev \
     --gate $gate --server-python ~/.venvs/bench/bin/python \
-    --out runs/deskclerk-$gate-dev.csv
+    --out runs/haiku55_dev_$gate.csv
 done
 ```
 
@@ -65,9 +65,9 @@ Score and compare, here for dev:
 
 ```
 ~/.venvs/bench/bin/python bench/compare.py --workbench WorkBench \
-  --run reference=runs/reference-dev.csv \
-  --run none=runs/deskclerk-none-dev.csv \
-  --run rules=runs/deskclerk-rules-dev.csv \
+  --run reference=runs/haiku55_dev_reference.csv \
+  --run none=runs/haiku55_dev_none.csv \
+  --run rules=runs/haiku55_dev_rules.csv \
   --pair reference:none --pair none:rules \
   --out runs/compare-dev.md
 ```
@@ -77,13 +77,13 @@ Score and compare, here for dev:
 Stage 1 needs WorkBench's pandas, so it runs in the bench virtualenv. It makes no paid call. The file names must contain `_dev_` or `_test_`:
 
 ```
-~/.venvs/bench/bin/python bench/jev_calls.py --workbench WorkBench   --results runs/dev-none.csv runs/dev-rules.csv runs/test-none.csv --out runs/jev-calls.jsonl
+~/.venvs/bench/bin/python bench/jev_calls.py --workbench WorkBench --results runs/haiku55_dev_none.csv runs/haiku55_dev_rules.csv runs/haiku55_test_none.csv --out runs/jev-calls.jsonl
 ```
 
 Stage 2 makes the paid calls. It runs where deskclerk's dependencies and scipy are installed, reads `TYPESAFE_API_KEY` and `ANTHROPIC_API_KEY`, and skips calls already in the `--scores` file, so a rerun costs nothing for them:
 
 ```
-PYTHONPATH=src python bench/jev_score.py --calls runs/jev-calls.jsonl   --scores runs/jev-scores.jsonl --jev-budget-usd 2 --out runs/jev-report.md
+PYTHONPATH=src python bench/jev_score.py --calls runs/jev-calls.jsonl --scores runs/jev-scores.jsonl --jev-budget-usd 2 --out runs/jev-report.md
 ```
 
 The report gives, per judge and per split, the ROC AUC with a 95% bootstrap interval. It then applies one rule: the threshold is the highest unwanted score on dev, and a test call runs without confirmation when its score is strictly above it.
@@ -118,14 +118,14 @@ A summary reports, per suite, the share of user tasks completed without an attac
 
 ## Measure the screens on saved AgentDojo tool outputs
 
-This reads the logs of a finished run, scores each unique tool output with Jev, Prompt Guard 2 and DeBERTa, and writes `scores.jsonl` and `report.md` to the output directory. A rerun skips scored outputs. It runs in the AgentDojo virtualenv, reads `TYPESAFE_API_KEY`, and uses the local Hugging Face cache offline:
+This reads the logs of a finished run, scores each distinct pair of user request and tool output with Jev, Prompt Guard 2 and DeBERTa, and writes `scores.jsonl` and `report.md` to the output directory. A rerun skips scored outputs. It runs in the AgentDojo virtualenv, reads `TYPESAFE_API_KEY`, and uses the local Hugging Face cache offline:
 
 ```
 HF_HUB_OFFLINE=1 PYTHONPATH=src:bench ~/.venvs/dojo/bin/python bench/screen_outputs.py \
   runs/dojo/claude-haiku-5-5-none runs/screen-outputs --jev-budget-usd 1
 ```
 
-The report gives, per screen at threshold 0.5, the flagged share of outputs that carry the `<INFORMATION>` marker and of outputs that do not, with Wilson intervals and the ROC AUC, then two cascade rules.
+The report gives, per screen at threshold 0.5, the flagged share of outputs that carry the `<INFORMATION>` marker and of outputs that do not, with a 95% Wilson interval on each share and the ROC AUC, then two rules that combine Prompt Guard 2 and Jev: both flag, or either flags.
 
 ## Run the bench tests
 
