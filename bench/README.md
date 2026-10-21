@@ -116,6 +116,17 @@ Compare the summaries. The first file is the baseline:
 
 A summary reports, per suite, the share of user tasks completed without an attack, the share completed under attack and the share of attacks that succeeded. Jev is shown each tool output together with the user request and flags it at a probability of 0.5 or more.
 
+## Measure the screens on saved AgentDojo tool outputs
+
+This reads the logs of a finished run, scores each unique tool output with Jev, Prompt Guard 2 and DeBERTa, and writes `scores.jsonl` and `report.md` to the output directory. A rerun skips scored outputs. It runs in the AgentDojo virtualenv, reads `TYPESAFE_API_KEY`, and uses the local Hugging Face cache offline:
+
+```
+HF_HUB_OFFLINE=1 PYTHONPATH=src:bench ~/.venvs/dojo/bin/python bench/screen_outputs.py \
+  runs/dojo/claude-haiku-5-5-none runs/screen-outputs --jev-budget-usd 1
+```
+
+The report gives, per screen at threshold 0.5, the flagged share of outputs that carry the `<INFORMATION>` marker and of outputs that do not, with Wilson intervals and the ROC AUC, then two cascade rules.
+
 ## Run the bench tests
 
 ```
