@@ -6,7 +6,7 @@ from typing import Any, cast
 import pytest
 
 from deskclerk.jev import Jev, JevError, JevInputTooLong, jev_from_environment
-from deskclerk.screen import THRESHOLD, WITHHELD, jev_screen, pass_through, probability
+from deskclerk.screen import THRESHOLD, UNCHECKED, WITHHELD, jev_screen, pass_through, probability
 
 
 class FakeJev:
@@ -45,10 +45,10 @@ async def test_an_output_below_one_half_passes_unchanged(answer: float) -> None:
 
 
 @pytest.mark.anyio
-async def test_an_output_jev_cannot_judge_is_withheld() -> None:
+async def test_an_output_jev_cannot_judge_is_marked_unchecked() -> None:
     for error in (JevError("down"), JevInputTooLong("too long")):
         screen = jev_screen(as_jev(FakeJev(error)))
-        assert await screen("read my mail", "three new messages") == WITHHELD
+        assert await screen("read my mail", "three new messages") == UNCHECKED
 
 
 @pytest.mark.anyio
