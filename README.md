@@ -1,11 +1,20 @@
 # deskclerk
 
+[![ci](https://github.com/jiacwng/deskclerk/actions/workflows/ci.yml/badge.svg)](https://github.com/jiacwng/deskclerk/actions/workflows/ci.yml)
+
 deskclerk is an internal company agent. An admin lists the company's MCP servers. Employees
 sign in with the company login, connect their own accounts on those servers and ask the agent
 to work there. Before a call that changes something runs, deskclerk checks it against the
 tool's schema, as the server declares it, and a destructive call against the ids the agent has
-seen. Each
-employee has a budget and a request quota, and every request goes to an audit log.
+seen. Each employee has a budget and a request quota, and every request goes to an audit log.
+
+```mermaid
+flowchart LR
+    employee[Employee] -->|company sign-in| agent[deskclerk agent]
+    agent -->|read-only call| servers[MCP servers, with the employee's accounts]
+    agent -->|call that changes something| check[write check] --> servers
+    servers -->|tool result| screen[Jev screen, with a TypeSafe key] --> agent
+```
 
 ## Setup
 
