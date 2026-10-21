@@ -36,11 +36,11 @@ def main() -> None:
         )
         with httpx.Client() as client:
             jwks_url = discover_jwks_url(settings, client)
-        jev = jev_from_environment(settings.jev_budget_usd)
+        jev = jev_from_environment()
         if jev is None:
             print(
                 "deskclerk: TYPESAFE_API_KEY is not set, "
-                "so writes pass the schema and id checks only",
+                "so tool outputs are not screened for prompt injection",
                 file=sys.stderr,
             )
         app = create_app(
@@ -49,7 +49,8 @@ def main() -> None:
             connections,
             tokens,
             chat_model(settings),
-            write_check(jev),
+            write_check(),
+            jev,
             jwks_signing_key(jwks_url),
         )
     except (

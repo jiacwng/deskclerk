@@ -1,5 +1,6 @@
 # One employee's request answered by a chat model that calls the tools of the MCP servers the
 # employee has connected. Tools that are not read-only pass a gate first; a refused call never runs.
+# Every result a tool returns passes the screen before the model reads it.
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 
 from deskclerk.connections import NotConnected, OAuthConnections, ToolInfo
 from deskclerk.providers import Usage, usage_from
+from deskclerk.screen import WITHHELD, Screen
 from deskclerk.servers import McpServer
 
 
@@ -57,6 +59,7 @@ class AgentResult:
     usage: tuple[Usage, ...]
     step_limit_hit: bool
     cut_off: bool
+    withheld: int
 
     @property
     def total_usage(self) -> Usage:
@@ -82,6 +85,7 @@ async def run_agent(
     connections: OAuthConnections,
     model: BaseChatModel,
     gate: Gate,
+    screen: Screen,
     step_limit: int,
     record_usage: Callable[[Usage], None],
 ) -> AgentResult:
@@ -107,6 +111,7 @@ async def run_agent(
     answer = ""
     step_limit_hit = True
     cut_off = False
+    withheld = 0
     for _ in range(step_limit):
         response: AIMessage = await chat_model.ainvoke(messages)
         messages.append(response)
@@ -144,7 +149,10 @@ async def run_agent(
                     continue
             try:
                 result = await connections.call(user_id, tool.server, tool_name, arguments)
-                result_text, is_error = result.text, result.is_error
+                result_text = await screen(request, result.text)
+                is_error = result.is_error
+                if result_text == WITHHELD:
+                    withheld += 1
             except NotConnected as error:
                 result_text, is_error = str(error), True
             executed.append(ExecutedCall(server_name, tool_name, arguments, result_text, is_error))
@@ -164,6 +172,7 @@ async def run_agent(
         tuple(usage),
         step_limit_hit,
         cut_off,
+        withheld,
     )
 
 

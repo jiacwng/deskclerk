@@ -45,12 +45,15 @@ from deskclerk.auth import SigningKeyLookup, discover_jwks_url, jwks_signing_key
 from deskclerk.config import Settings
 from deskclerk.connections import OAuthConnections
 from deskclerk.instructions import system_prompt
+from deskclerk.jev import PRICE_PER_INPUT_TOKEN, Jev
+from deskclerk.screen import WITHHELD
 from deskclerk.servers import McpServer
 from deskclerk.tokens import TokenStore
 from deskclerk.writecheck import write_check
 from mcp_server import RunningServer, running_mcp_server
 from test_agent import ProviderGoneAfterScript, ScriptedModel, answer, calls, script
 from test_connections import REDIRECT
+from test_screen import FakeJev, as_jev
 
 SESSION_KEY = "a-session-key-of-at-least-32-characters"
 AUDIT_KEY = "an-audit-key"
@@ -88,6 +91,7 @@ def web(
     path: Path,
     idp_transport: httpx.AsyncBaseTransport | None = None,
     key: str | None = None,
+    jev: Jev | None = None,
 ) -> Iterator[Web]:
     tokens = TokenStore(path / "tokens.sqlite", key or Fernet.generate_key().decode())
     connections = OAuthConnections(tokens, REDIRECT, "deskclerk test", 600)
@@ -97,7 +101,8 @@ def web(
         connections,
         tokens,
         model,
-        write_check(None),
+        write_check(),
+        jev,
         signing_key,
         idp_transport=idp_transport,
     )
@@ -434,6 +439,36 @@ def test_tokens_billed_before_a_provider_failure_count_against_the_cap(
     asks = [line for line in audit_lines(caplog) if line["entry"] == "ask"]
     assert [line["outcome"] for line in asks] == ["upstream_error", "over_budget"]
     assert [line["cost_usd"] for line in asks] == [pytest.approx(0.10), 0.0]
+
+
+def test_a_withheld_result_is_reported_and_jev_tokens_count_against_the_cap(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="deskclerk.audit")
+    settings = make_settings(token_settings, budget_usd=0.04)
+    model = ScriptedModel(
+        messages=itertools.cycle([calls(("notes__read_note", {})), answer("done")])
+    )
+    jev = FakeJev(0.9, tokens=1_000_000)
+    ada = as_user(sign_token, "ada")
+    with web(
+        settings, [notes(notes_server)], model, token_signing_key, tmp_path, jev=as_jev(jev)
+    ) as site:
+        connect(site, ada)
+        first = ask(site, ada)
+        stopped = ask(site, ada)
+    body = first.json()
+    assert body["executed"][0]["result"] == WITHHELD
+    assert body["withheld"] == 1
+    assert body["cost_usd"] == pytest.approx(1_000_000 * PRICE_PER_INPUT_TOKEN)
+    assert stopped.status_code == 402
+    [line] = [line for line in audit_lines(caplog) if line.get("outcome") == "answered"]
+    assert line["withheld"] == 1
 
 
 def test_a_write_that_fails_the_write_check_never_reaches_the_server(

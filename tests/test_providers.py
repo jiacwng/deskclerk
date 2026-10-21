@@ -11,6 +11,7 @@ from langchain_core.runnables import RunnableBinding
 
 from deskclerk import providers
 from deskclerk.config import Settings
+from deskclerk.jev import PRICE_PER_INPUT_TOKEN
 from deskclerk.providers import (
     MAX_TOKENS,
     BudgetExceeded,
@@ -145,3 +146,22 @@ def test_the_budget_counts_cache_costs() -> None:
     assert spending.cost_usd == pytest.approx(10.0)
     with pytest.raises(BudgetExceeded):
         spending.check()
+
+
+def test_jev_tokens_raise_the_cost_and_count_against_the_budget() -> None:
+    spending = Spending(Price(1.0, 0.0, 0.0, 0.0), budget_usd=0.04)
+
+    spending.record_jev(1_000_000)
+    assert spending.cost_usd == pytest.approx(1_000_000 * PRICE_PER_INPUT_TOKEN)
+    with pytest.raises(BudgetExceeded):
+        spending.check()
+
+
+def test_the_cost_is_the_model_plus_jev() -> None:
+    spending = Spending(Price(1.0, 0.0, 0.0, 0.0), budget_usd=5.0)
+
+    spending.record(Usage(1_000_000, 0, 0, 0))
+    spending.record_jev(500_000)
+
+    assert spending.cost_usd == pytest.approx(1.0 + 500_000 * PRICE_PER_INPUT_TOKEN)
+    spending.check()

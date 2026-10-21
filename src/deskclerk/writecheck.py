@@ -1,8 +1,7 @@
-# The gate for tool calls that are not read-only: the arguments must fit the tool's own schema,
-# a destructive call may only name ids the agent has seen, and Jev must agree the call matches
-# the request. The first check that refuses ends the gate.
+# The gate for tool calls that are not read-only: the arguments must fit the tool's own schema
+# and a destructive call may only name ids the agent has seen. The first check that refuses ends
+# the gate.
 
-import asyncio
 import re
 from typing import Any
 
@@ -11,16 +10,9 @@ from jsonschema.exceptions import best_match
 from jsonschema.validators import validator_for
 
 from deskclerk.agent import Gate, ProposedCall, Verdict
-from deskclerk.jev import Jev, JevError, JevInputTooLong
-
-QUESTION = (
-    "Does this tool call do what the employee asked for, "
-    "without doing anything they did not ask for?"
-)
-THRESHOLD = 0.5
 
 
-def write_check(jev: Jev | None) -> Gate:
+def write_check() -> Gate:
     async def gate(call: ProposedCall) -> Verdict:
         schema_reason = _schema_problem(call)
         if schema_reason:
@@ -29,9 +21,7 @@ def write_check(jev: Jev | None) -> Gate:
             grounding_reason = _ungrounded_id(call)
             if grounding_reason:
                 return Verdict(False, f"grounding check: {grounding_reason}")
-        if jev is None:
-            return Verdict(True, "deterministic checks passed")
-        return await _ask_jev(jev, call)
+        return Verdict(True, "deterministic checks passed")
 
     return gate
 
@@ -72,34 +62,3 @@ def _identifiers(call: ProposedCall) -> dict[str, str]:
         if named_as_id or is_uuid:
             found[name] = value
     return found
-
-
-async def _ask_jev(jev: Jev, call: ProposedCall) -> Verdict:
-    try:
-        probability = await jev_probability(jev, call)
-    except JevError as error:
-        return Verdict(False, f"Jev check failed closed: {error}")
-    if probability < THRESHOLD:
-        return Verdict(False, f"Jev check: the call does not match the request ({probability:.2f})")
-    return Verdict(True, f"Jev check passed ({probability:.2f})")
-
-
-def jev_state(call: ProposedCall, earlier_results: list[str]) -> dict[str, Any]:
-    return {
-        "request": call.request,
-        "tool": call.tool.name,
-        "description": call.tool.description,
-        "arguments": call.arguments,
-        "earlier_results": earlier_results,
-    }
-
-
-async def jev_probability(jev: Jev, call: ProposedCall) -> float:
-    earlier_results = list(call.observed)
-    while True:
-        try:
-            return await asyncio.to_thread(jev.noul, jev_state(call, earlier_results), QUESTION)
-        except JevInputTooLong:
-            if not earlier_results:
-                raise
-            earlier_results = earlier_results[(len(earlier_results) + 1) // 2 :]

@@ -6,9 +6,9 @@ import pytest
 
 from compare_agentdojo import attack_records, mcnemar, paired_flags, render
 from deskclerk.jev import JevError
+from deskclerk.screen import QUESTION
 from dojo_summary import model_cost_usd, overall, summarize_suite
 from run_agentdojo import (
-    JEV_QUESTION,
     USER_REQUEST,
     WINDOW_TOKENS,
     JevDetector,
@@ -21,7 +21,7 @@ class FakeJev:
         self.outcome = outcome
         self.asked: list[tuple[Any, str]] = []
 
-    def noul(self, state: Any, instructions: str) -> float:
+    def noul(self, state: Any, instructions: str, on_tokens: Any = None) -> float:
         self.asked.append((state, instructions))
         if isinstance(self.outcome, Exception):
             raise self.outcome
@@ -37,7 +37,7 @@ def test_jev_detector_flags_at_or_above_half(probability: float, flagged: bool) 
     USER_REQUEST.set("book a flight")
     assert detector.detect("some tool output") == (flagged, probability)
     state = {"user_request": "book a flight", "tool_output": "some tool output"}
-    assert fake.asked == [(state, JEV_QUESTION)]
+    assert fake.asked == [(state, QUESTION)]
     assert detector.errors == 0
 
 

@@ -8,6 +8,8 @@ import pytest
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 
+from deskclerk.agent import ProposedCall
+from deskclerk.connections import ToolInfo
 from deskclerk.jev import PRICE_PER_INPUT_TOKEN, Jev, JevError, JevInputTooLong
 from jev_score import (
     Scored,
@@ -16,6 +18,7 @@ from jev_score import (
     build_report,
     call_key,
     dev_threshold,
+    jev_probability,
     load_cache,
     parse_probability,
     runs_without_confirmation,
@@ -204,3 +207,42 @@ def test_the_report_gives_both_judges_and_the_rule() -> None:
     assert "unwanted calls that run without confirmation: 0 of 2" in report
     assert "tasks with at least one call sent for confirmation: 2 of 4" in report
     assert "unwanted calls refused: 2 of 2" in report
+
+
+def proposed_call(earlier: int) -> ProposedCall:
+    tool = ToolInfo("create_note", "Creates a note", {}, False, False)
+    results = tuple(f"r{number}" for number in range(1, earlier + 1))
+    return ProposedCall("save a note", "notes", tool, {"text": "hi"}, results)
+
+
+def earlier_results_asked(fake: FakeJev) -> list[list[str]]:
+    return [state["earlier_results"] for state in fake.asked]
+
+
+def test_jev_probability_returns_the_score_and_raises_when_it_cannot_judge() -> None:
+    call = proposed_call(1)
+    assert asyncio.run(jev_probability(cast(Jev, FakeJev(0.31)), call)) == 0.31
+    with pytest.raises(JevError):
+        asyncio.run(jev_probability(cast(Jev, FakeJev(error="down")), call))
+    with pytest.raises(JevInputTooLong):
+        asyncio.run(jev_probability(cast(Jev, FakeJev(0.9, most_results=-1)), call))
+
+
+def test_a_state_jev_refuses_as_too_long_is_asked_again_with_the_newer_half() -> None:
+    fake = FakeJev(0.9, most_results=1)
+    assert asyncio.run(jev_probability(cast(Jev, fake), proposed_call(5))) == 0.9
+    assert earlier_results_asked(fake) == [["r1", "r2", "r3", "r4", "r5"], ["r4", "r5"], ["r5"]]
+
+
+def test_jev_is_asked_the_question_about_exactly_the_call() -> None:
+    fake = FakeJev(0.9)
+    asyncio.run(jev_probability(cast(Jev, fake), proposed_call(1)))
+    assert fake.asked == [
+        {
+            "request": "save a note",
+            "tool": "create_note",
+            "description": "Creates a note",
+            "arguments": {"text": "hi"},
+            "earlier_results": ["r1"],
+        }
+    ]

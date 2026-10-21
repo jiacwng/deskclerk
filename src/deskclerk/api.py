@@ -41,8 +41,10 @@ from deskclerk.connections import (
     WrongUser,
 )
 from deskclerk.instructions import system_prompt
+from deskclerk.jev import Jev
 from deskclerk.providers import BudgetExceeded, Spending, price_of
 from deskclerk.quota import Quota
+from deskclerk.screen import jev_screen
 from deskclerk.servers import McpServer
 from deskclerk.tokens import TokenStore
 
@@ -115,6 +117,7 @@ class AskOut(BaseModel):
     not_connected: list[str]
     step_limit_hit: bool
     cut_off: bool
+    withheld: int
     cost_usd: float
 
 
@@ -167,6 +170,7 @@ def create_app(
     tokens: TokenStore,
     model: BaseChatModel,
     gate: Gate,
+    jev: Jev | None,
     signing_key: SigningKeyLookup,
     idp_transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
@@ -391,6 +395,7 @@ def create_app(
                     connections,
                     model,
                     gate,
+                    jev_screen(jev, spending.record_jev),
                     settings.step_limit,
                     spending.record,
                 )
@@ -402,7 +407,7 @@ def create_app(
                     raise
                 cost = spending.cost_usd - spent_before
                 raise upstream_failure(identity, body.request, started, cost) from None
-        cost = price.cost(result.total_usage)
+        cost = spending.cost_usd - spent_before
         audit.asked(identity, body.request, started, "answered", result, cost)
         return AskOut(
             answer=result.answer,
@@ -411,6 +416,7 @@ def create_app(
             not_connected=list(result.not_connected),
             step_limit_hit=result.step_limit_hit,
             cut_off=result.cut_off,
+            withheld=result.withheld,
             cost_usd=cost,
         )
 
