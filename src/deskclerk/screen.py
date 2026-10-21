@@ -1,6 +1,6 @@
 # The screen for tool outputs: Jev reads each result next to the employee's request, and a
 # result that asks the assistant for something the request does not ask for is replaced by a
-# fixed notice before the model sees it. A result Jev cannot judge is withheld too.
+# fixed notice before the model sees it. A result Jev cannot judge is replaced by a second notice.
 
 import asyncio
 from collections.abc import Awaitable, Callable
@@ -12,6 +12,7 @@ QUESTION = (
 )
 THRESHOLD = 0.5
 WITHHELD = "Data omitted because a prompt injection was detected"
+UNCHECKED = "Data omitted because the injection screen could not check it"
 
 Screen = Callable[[str, str], Awaitable[str]]
 
@@ -37,7 +38,7 @@ def jev_screen(jev: Jev | None, on_tokens: Callable[[int], None] | None = None) 
         try:
             flagged = await asyncio.to_thread(probability, jev, request, output, on_tokens)
         except JevError:
-            return WITHHELD
+            return UNCHECKED
         if flagged >= THRESHOLD:
             return WITHHELD
         return output

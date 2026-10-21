@@ -21,7 +21,7 @@ from langchain_core.tools import BaseTool
 from deskclerk.agent import AgentResult, ProposedCall, ToolSpan, Verdict, no_tool_span, run_agent
 from deskclerk.connections import OAuthConnections
 from deskclerk.providers import Usage
-from deskclerk.screen import WITHHELD, Screen, pass_through
+from deskclerk.screen import UNCHECKED, WITHHELD, Screen, pass_through
 from deskclerk.servers import McpServer
 from deskclerk.tracing import AskTrace
 from mcp_server import RunningServer, running_mcp_server
@@ -340,6 +340,20 @@ async def test_a_withheld_result_reaches_neither_the_model_nor_the_record(
     assert isinstance(reply, ToolMessage)
     assert reply.content == WITHHELD
     assert result.executed[0].result == WITHHELD
+    assert result.withheld == 1
+
+
+@pytest.mark.anyio
+async def test_an_unchecked_result_is_counted_as_withheld_and_hidden_from_the_model(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    screen = RecordingScreen(UNCHECKED)
+    model = script(calls(("notes__read_note", {})), answer("done"))
+    result = await run(connections, [server_record(mcp_server)], model, screen=screen)
+    reply = model.seen[1][-1]
+    assert isinstance(reply, ToolMessage)
+    assert reply.content == UNCHECKED
+    assert result.executed[0].result == UNCHECKED
     assert result.withheld == 1
 
 

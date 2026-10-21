@@ -1,5 +1,7 @@
-# Optional Langfuse tracing: when the Langfuse keys are set, each ask becomes one trace with the
-# employee as user id and every model call recorded. Text is masked unless the audit log keeps it.
+# Optional Langfuse tracing: when the Langfuse keys are set, each ask becomes one trace with every
+# model and tool call recorded. The user id is the employee id when the audit log keeps text, its
+# HMAC under the audit key otherwise, and absent without a key. Text is masked unless the audit log
+# keeps it.
 
 import os
 from collections.abc import Callable, Iterator
@@ -89,8 +91,9 @@ def tracing_from_environment(include_text: bool, audit_key: SecretStr | None) ->
         from langfuse import Langfuse
     except ImportError:
         raise TracingNotInstalled(
-            "the LANGFUSE keys are set but langfuse is not installed; "
-            "install it with pip install 'deskclerk[tracing]'"
+            "LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY are set but langfuse is not installed; "
+            "install it from the repository with pip install '.[tracing]', "
+            "or use the Docker image, which includes it"
         ) from None
     host = os.environ.get("LANGFUSE_BASE_URL") or os.environ.get("LANGFUSE_HOST") or DEFAULT_HOST
     client = Langfuse(base_url=host, mask=keep_text if include_text else omit_text)

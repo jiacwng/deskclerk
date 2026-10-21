@@ -60,7 +60,7 @@ def test_keys_without_the_package_name_the_extra(
     keys: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setitem(sys.modules, "langfuse", None)
-    with pytest.raises(TracingNotInstalled, match=r"deskclerk\[tracing\]"):
+    with pytest.raises(TracingNotInstalled, match=r"pip install \'\.\[tracing\]\'"):
         tracing_from_environment(False, None)
 
 

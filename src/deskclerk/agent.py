@@ -13,7 +13,7 @@ from langchain_core.runnables import RunnableConfig
 
 from deskclerk.connections import NotConnected, OAuthConnections, ToolInfo
 from deskclerk.providers import Usage, usage_from
-from deskclerk.screen import WITHHELD, Screen
+from deskclerk.screen import UNCHECKED, WITHHELD, Screen
 from deskclerk.servers import McpServer
 
 
@@ -167,7 +167,7 @@ async def run_agent(
                     result_text = await screen(request, result.text)
                     record_output(result_text)
                 is_error = result.is_error
-                if result_text == WITHHELD:
+                if result_text in (WITHHELD, UNCHECKED):
                     withheld += 1
             except NotConnected as error:
                 result_text, is_error = str(error), True
