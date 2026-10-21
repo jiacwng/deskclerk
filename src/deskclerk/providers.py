@@ -1,9 +1,7 @@
 # The chat model behind the agent, and what it costs. DESKCLERK_MODEL names an Anthropic model
-# as anthropic:model. Every model call is priced from the token usage in its response and
-# counted against the spending cap of the employee who asked, together with Jev's input tokens.
+# as anthropic:model. Every model call is priced from the token usage in its response.
 
 import os
-import threading
 from dataclasses import dataclass
 
 from langchain.chat_models import init_chat_model
@@ -11,7 +9,6 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 
 from deskclerk.config import Settings
-from deskclerk.jev import PRICE_PER_INPUT_TOKEN
 
 MAX_TOKENS = 16000
 EFFORT = "low"
@@ -101,40 +98,6 @@ def price_of(settings: Settings) -> Price:
         known = ", ".join(sorted(PRICES))
         raise ValueError(f"no price for model {settings.model!r}: use one of {known}")
     return PRICES[settings.model]
-
-
-class Spending:
-    def __init__(self, price: Price, budget_usd: float) -> None:
-        self.price = price
-        self.budget_usd = budget_usd
-        self.usage = Usage(0, 0, 0, 0)
-        self.jev_usd = 0.0
-        self._lock = threading.Lock()
-
-    @property
-    def cost_usd(self) -> float:
-        return self.price.cost(self.usage) + self.jev_usd
-
-    def check(self) -> None:
-        with self._lock:
-            if self.cost_usd >= self.budget_usd:
-                raise BudgetExceeded(
-                    f"spent {self.cost_usd:.4f} USD, the budget is {self.budget_usd:.4f} USD "
-                    "(DESKCLERK_BUDGET_USD)"
-                )
-
-    def record(self, usage: Usage) -> None:
-        with self._lock:
-            self.usage = Usage(
-                self.usage.input_tokens + usage.input_tokens,
-                self.usage.output_tokens + usage.output_tokens,
-                self.usage.cache_read_tokens + usage.cache_read_tokens,
-                self.usage.cache_write_tokens + usage.cache_write_tokens,
-            )
-
-    def record_jev(self, tokens: int) -> None:
-        with self._lock:
-            self.jev_usd += tokens * PRICE_PER_INPUT_TOKEN
 
 
 def missing_api_key() -> str | None:

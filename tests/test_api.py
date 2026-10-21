@@ -48,6 +48,7 @@ from deskclerk.instructions import system_prompt
 from deskclerk.jev import PRICE_PER_INPUT_TOKEN, Jev
 from deskclerk.screen import WITHHELD
 from deskclerk.servers import McpServer
+from deskclerk.spending import SpendingStore
 from deskclerk.tokens import TokenStore
 from deskclerk.tracing import AskTrace, Tracing
 from deskclerk.writecheck import write_check
@@ -102,6 +103,7 @@ def web(
         servers,
         connections,
         tokens,
+        SpendingStore(path / "spending.sqlite"),
         model,
         write_check(),
         jev,
