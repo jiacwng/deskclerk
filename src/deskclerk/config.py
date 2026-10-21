@@ -17,6 +17,7 @@ class Settings(BaseSettings):
 
     issuer: str = "http://localhost:8080/realms/deskclerk"
     client_id: str = "deskclerk-api"
+    client_secret: SecretStr | None = None
     audience: str
     # The claim that names the employee. Keycloak's username is readable; on Entra ID use oid
     # and on Okta sub, the identifiers that never change when a person is renamed.

@@ -26,7 +26,14 @@ from starlette.concurrency import run_in_threadpool
 from deskclerk import cookies, oidc
 from deskclerk.agent import Gate, McpServerFailed, no_tool_span, run_agent
 from deskclerk.audit import Audit
-from deskclerk.auth import AuthError, AuthUnavailable, Identity, SigningKeyLookup, authenticate
+from deskclerk.auth import (
+    AuthError,
+    AuthUnavailable,
+    Identity,
+    SigningKeyLookup,
+    authenticate,
+    identify,
+)
 from deskclerk.config import Settings
 from deskclerk.connections import (
     UPSTREAM_ERRORS,
@@ -65,7 +72,7 @@ CONNECT_ERRORS: dict[type[Exception], int] = {
     AlreadyConnected: 409,
     NoSignInNeeded: 400,
 }
-BROWSER_AUTH_REFUSED = "the login server's access token was refused"
+BROWSER_AUTH_REFUSED = "the login server's ID token was refused"
 
 
 def _upstream_detail(error: BaseException) -> str:
@@ -255,7 +262,7 @@ def create_app(
     @app.get("/login")
     async def login() -> Response:
         begun = oidc.start(settings, await endpoints())
-        pending = {"state": begun.state, "verifier": begun.verifier}
+        pending = {"state": begun.state, "verifier": begun.verifier, "nonce": begun.nonce}
         value = cookies.sign(session_key, "login", pending, LOGIN_LIFETIME_SECONDS)
         response = RedirectResponse(begun.url, status_code=302)
         response.set_cookie(
@@ -285,11 +292,13 @@ def create_app(
                 token = await oidc.exchange_code(settings, found, client, code, verifier)
             except oidc.SignInRefused:
                 raise HTTPException(400, SIGN_IN_FAILED) from None
+            except oidc.NoIdToken:
+                raise HTTPException(401, BROWSER_AUTH_REFUSED) from None
             except AuthUnavailable:
                 raise HTTPException(503, "the login server cannot be reached") from None
         try:
             identity = await run_in_threadpool(
-                authenticate, token, settings, signing_key, settings.audience
+                identify, token, settings, signing_key, str(pending.get("nonce", ""))
             )
         except AuthError:
             raise HTTPException(401, BROWSER_AUTH_REFUSED) from None

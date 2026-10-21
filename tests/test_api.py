@@ -116,9 +116,9 @@ def web(
 
 
 class FakeIdp:
-    def __init__(self, issuer: str, access_token: str) -> None:
+    def __init__(self, issuer: str, id_token: str | None = None) -> None:
         self.issuer = issuer
-        self.access_token = access_token
+        self.id_token = id_token
         self.discovery_calls = 0
         self.token_calls: list[dict[str, str]] = []
 
@@ -135,7 +135,10 @@ class FakeIdp:
         assert request.url.path.endswith("/token")
         form = parse_qs(request.content.decode())
         self.token_calls.append({name: values[0] for name, values in form.items()})
-        return httpx.Response(200, json={"access_token": self.access_token})
+        body = {"access_token": "opaque-access-token-that-is-not-a-jwt"}
+        if self.id_token is not None:
+            body["id_token"] = self.id_token
+        return httpx.Response(200, json=body)
 
     @property
     def transport(self) -> httpx.MockTransport:
@@ -155,6 +158,15 @@ def begin_sign_in(site: Web) -> tuple[str, str, str]:
     pending = cookies.unsign(SESSION_KEY.encode(), "login", site.client.cookies[LOGIN_COOKIE])
     assert pending is not None
     return query["state"][0], pending["verifier"], query["code_challenge"][0]
+
+
+def finish_sign_in(
+    site: Web, idp: FakeIdp, sign_token: Sign, state: str, claims: dict[str, object]
+) -> httpx2.Response:
+    pending = cookies.unsign(SESSION_KEY.encode(), "login", site.client.cookies[LOGIN_COOKIE])
+    assert pending is not None
+    idp.id_token = sign_token({"nonce": pending["nonce"]} | claims)
+    return site.client.get(f"/login/callback?code=c&state={state}", follow_redirects=False)
 
 
 def notes(running: RunningServer) -> McpServer:
@@ -710,7 +722,7 @@ def test_a_wrong_state_with_a_valid_login_cookie_never_reaches_the_token_endpoin
     sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
 ) -> None:
     settings = make_settings(token_settings)
-    idp = FakeIdp(settings.issuer, sign_token({}))
+    idp = FakeIdp(settings.issuer)
     with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
         begin_sign_in(site)
         forged = site.client.get("/login/callback?code=c&state=forged", follow_redirects=False)
@@ -723,11 +735,10 @@ def test_the_code_verifier_sent_to_the_token_endpoint_is_the_one_in_the_login_co
     sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
 ) -> None:
     settings = make_settings(token_settings)
-    idp = FakeIdp(settings.issuer, sign_token({}))
+    idp = FakeIdp(settings.issuer)
     with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
         state, verifier, challenge = begin_sign_in(site)
-        done = site.client.get(f"/login/callback?code=c&state={state}", follow_redirects=False)
-        assert done.status_code == 303
+        assert finish_sign_in(site, idp, sign_token, state, {}).status_code == 303
     assert len(idp.token_calls) == 1
     sent = idp.token_calls[0]
     assert (sent["code"], sent["code_verifier"]) == ("c", verifier)
@@ -735,7 +746,7 @@ def test_the_code_verifier_sent_to_the_token_endpoint_is_the_one_in_the_login_co
     assert challenge == base64.urlsafe_b64encode(digest).decode().rstrip("=")
 
 
-def test_the_session_ends_when_the_access_token_does(
+def test_the_session_ends_when_the_id_token_does(
     sign_token: Sign,
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
@@ -743,32 +754,115 @@ def test_the_session_ends_when_the_access_token_does(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = make_settings(token_settings, session_hours=8)
-    idp = FakeIdp(settings.issuer, sign_token({"exp": int(time.time()) + 5}))
+    idp = FakeIdp(settings.issuer)
     with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
         state, _, _ = begin_sign_in(site)
-        site.client.get(f"/login/callback?code=c&state={state}", follow_redirects=False)
+        finish_sign_in(site, idp, sign_token, state, {"exp": int(time.time()) + 5})
         assert site.client.get("/me").json() == {"user": "district-1"}
         now = time.time()
         monkeypatch.setattr(cookies, "time", SimpleNamespace(time=lambda: now + 10))
         assert site.client.get("/me").status_code == 401
 
 
-def test_a_refused_access_token_gives_a_fixed_message_on_the_browser_path(
+def test_sign_in_works_when_the_access_token_is_opaque(
     sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
 ) -> None:
     settings = make_settings(token_settings)
-    idp = FakeIdp(settings.issuer, sign_token({"aud": "another-service"}))
+    idp = FakeIdp(settings.issuer)
+    with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
+        state, _, _ = begin_sign_in(site)
+        done = finish_sign_in(site, idp, sign_token, state, {"scope": None, "typ": "ID"})
+        assert (done.status_code, done.headers["location"]) == (303, "/")
+        assert site.client.get("/me").json() == {"user": "district-1"}
+
+
+def test_the_authorize_url_carries_the_nonce_and_the_three_scopes(
+    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings)
+    with web(
+        settings, [], script(), token_signing_key, tmp_path, FakeIdp(settings.issuer).transport
+    ) as site:
+        start = site.client.get("/login", follow_redirects=False)
+        query = parse_qs(urlparse(start.headers["location"]).query)
+        pending = cookies.unsign(SESSION_KEY.encode(), "login", site.client.cookies[LOGIN_COOKIE])
+    assert pending is not None
+    assert query["scope"] == ["openid profile email"]
+    assert query["nonce"] == [pending["nonce"]]
+    assert len(pending["nonce"]) >= 32
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        pytest.param({"nonce": "another-nonce"}, id="wrong-nonce"),
+        pytest.param({"nonce": None}, id="no-nonce"),
+        pytest.param({"aud": "another-service"}, id="wrong-audience"),
+        pytest.param({"iss": "http://evil.test/realms/deskclerk"}, id="wrong-issuer"),
+        pytest.param({"exp": int(time.time()) - 600}, id="expired"),
+        pytest.param({"aud": ["deskclerk-api", "another"], "azp": None}, id="several-audiences"),
+        pytest.param({"aud": ["deskclerk-api", "another"], "azp": "x"}, id="several-wrong-azp"),
+    ],
+)
+def test_a_refused_id_token_gives_a_fixed_message_on_the_browser_path(
+    claims: dict[str, object],
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(token_settings)
+    idp = FakeIdp(settings.issuer)
+    with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
+        state, _, _ = begin_sign_in(site)
+        refused = finish_sign_in(site, idp, sign_token, state, claims)
+        assert site.client.get("/me").status_code == 401
+    assert (refused.status_code, refused.json()["detail"]) == (401, BROWSER_AUTH_REFUSED)
+
+
+def test_several_audiences_with_this_client_as_authorized_party_are_accepted(
+    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings)
+    idp = FakeIdp(settings.issuer)
+    with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
+        state, _, _ = begin_sign_in(site)
+        claims: dict[str, object] = {"aud": ["deskclerk-api", "another"], "azp": "deskclerk-api"}
+        assert finish_sign_in(site, idp, sign_token, state, claims).status_code == 303
+
+
+def test_a_token_response_without_an_id_token_is_refused(
+    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings)
+    idp = FakeIdp(settings.issuer)
     with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
         state, _, _ = begin_sign_in(site)
         refused = site.client.get(f"/login/callback?code=c&state={state}", follow_redirects=False)
-    assert (refused.status_code, refused.json()["detail"]) == (401, BROWSER_AUTH_REFUSED)
+        assert (refused.status_code, refused.json()["detail"]) == (401, BROWSER_AUTH_REFUSED)
+        assert site.client.get("/me").status_code == 401
+
+
+def test_the_client_secret_is_sent_to_the_token_endpoint_only_when_set(
+    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    for secret, expected in ((SecretStr("s3cret"), "s3cret"), (None, None)):
+        tmp_path = tmp_path / str(expected)
+        tmp_path.mkdir()
+        settings = make_settings(token_settings, client_secret=secret)
+        idp = FakeIdp(settings.issuer)
+        with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
+            state, _, _ = begin_sign_in(site)
+            finish_sign_in(site, idp, sign_token, state, {})
+        assert idp.token_calls[0].get("client_secret") == expected
+        assert "code_verifier" in idp.token_calls[0]
 
 
 def test_the_discovery_document_is_fetched_once_per_process(
     sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
 ) -> None:
     settings = make_settings(token_settings)
-    idp = FakeIdp(settings.issuer, sign_token({}))
+    idp = FakeIdp(settings.issuer)
     with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
         state, _, _ = begin_sign_in(site)
         begin_sign_in(site)
