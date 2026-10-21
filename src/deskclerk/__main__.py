@@ -16,6 +16,7 @@ from deskclerk.jev import jev_from_environment
 from deskclerk.providers import MissingApiKey, chat_model
 from deskclerk.servers import ServersError, load_servers
 from deskclerk.tokens import TokenKeyError, TokenStore
+from deskclerk.tracing import TracingNotInstalled, tracing_from_environment
 from deskclerk.writecheck import write_check
 
 FLOW_TIMEOUT_SECONDS = 600
@@ -43,6 +44,14 @@ def main() -> None:
                 "so tool outputs are not screened for prompt injection",
                 file=sys.stderr,
             )
+        tracing = tracing_from_environment(settings.audit_text, settings.audit_key)
+        if tracing is None:
+            print(
+                "deskclerk: LANGFUSE keys are not set, so requests are not traced",
+                file=sys.stderr,
+            )
+        else:
+            print(f"deskclerk: tracing requests to {tracing.host}", file=sys.stderr)
         app = create_app(
             settings,
             servers,
@@ -52,6 +61,7 @@ def main() -> None:
             write_check(),
             jev,
             jwks_signing_key(jwks_url),
+            tracing,
         )
     except (
         ValidationError,
@@ -60,11 +70,14 @@ def main() -> None:
         MissingSessionKey,
         MissingApiKey,
         AuthUnavailable,
+        TracingNotInstalled,
         ValueError,
     ) as error:
         sys.exit(f"deskclerk: {error}")
     log_to_stdout()
     uvicorn.run(app, host=HOST, port=PORT)
+    if tracing is not None:
+        tracing.flush()
 
 
 if __name__ == "__main__":

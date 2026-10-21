@@ -10,20 +10,23 @@ import anthropic
 import httpx2
 import pytest
 from cryptography.fernet import Fernet
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.messages.ai import UsageMetadata
-from langchain_core.runnables import Runnable
+from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import BaseTool
 
-from deskclerk.agent import AgentResult, ProposedCall, Verdict, run_agent
+from deskclerk.agent import AgentResult, ProposedCall, ToolSpan, Verdict, no_tool_span, run_agent
 from deskclerk.connections import OAuthConnections
 from deskclerk.providers import Usage
 from deskclerk.screen import WITHHELD, Screen, pass_through
 from deskclerk.servers import McpServer
+from deskclerk.tracing import AskTrace
 from mcp_server import RunningServer, running_mcp_server
 from test_connections import REDIRECT, connect, make_connections, server_record
+from test_tracing import MaskingClient
 
 SYSTEM = "Be careful."
 
@@ -106,6 +109,8 @@ async def run(
     gate: RecordingGate | None = None,
     screen: Screen = pass_through,
     step_limit: int = 5,
+    trace_config: RunnableConfig | None = None,
+    tool_span: ToolSpan = no_tool_span,
 ) -> AgentResult:
     return await run_agent(
         "ada",
@@ -118,6 +123,8 @@ async def run(
         screen,
         step_limit,
         lambda usage: None,
+        trace_config,
+        tool_span,
     )
 
 
@@ -360,3 +367,46 @@ async def test_a_result_that_passes_the_screen_is_not_counted_as_withheld(
     )
     assert result.executed[0].result == "the note"
     assert result.withheld == 0
+
+
+class ModelCallCounter(BaseCallbackHandler):
+    def __init__(self) -> None:
+        self.model_calls = 0
+
+    def on_chat_model_start(self, *args: Any, **kwargs: Any) -> None:
+        self.model_calls += 1
+
+
+@pytest.mark.anyio
+async def test_a_trace_config_sees_every_model_call_and_changes_nothing(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    servers = [server_record(mcp_server)]
+
+    def replies() -> ScriptedModel:
+        return script(calls(("notes__read_note", {})), answer("It says: the note"))
+
+    counter = ModelCallCounter()
+    traced = await run(connections, servers, replies(), trace_config={"callbacks": [counter]})
+    untraced = await run(connections, servers, replies())
+    assert counter.model_calls == 2
+    assert traced == untraced
+
+
+@pytest.mark.anyio
+async def test_a_traced_tool_call_is_a_masked_observation_and_changes_nothing(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    servers = [server_record(mcp_server)]
+
+    def replies() -> ScriptedModel:
+        return script(calls(("notes__read_note", {})), answer("It says: the note"))
+
+    client = MaskingClient()
+    trace = AskTrace({}, None, client)
+    traced = await run(connections, servers, replies(), tool_span=trace.tool_span)
+    untraced = await run(connections, servers, replies())
+    (observation,) = client.observations
+    assert (observation.name, observation.as_type) == ("notes__read_note", "tool")
+    assert observation.output == "[omitted]"
+    assert traced == untraced

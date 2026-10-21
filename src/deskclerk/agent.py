@@ -2,12 +2,14 @@
 # employee has connected. Tools that are not read-only pass a gate first; a refused call never runs.
 # Every result a tool returns passes the screen before the model reads it.
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 
 from deskclerk.connections import NotConnected, OAuthConnections, ToolInfo
 from deskclerk.providers import Usage, usage_from
@@ -71,6 +73,16 @@ class AgentResult:
         )
 
 
+ToolSpan = Callable[[str, str, dict[str, Any]], AbstractContextManager[Callable[[str], None]]]
+
+
+@contextmanager
+def no_tool_span(
+    server: str, tool: str, arguments: dict[str, Any]
+) -> Iterator[Callable[[str], None]]:
+    yield lambda output: None
+
+
 @dataclass(frozen=True)
 class _Tool:
     server: McpServer
@@ -88,6 +100,8 @@ async def run_agent(
     screen: Screen,
     step_limit: int,
     record_usage: Callable[[Usage], None],
+    trace_config: RunnableConfig | None = None,
+    tool_span: ToolSpan = no_tool_span,
 ) -> AgentResult:
     tools: dict[str, _Tool] = {}
     not_connected: list[str] = []
@@ -113,7 +127,7 @@ async def run_agent(
     cut_off = False
     withheld = 0
     for _ in range(step_limit):
-        response: AIMessage = await chat_model.ainvoke(messages)
+        response: AIMessage = await chat_model.ainvoke(messages, config=trace_config)
         messages.append(response)
         step_usage = usage_from(response)
         usage.append(step_usage)
@@ -148,8 +162,10 @@ async def run_agent(
                     )
                     continue
             try:
-                result = await connections.call(user_id, tool.server, tool_name, arguments)
-                result_text = await screen(request, result.text)
+                with tool_span(server_name, tool_name, arguments) as record_output:
+                    result = await connections.call(user_id, tool.server, tool_name, arguments)
+                    result_text = await screen(request, result.text)
+                    record_output(result_text)
                 is_error = result.is_error
                 if result_text == WITHHELD:
                     withheld += 1
