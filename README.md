@@ -55,6 +55,22 @@ For your company login, set `DESKCLERK_ISSUER`, `DESKCLERK_CLIENT_ID` and
 `docker compose up -d --no-deps deskclerk`. The `DESKCLERK_` settings are listed in
 `src/deskclerk/config.py`.
 
+## Serving it over HTTPS
+
+deskclerk listens on 127.0.0.1:8000 only, so put a reverse proxy on the same machine in front
+of it. With Caddy, which gets a TLS certificate by itself, this Caddyfile is enough:
+
+```
+deskclerk.example.com {
+    reverse_proxy 127.0.0.1:8000
+}
+```
+
+Set `DESKCLERK_SIGN_IN_REDIRECT_URL` to `https://deskclerk.example.com/login/callback` and
+`DESKCLERK_REDIRECT_URL` to `https://deskclerk.example.com/oauth/callback`, and register the
+sign-in URL with your identity provider. With an https sign-in URL, deskclerk marks its cookies
+Secure.
+
 ## Results
 
 Claude Haiku 5.5 is the agent in every run. The commands to rerun each row are in
