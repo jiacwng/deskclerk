@@ -1,11 +1,8 @@
 # local
-local/
 data/
-*.local.md
 .env
 servers.toml
 runs/
-documents/
 
 # Python
 __pycache__/
