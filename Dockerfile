@@ -18,6 +18,6 @@ RUN pip install --no-cache-dir '.[tracing]' \
 USER deskclerk
 
 HEALTHCHECK --interval=2s --timeout=5s --retries=30 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/')"
+    CMD python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/' % os.environ.get('DESKCLERK_PORT', '8000'))"
 
 CMD ["python", "-m", "deskclerk"]

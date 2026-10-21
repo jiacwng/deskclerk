@@ -5,10 +5,11 @@
 from pathlib import Path
 from typing import Any
 
-from pydantic import SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 MIN_SESSION_KEY_CHARS = 32
+MAX_PORT = 65535
 
 
 class Settings(BaseSettings):
@@ -33,6 +34,8 @@ class Settings(BaseSettings):
     sign_in_redirect_url: str = "http://localhost:8000/login/callback"
     session_key: SecretStr | None = None
     session_hours: int = 8
+    host: str = "127.0.0.1"
+    port: int = Field(default=8000, ge=1, le=MAX_PORT)
 
     @model_validator(mode="before")
     @classmethod
