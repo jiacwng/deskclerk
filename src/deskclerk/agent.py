@@ -8,6 +8,7 @@ from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 
 from deskclerk.connections import NotConnected, OAuthConnections, ToolInfo
 from deskclerk.providers import Usage, usage_from
@@ -88,6 +89,7 @@ async def run_agent(
     screen: Screen,
     step_limit: int,
     record_usage: Callable[[Usage], None],
+    trace_config: RunnableConfig | None = None,
 ) -> AgentResult:
     tools: dict[str, _Tool] = {}
     not_connected: list[str] = []
@@ -113,7 +115,7 @@ async def run_agent(
     cut_off = False
     withheld = 0
     for _ in range(step_limit):
-        response: AIMessage = await chat_model.ainvoke(messages)
+        response: AIMessage = await chat_model.ainvoke(messages, config=trace_config)
         messages.append(response)
         step_usage = usage_from(response)
         usage.append(step_usage)

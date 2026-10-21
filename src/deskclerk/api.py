@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import re
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import resources
@@ -47,6 +48,7 @@ from deskclerk.quota import Quota
 from deskclerk.screen import jev_screen
 from deskclerk.servers import McpServer
 from deskclerk.tokens import TokenStore
+from deskclerk.tracing import Tracing
 
 SESSION_COOKIE = "deskclerk_session"
 LOGIN_COOKIE = "deskclerk_login"
@@ -172,6 +174,7 @@ def create_app(
     gate: Gate,
     jev: Jev | None,
     signing_key: SigningKeyLookup,
+    tracing: Tracing | None = None,
     idp_transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
     if settings.session_key is None:
@@ -387,18 +390,22 @@ def create_app(
                 raise HTTPException(402, str(error)) from None
             spent_before = spending.cost_usd
             try:
-                result = await run_agent(
-                    identity.user_id,
-                    body.request,
-                    system_prompt(datetime.now(UTC).date()),
-                    servers,
-                    connections,
-                    model,
-                    gate,
-                    jev_screen(jev, spending.record_jev),
-                    settings.step_limit,
-                    spending.record,
-                )
+                with tracing.ask(identity.user_id) if tracing else nullcontext(None) as trace:
+                    result = await run_agent(
+                        identity.user_id,
+                        body.request,
+                        system_prompt(datetime.now(UTC).date()),
+                        servers,
+                        connections,
+                        model,
+                        gate,
+                        jev_screen(jev, spending.record_jev),
+                        settings.step_limit,
+                        spending.record,
+                        trace.config if trace else None,
+                    )
+                    if trace:
+                        trace.finish(result.withheld)
             except model_errors:
                 cost = spending.cost_usd - spent_before
                 raise upstream_failure(identity, body.request, started, cost) from None

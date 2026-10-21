@@ -14,3 +14,4 @@ mcp==2.3.0
 jsonschema==4.26.0
 fastapi==0.142.4
 uvicorn==0.54.0
+langfuse==5.0.4
