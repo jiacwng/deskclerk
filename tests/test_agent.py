@@ -18,11 +18,20 @@ from langchain_core.messages.ai import UsageMetadata
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import BaseTool
 
-from deskclerk.agent import AgentResult, ProposedCall, ToolSpan, Verdict, no_tool_span, run_agent
-from deskclerk.connections import OAuthConnections
+from deskclerk.agent import (
+    AgentResult,
+    McpServerFailed,
+    ProposedCall,
+    ToolSpan,
+    Verdict,
+    no_tool_span,
+    run_agent,
+)
+from deskclerk.connections import OAuthConnections, ToolResult
 from deskclerk.providers import Usage
 from deskclerk.screen import UNCHECKED, WITHHELD, Screen, pass_through
 from deskclerk.servers import McpServer
+from deskclerk.tokens import TokenStore
 from deskclerk.tracing import AskTrace
 from mcp_server import RunningServer, running_mcp_server
 from test_connections import REDIRECT, connect, make_connections, server_record
@@ -285,6 +294,35 @@ async def test_usage_billed_before_a_provider_failure_is_recorded(
             billed.append,
         )
     assert [(usage.input_tokens, usage.output_tokens) for usage in billed] == [(7, 3)]
+
+
+class CallsFail(OAuthConnections):
+    async def call(
+        self, user_id: str, server: McpServer, tool_name: str, arguments: dict[str, Any]
+    ) -> ToolResult:
+        raise httpx2.ConnectError("refused")
+
+
+@pytest.mark.anyio
+async def test_an_unreachable_server_raises_one_error_naming_it(tmp_path: Path) -> None:
+    connections = make_connections(tmp_path / "tokens.sqlite", Fernet.generate_key().decode())
+    gone = McpServer("gone", "http://127.0.0.1:1/mcp", None, None, "none")
+    with pytest.raises(McpServerFailed) as failed:
+        await run(connections, [gone], script(answer("x")))
+    assert failed.value.server_name == "gone"
+
+
+@pytest.mark.anyio
+async def test_a_tool_call_that_cannot_reach_its_server_raises_an_error_naming_it(
+    tmp_path: Path, mcp_server: RunningServer
+) -> None:
+    store = TokenStore(tmp_path / "tokens.sqlite", Fernet.generate_key().decode())
+    connections = CallsFail(store, REDIRECT, "deskclerk test", 600)
+    await connect(connections, "ada", server_record(mcp_server))
+    model = script(calls(("notes__read_note", {})), answer("done"))
+    with pytest.raises(McpServerFailed) as failed:
+        await run(connections, [server_record(mcp_server)], model)
+    assert (failed.value.server_name, failed.value.cause) == ("notes", "ConnectError")
 
 
 @pytest.mark.anyio
