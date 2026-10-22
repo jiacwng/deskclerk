@@ -26,7 +26,7 @@ from mcp.server.auth.routes import build_metadata
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.server.mcpserver import MCPServer
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
-from mcp.types import ToolAnnotations
+from mcp.types import ContentBlock, ImageContent, TextContent, ToolAnnotations
 from pydantic import AnyHttpUrl
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -148,6 +148,7 @@ def running_mcp_server(
     oauth: bool = True,
     delete_tool: bool = False,
     issuer_in_response: bool = False,
+    image_tool: bool = False,
 ) -> Iterator[RunningServer]:
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
@@ -182,6 +183,15 @@ def running_mcp_server(
     @mcp.tool()
     def break_note() -> str:
         raise ValueError("the note is locked")
+
+    if image_tool:
+
+        @mcp.tool()
+        def show_chart() -> list[ContentBlock]:
+            return [
+                TextContent(text="sales are up"),
+                ImageContent(data="aGk=", mime_type="image/png"),
+            ]
 
     if delete_tool:
 

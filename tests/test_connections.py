@@ -293,3 +293,12 @@ async def test_a_wrong_issuer_fails_the_connection_as_an_upstream_error_not_a_gr
         state, code = await approve(authorization_url)
         with pytest.raises(OAuthFlowError):
             await connections.complete("ada", state, code, "https://elsewhere.example")
+
+
+@pytest.mark.anyio
+async def test_content_that_is_not_text_is_named_as_left_out(token_path: Path, key: str) -> None:
+    connections = make_connections(token_path, key)
+    with running_mcp_server(REDIRECT, oauth=False, image_tool=True) as open_server:
+        server = McpServer("open", open_server.url, None, None, "none")
+        result = await connections.call("ada", server, "show_chart", {})
+    assert result.text == "sales are up\n[image/png content omitted]"

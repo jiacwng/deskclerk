@@ -15,7 +15,7 @@ from mcp.client.auth import OAuthClientProvider, OAuthFlowError
 from mcp.client.streamable_http import StreamableHTTPError, streamable_http_client
 from mcp.shared.auth import AuthorizationCodeResult, OAuthClientMetadata
 from mcp.shared.exceptions import MCPError
-from mcp.types import TextContent, Tool
+from mcp.types import ContentBlock, EmbeddedResource, ResourceLink, TextContent, Tool
 
 from deskclerk.servers import McpServer
 from deskclerk.tokens import ServerTokenStorage, TokenStore
@@ -233,8 +233,21 @@ class OAuthConnections:
     ) -> ToolResult:
         async with self._connected_client(user_id, server) as client:
             result = await client.call_tool(tool_name, arguments)
-        texts = [block.text for block in result.content if isinstance(block, TextContent)]
-        return ToolResult("\n".join(texts), result.is_error)
+        return ToolResult(_result_text(result.content), result.is_error)
+
+
+def _result_text(content: list[ContentBlock]) -> str:
+    lines: list[str] = []
+    for block in content:
+        if isinstance(block, TextContent):
+            lines.append(block.text)
+        elif isinstance(block, ResourceLink):
+            lines.append(f"[resource {block.uri} omitted]")
+        elif isinstance(block, EmbeddedResource):
+            lines.append(f"[resource {block.resource.uri} omitted]")
+        else:
+            lines.append(f"[{block.mime_type} content omitted]")
+    return "\n".join(lines)
 
 
 def _tool_info(tool: Tool) -> ToolInfo:
