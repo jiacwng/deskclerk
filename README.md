@@ -32,13 +32,14 @@ Linux and WSL supports.
 
    ```toml
    [[server]]
-   name = "calendar"
-   url = "https://mcp.example.com/calendar"
+   name = "linear"
+   url = "https://mcp.linear.app/mcp"
    ```
 
-   A server without sign-in takes `auth = "none"`. A server that needs a registered OAuth
-   client takes `client_id` and `client_secret_env`, the name of the variable in `.env` that
-   holds the secret. deskclerk trusts the read-only marks of the servers you list.
+   A server without sign-in takes `auth = "none"`. A server that needs a registered OAuth client
+   takes `client_id` and `client_secret_env`, the name of the variable in `.env` that holds the
+   secret. deskclerk trusts the read-only marks of the servers you list. deskclerk is tested
+   against Linear's hosted MCP server: sign-in, reads, writes and the injection screen.
 3. Start both services:
 
    ```
