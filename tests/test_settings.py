@@ -43,3 +43,27 @@ def test_the_listen_address_and_port_are_read_from_the_environment(
 def test_a_port_outside_1_to_65535_is_refused(port: int) -> None:
     with pytest.raises(ValidationError):
         Settings(port=port)
+
+
+def test_both_callback_urls_default_to_localhost() -> None:
+    settings = Settings()
+    assert settings.sign_in_redirect_url == "http://localhost:8000/login/callback"
+    assert settings.redirect_url == "http://localhost:8000/oauth/callback"
+
+
+def test_both_callback_urls_come_from_the_public_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DESKCLERK_PUBLIC_URL", "https://x.example/")
+    settings = Settings()
+    assert settings.sign_in_redirect_url == "https://x.example/login/callback"
+    assert settings.redirect_url == "https://x.example/oauth/callback"
+
+
+def test_a_public_url_without_a_scheme_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DESKCLERK_PUBLIC_URL", "x.example")
+    with pytest.raises(ValidationError, match="DESKCLERK_PUBLIC_URL"):
+        Settings()
+
+
+def test_the_old_sign_in_redirect_setting_has_no_effect(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DESKCLERK_SIGN_IN_REDIRECT_URL", "https://old.example/login/callback")
+    assert Settings().sign_in_redirect_url == "http://localhost:8000/login/callback"

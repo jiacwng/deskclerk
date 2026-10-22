@@ -30,9 +30,8 @@ class Settings(BaseSettings):
     servers_file: Path = Path("servers.toml")
     token_file: Path = Path("data/tokens.sqlite")
     token_key: SecretStr | None = None
-    redirect_url: str = "http://localhost:8000/oauth/callback"
     step_limit: int = 8
-    sign_in_redirect_url: str = "http://localhost:8000/login/callback"
+    public_url: str = "http://localhost:8000"
     session_key: SecretStr | None = None
     session_hours: int = 8
     host: str = "127.0.0.1"
@@ -44,6 +43,24 @@ class Settings(BaseSettings):
         if not values.get("audience"):
             values["audience"] = values.get("client_id") or cls.model_fields["client_id"].default
         return values
+
+    @field_validator("public_url")
+    @classmethod
+    def _public_url_has_a_scheme(cls, value: str) -> str:
+        if not value.startswith(("http://", "https://")):
+            raise ValueError(
+                f"DESKCLERK_PUBLIC_URL starts with http:// or https://, such as "
+                f"https://deskclerk.example.com, not {value!r}"
+            )
+        return value.rstrip("/")
+
+    @property
+    def sign_in_redirect_url(self) -> str:
+        return self.public_url + "/login/callback"
+
+    @property
+    def redirect_url(self) -> str:
+        return self.public_url + "/oauth/callback"
 
     @field_validator("session_key")
     @classmethod
