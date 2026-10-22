@@ -38,8 +38,9 @@ Linux and WSL supports.
 
    A server without sign-in takes `auth = "none"`. A server that needs a registered OAuth client
    takes `client_id` and `client_secret_env`, the name of the variable in `.env` that holds the
-   secret. deskclerk trusts the read-only marks of the servers you list. deskclerk is tested
-   against Linear's hosted MCP server: sign-in, reads, writes and the injection screen.
+   secret. deskclerk trusts the read-only marks of the servers you list. A server's `tools` lists
+   the only tools the agent may use from it. deskclerk is tested against Linear's hosted MCP server:
+   sign-in, reads, writes and the injection screen.
 3. Start both services:
 
    ```

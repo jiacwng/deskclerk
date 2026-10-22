@@ -24,6 +24,7 @@ class McpServer:
     client_id: str | None
     client_secret: str | None
     auth: Literal["oauth", "none"] = "oauth"
+    tools: tuple[str, ...] | None = None
 
 
 class _ServerEntry(BaseModel):
@@ -34,6 +35,7 @@ class _ServerEntry(BaseModel):
     client_id: str | None = None
     client_secret_env: str | None = None
     auth: Literal["oauth", "none"] = "oauth"
+    tools: list[str] | None = None
 
     @field_validator("name")
     @classmethod
@@ -41,6 +43,18 @@ class _ServerEntry(BaseModel):
         if not value.strip():
             raise ValueError("a server needs a name")
         return value
+
+    @field_validator("tools")
+    @classmethod
+    def _tool_names_are_named_and_unique(cls, names: list[str] | None) -> list[str] | None:
+        seen: set[str] = set()
+        for name in names or []:
+            if not name.strip():
+                raise ValueError("a tool needs a name")
+            if name in seen:
+                raise ValueError(f"tool name {name!r} is listed twice")
+            seen.add(name)
+        return names
 
     @field_validator("url")
     @classmethod
@@ -104,5 +118,6 @@ def load_servers(path: Path, environ: Mapping[str, str] = os.environ) -> list[Mc
                     f"server {entry.name!r} reads its client secret from the environment "
                     f"variable {entry.client_secret_env}, which is not set"
                 )
-        servers.append(McpServer(entry.name, entry.url, entry.client_id, secret, entry.auth))
+        tools = None if entry.tools is None else tuple(entry.tools)
+        servers.append(McpServer(entry.name, entry.url, entry.client_id, secret, entry.auth, tools))
     return servers

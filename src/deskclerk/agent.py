@@ -144,6 +144,8 @@ async def run_agent(
             if failure is None:
                 raise
             raise failure from None
+        if server.tools is not None:
+            listed = [info for info in listed if info.name in server.tools]
         pinned = pin_tools(tokens, user_id, server.name, listed)
         changed_tools += [f"{server.name}__{name}" for name in pinned.changed]
         for info in pinned.kept:
