@@ -46,7 +46,7 @@ def test_valid_token_gives_the_user_and_the_client(
         pytest.param({"iss": "http://evil.test/realms/deskclerk"}, "issuer", id="wrong-issuer"),
         pytest.param({"aud": None}, '"aud"', id="no-audience"),
         pytest.param({"aud": "account"}, "Audience doesn't match", id="wrong-audience"),
-        pytest.param({"typ": "ID"}, "typ is 'ID'", id="keycloak-id-token"),
+        pytest.param({"nonce": "n-1", "typ": "ID"}, "typ is 'ID'", id="keycloak-id-token"),
         pytest.param({"token_use": "id"}, "token_use is 'id'", id="cognito-id-token"),
         pytest.param({"scope": None}, "grants no scope", id="no-scope"),
         pytest.param({"nbf": 60}, "not yet valid", id="not-before-in-the-future"),
@@ -75,14 +75,6 @@ def test_audience_list_naming_the_api_is_accepted(
     token = sign_token({"aud": ["account", token_settings.audience]})
     identity = authenticate(token, token_settings, token_signing_key, token_settings.audience)
     assert identity.user_id == "district-1"
-
-
-def test_a_token_for_another_service_is_refused(
-    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup
-) -> None:
-    token = sign_token({"aud": OTHER_SERVICE})
-    with pytest.raises(AuthError, match="Audience doesn't match"):
-        authenticate(token, token_settings, token_signing_key, token_settings.audience)
 
 
 def test_another_audience_accepts_any_registered_client(
@@ -331,12 +323,16 @@ def test_a_bad_id_token_is_refused(
         identify(token, token_settings, token_signing_key, "n-1")
 
 
-def test_an_id_token_is_not_accepted_as_a_bearer_token(
+def test_several_audiences_with_this_client_as_authorized_party_are_accepted(
     sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup
 ) -> None:
-    token = sign_token({"nonce": "n-1", "typ": "ID", "scope": None})
-    with pytest.raises(AuthError, match="typ is 'ID'"):
-        authenticate(token, token_settings, token_signing_key, token_settings.audience)
+    claims: dict[str, object] = {
+        "nonce": "n-1",
+        "aud": ["deskclerk-api", "another"],
+        "azp": "deskclerk-api",
+    }
+    identity = identify(sign_token(claims), token_settings, token_signing_key, "n-1")
+    assert identity.user_id == "district-1"
 
 
 def test_an_id_token_is_checked_against_the_client_id_not_the_api_audience(

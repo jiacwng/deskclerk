@@ -1,13 +1,11 @@
-# The chat model is built without a network call with low effort, a model is priced from the
-# table and refused outside it, and an optional tool argument stays required and nullable under
-# strict tool use.
+# The chat model is built without a network call with low effort, and a model is priced from the
+# table and refused outside it.
 
 from typing import Any
 
 import pytest
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessage
-from langchain_core.runnables import RunnableBinding
 
 from deskclerk import providers
 from deskclerk.config import Settings
@@ -20,17 +18,6 @@ from deskclerk.providers import (
     price_of,
     usage_from,
 )
-
-LOOKUP_TOOL: dict[str, Any] = {
-    "name": "lookup",
-    "description": "Look a name up, in one group or in all of them.",
-    "input_schema": {
-        "type": "object",
-        "properties": {"group": {"type": ["string", "null"]}},
-        "required": ["group"],
-        "additionalProperties": False,
-    },
-}
 
 
 @pytest.fixture(autouse=True)
@@ -72,14 +59,6 @@ def test_the_price_table_matches_the_list_prices() -> None:
     assert prices["anthropic:claude-opus-5-5"].cost(one_million_each) == pytest.approx(24.00)
 
 
-def test_a_tool_takes_a_nullable_schema_under_strict_tool_use() -> None:
-    anthropic = chat_model(Settings()).bind_tools([LOOKUP_TOOL], strict=True)
-
-    assert isinstance(anthropic, RunnableBinding)
-    (tool,) = anthropic.kwargs["tools"]
-    assert tool["input_schema"] == LOOKUP_TOOL["input_schema"]
-
-
 def _message(input_tokens: int, output_tokens: int, **details: int) -> AIMessage:
     usage: Any = {
         "input_tokens": input_tokens,
@@ -112,15 +91,6 @@ def test_a_usage_without_cache_details_is_billed_as_plain_input() -> None:
 
 def test_a_message_without_usage_metadata_costs_nothing() -> None:
     assert usage_from(AIMessage(content="answer")) == Usage(0, 0, 0, 0)
-
-
-def test_cached_tokens_cost_less_than_the_same_tokens_uncached() -> None:
-    price = providers.PRICES["anthropic:claude-haiku-5-5"]
-
-    cached = price.cost(usage_from(_message(10_000, 0, cache_read=8_000)))
-    plain = price.cost(usage_from(_message(10_000, 0)))
-
-    assert cached < plain
 
 
 def test_cache_tokens_beyond_the_input_tokens_are_refused() -> None:

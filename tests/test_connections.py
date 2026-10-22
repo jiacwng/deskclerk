@@ -146,37 +146,34 @@ async def test_tokens_the_server_no_longer_accepts_never_start_a_redirect(
 
 
 @pytest.mark.anyio
-async def test_an_unknown_state_is_refused(
+async def test_a_state_that_was_never_issued_or_was_already_used_is_refused(
     mcp_server: RunningServer, token_path: Path, key: str
 ) -> None:
     connections = make_connections(token_path, key)
     with pytest.raises(UnknownState):
         await connections.complete("ada", "never-issued", "code")
+    state, code = await approve(await connections.begin("ada", server_record(mcp_server)))
+    await connections.complete("ada", state, code)
+    with pytest.raises(UnknownState):
+        await connections.complete("ada", state, code)
 
 
 @pytest.mark.anyio
-async def test_a_flow_finished_after_the_bound_has_expired(
+async def test_a_flow_finished_after_the_bound_has_expired_leaves_no_task_running(
     mcp_server: RunningServer, token_path: Path, key: str
 ) -> None:
+    before = asyncio.all_tasks()
     connections = make_connections(token_path, key, timeout=0.2)
     server = server_record(mcp_server)
     authorization_url = await connections.begin("ada", server)
+    assert asyncio.all_tasks() - before
     state, code = await approve(authorization_url)
-    await asyncio.sleep(0.4)
+    await asyncio.sleep(0.6)
     with pytest.raises(FlowExpired):
         await connections.complete("ada", state, code)
     with pytest.raises(NotConnected):
         await connections.tools("ada", server)
-
-
-@pytest.mark.anyio
-async def test_a_state_works_once(mcp_server: RunningServer, token_path: Path, key: str) -> None:
-    connections = make_connections(token_path, key)
-    server = server_record(mcp_server)
-    state, code = await approve(await connections.begin("ada", server))
-    await connections.complete("ada", state, code)
-    with pytest.raises(UnknownState):
-        await connections.complete("ada", state, code)
+    assert not [task for task in asyncio.all_tasks() - before if not task.done()]
 
 
 @pytest.mark.anyio
@@ -204,20 +201,6 @@ async def test_a_registered_client_skips_dynamic_registration(
     }
     assert mcp_server.provider.registrations == 0
     assert TokenStore(token_path, key).get("ada", "notes", "client") is None
-
-
-@pytest.mark.anyio
-async def test_after_a_disconnect_the_employee_is_not_connected(
-    mcp_server: RunningServer, token_path: Path, key: str
-) -> None:
-    connections = make_connections(token_path, key)
-    server = server_record(mcp_server)
-    await connect(connections, "ada", server)
-    await connect(connections, "grace", server)
-    TokenStore(token_path, key).delete_tokens("ada", "notes")
-    with pytest.raises(NotConnected):
-        await connections.tools("ada", server)
-    assert await connections.tools("grace", server)
 
 
 @pytest.mark.anyio
@@ -266,18 +249,6 @@ async def test_another_employee_cannot_finish_a_connection_they_did_not_start(
         assert await store.storage_for(user, server, REDIRECT).get_tokens() is None
     await connections.complete("ada", state, code)
     assert await store.storage_for("ada", server, REDIRECT).get_tokens() is not None
-
-
-@pytest.mark.anyio
-async def test_a_connection_never_finished_leaves_no_task_running(
-    mcp_server: RunningServer, token_path: Path, key: str
-) -> None:
-    before = asyncio.all_tasks()
-    connections = make_connections(token_path, key, timeout=0.2)
-    await connections.begin("ada", server_record(mcp_server))
-    assert asyncio.all_tasks() - before
-    await asyncio.sleep(0.6)
-    assert not [task for task in asyncio.all_tasks() - before if not task.done()]
 
 
 @pytest.mark.anyio

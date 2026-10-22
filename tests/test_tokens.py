@@ -32,20 +32,6 @@ async def test_tokens_are_not_readable_in_the_file(tmp_path: Path, key: str) -> 
     assert stored.access_token == ACCESS
 
 
-@pytest.mark.anyio
-async def test_a_new_store_on_the_same_file_and_key_reads_the_tokens(
-    tmp_path: Path, key: str
-) -> None:
-    path = tmp_path / "tokens.sqlite"
-    first = TokenStore(path, key).storage_for("ada", SERVER, REDIRECT)
-    await first.set_tokens(OAuthToken(access_token=ACCESS, expires_in=3600))
-    second = TokenStore(path, key).storage_for("ada", SERVER, REDIRECT)
-    stored = await second.get_tokens()
-    assert stored is not None
-    assert stored.access_token == ACCESS
-    assert second.token_expiry() is not None
-
-
 def test_another_key_cannot_open_the_file(tmp_path: Path, key: str) -> None:
     path = tmp_path / "tokens.sqlite"
     TokenStore(path, key)

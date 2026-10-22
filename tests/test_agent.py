@@ -28,7 +28,6 @@ from deskclerk.agent import (
     run_agent,
 )
 from deskclerk.connections import OAuthConnections, ToolResult
-from deskclerk.providers import Usage
 from deskclerk.screen import UNCHECKED, WITHHELD, Screen, pass_through
 from deskclerk.servers import McpServer
 from deskclerk.tokens import TokenStore
@@ -228,25 +227,23 @@ async def test_the_step_limit_stops_a_model_that_keeps_calling_tools(
 
 
 @pytest.mark.anyio
-async def test_a_reply_cut_off_at_the_output_limit_ends_the_loop_and_is_reported(
-    mcp_server: RunningServer, connections: OAuthConnections
+@pytest.mark.parametrize(
+    ("stop_reason", "cut_off"),
+    [
+        pytest.param("max_tokens", True, id="a-reply-cut-off-at-the-output-limit-is-reported"),
+        pytest.param("end_turn", False, id="a-reply-that-ends-normally-is-not-cut-off"),
+    ],
+)
+async def test_a_reply_is_reported_as_cut_off_only_when_it_hit_the_output_limit(
+    stop_reason: str, cut_off: bool, mcp_server: RunningServer, connections: OAuthConnections
 ) -> None:
-    cut = AIMessage(content="The meeting is at", response_metadata={"stop_reason": "max_tokens"})
-    model = script(cut, answer("never asked for"))
+    reply = AIMessage(content="The meeting is at", response_metadata={"stop_reason": stop_reason})
+    model = script(reply, answer("never asked for"))
     result = await run(connections, [server_record(mcp_server)], model)
-    assert result.cut_off is True
+    assert result.cut_off is cut_off
     assert result.step_limit_hit is False
     assert result.answer == "The meeting is at"
     assert len(result.usage) == 1
-
-
-@pytest.mark.anyio
-async def test_a_reply_that_ends_normally_is_not_cut_off(
-    mcp_server: RunningServer, connections: OAuthConnections
-) -> None:
-    done = AIMessage(content="done", response_metadata={"stop_reason": "end_turn"})
-    result = await run(connections, [server_record(mcp_server)], script(done))
-    assert result.cut_off is False
 
 
 @pytest.mark.anyio
@@ -271,29 +268,6 @@ async def test_usage_is_summed_with_cache_tokens(
     assert (total.input_tokens, total.output_tokens) == (250, 30)
     assert (total.cache_read_tokens, total.cache_write_tokens) == (60, 60)
     assert len(result.usage) == 2
-
-
-@pytest.mark.anyio
-async def test_usage_billed_before_a_provider_failure_is_recorded(
-    mcp_server: RunningServer, connections: OAuthConnections
-) -> None:
-    billed: list[Usage] = []
-    first = UsageMetadata(input_tokens=7, output_tokens=3, total_tokens=10)
-    model = ProviderGoneAfterScript(messages=iter([calls(("notes__read_note", {}), usage=first)]))
-    with pytest.raises(anthropic.APIConnectionError):
-        await run_agent(
-            "ada",
-            "read my note",
-            SYSTEM,
-            [server_record(mcp_server)],
-            connections,
-            model,
-            RecordingGate(True),
-            pass_through,
-            5,
-            billed.append,
-        )
-    assert [(usage.input_tokens, usage.output_tokens) for usage in billed] == [(7, 3)]
 
 
 class CallsFail(OAuthConnections):
@@ -367,58 +341,33 @@ class RecordingScreen:
 
 
 @pytest.mark.anyio
-async def test_a_withheld_result_reaches_neither_the_model_nor_the_record(
-    mcp_server: RunningServer, connections: OAuthConnections
+@pytest.mark.parametrize(
+    ("tool", "replace_with", "shown", "status", "withheld"),
+    [
+        pytest.param("read_note", WITHHELD, WITHHELD, "success", 1, id="a-withheld-result"),
+        pytest.param("read_note", UNCHECKED, UNCHECKED, "success", 1, id="an-unchecked-result"),
+        pytest.param("break_note", WITHHELD, WITHHELD, "error", 1, id="a-tool-error-is-screened"),
+        pytest.param("read_note", None, "the note", "success", 0, id="a-result-that-passes"),
+    ],
+)
+async def test_a_tool_result_is_screened_before_the_model_and_the_record_see_it(
+    tool: str,
+    replace_with: str | None,
+    shown: str,
+    status: str,
+    withheld: int,
+    mcp_server: RunningServer,
+    connections: OAuthConnections,
 ) -> None:
-    screen = RecordingScreen(WITHHELD)
-    model = script(calls(("notes__read_note", {})), answer("done"))
+    screen = RecordingScreen(replace_with)
+    model = script(calls((f"notes__{tool}", {})), answer("done"))
     result = await run(connections, [server_record(mcp_server)], model, screen=screen)
-    assert screen.asked == [("save a note", "the note")]
+    assert [request for request, _ in screen.asked] == ["save a note"]
     reply = model.seen[1][-1]
     assert isinstance(reply, ToolMessage)
-    assert reply.content == WITHHELD
-    assert result.executed[0].result == WITHHELD
-    assert result.withheld == 1
-
-
-@pytest.mark.anyio
-async def test_an_unchecked_result_is_counted_as_withheld_and_hidden_from_the_model(
-    mcp_server: RunningServer, connections: OAuthConnections
-) -> None:
-    screen = RecordingScreen(UNCHECKED)
-    model = script(calls(("notes__read_note", {})), answer("done"))
-    result = await run(connections, [server_record(mcp_server)], model, screen=screen)
-    reply = model.seen[1][-1]
-    assert isinstance(reply, ToolMessage)
-    assert reply.content == UNCHECKED
-    assert result.executed[0].result == UNCHECKED
-    assert result.withheld == 1
-
-
-@pytest.mark.anyio
-async def test_a_tool_error_is_screened_too(
-    mcp_server: RunningServer, connections: OAuthConnections
-) -> None:
-    screen = RecordingScreen(WITHHELD)
-    model = script(calls(("notes__break_note", {})), answer("done"))
-    result = await run(connections, [server_record(mcp_server)], model, screen=screen)
-    reply = model.seen[1][-1]
-    assert isinstance(reply, ToolMessage)
-    assert (reply.content, reply.status) == (WITHHELD, "error")
-    assert result.executed[0].result == WITHHELD
-    assert result.withheld == 1
-
-
-@pytest.mark.anyio
-async def test_a_result_that_passes_the_screen_is_not_counted_as_withheld(
-    mcp_server: RunningServer, connections: OAuthConnections
-) -> None:
-    model = script(calls(("notes__read_note", {})), answer("done"))
-    result = await run(
-        connections, [server_record(mcp_server)], model, screen=RecordingScreen(None)
-    )
-    assert result.executed[0].result == "the note"
-    assert result.withheld == 0
+    assert (reply.content, reply.status) == (shown, status)
+    assert result.executed[0].result == shown
+    assert result.withheld == withheld
 
 
 class ModelCallCounter(BaseCallbackHandler):

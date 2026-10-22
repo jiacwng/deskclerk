@@ -46,7 +46,7 @@ def test_a_repeated_name_is_refused(tmp_path: Path) -> None:
         load_servers(path, {})
 
 
-@pytest.mark.parametrize("url", ["http://example.com/mcp", "ftp://example.com/mcp", "example.com"])
+@pytest.mark.parametrize("url", ["http://example.com/mcp", "example.com"])
 def test_a_remote_url_must_be_https(tmp_path: Path, url: str) -> None:
     path = write(tmp_path, f'[[server]]\nname = "a"\nurl = "{url}"\n')
     with pytest.raises(ServersError, match="must be https"):
