@@ -58,7 +58,7 @@ async def test_deleting_tokens_removes_only_that_employees_tokens(tmp_path: Path
     store = TokenStore(tmp_path / "tokens.sqlite", key)
     for user in ("ada", "grace"):
         await store.storage_for(user, SERVER, REDIRECT).set_tokens(OAuthToken(access_token=user))
-    store.delete_tokens("ada", SERVER.name)
+    store.delete_connection("ada", SERVER.name)
     assert await store.storage_for("ada", SERVER, REDIRECT).get_tokens() is None
     assert await store.storage_for("grace", SERVER, REDIRECT).get_tokens() is not None
 
@@ -87,3 +87,17 @@ async def test_an_admin_registered_client_is_returned_and_never_stored(
     assert (info.client_id, info.client_secret) == ("preset", "preset-secret")
     assert info.token_endpoint_auth_method == "client_secret_post"
     assert store.get("ada", "notes", "client") is None
+
+
+def test_deleting_a_connection_removes_its_pins_and_keeps_the_registered_client(
+    tmp_path: Path, key: str
+) -> None:
+    store = TokenStore(tmp_path / "tokens.sqlite", key)
+    other = McpServer("other", "https://other.test/mcp", None, None)
+    store.put("ada", SERVER.name, "tool_pins", "{}")
+    store.put("ada", SERVER.name, "client", "{}")
+    store.put("ada", other.name, "tool_pins", "{}")
+    store.delete_connection("ada", SERVER.name)
+    assert store.get("ada", SERVER.name, "tool_pins") is None
+    assert store.get("ada", SERVER.name, "client") == "{}"
+    assert store.get("ada", other.name, "tool_pins") == "{}"

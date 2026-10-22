@@ -134,6 +134,7 @@ async def test_a_delete_of_an_unseen_id_never_reaches_the_server(tmp_path: Path)
             "system",
             [server],
             connections,
+            connections.tokens,
             model,
             write_check(),
             pass_through,

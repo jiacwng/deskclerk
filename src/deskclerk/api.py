@@ -125,6 +125,7 @@ class AskOut(BaseModel):
     step_limit_hit: bool
     cut_off: bool
     withheld: int
+    changed_tools: list[str]
     cost_usd: float
 
 
@@ -374,7 +375,7 @@ def create_app(
     async def disconnect(name: str, who: Caller = Depends(posting_caller)) -> Response:
         server = known_server(name)
         connections.cancel_for(who.identity.user_id, server.name)
-        await run_in_threadpool(tokens.delete_tokens, who.identity.user_id, server.name)
+        await run_in_threadpool(tokens.delete_connection, who.identity.user_id, server.name)
         audit.connection(who.identity, "disconnect", server.name)
         return Response(status_code=204)
 
@@ -408,6 +409,7 @@ def create_app(
                         system_prompt(datetime.now(UTC).date()),
                         servers,
                         connections,
+                        tokens,
                         model,
                         gate,
                         jev_screen(jev, spending.record_jev),
@@ -439,6 +441,7 @@ def create_app(
             step_limit_hit=result.step_limit_hit,
             cut_off=result.cut_off,
             withheld=result.withheld,
+            changed_tools=list(result.changed_tools),
             cost_usd=cost,
         )
 

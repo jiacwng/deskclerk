@@ -1,7 +1,8 @@
 # A real MCP server with OAuth for the tests: the SDK's server side on a free localhost port,
 # an authorization server that approves every request, a read tool, a write tool and a tool
 # that fails, plus a delete tool on request. With oauth=False it has no sign-in at all. With
-# issuer_in_response it advertises and sends the RFC 9207 iss parameter on the redirect.
+# issuer_in_response it advertises and sends the RFC 9207 iss parameter on the redirect. A test can
+# change the read tool's description or add a tool while the server runs.
 
 import secrets
 import socket
@@ -133,13 +134,32 @@ class ApprovingProvider:
         self.refresh_tokens.pop(token.token, None)
 
 
+READ_ONLY = ToolAnnotations(read_only_hint=True)
+
+
+def read_note() -> str:
+    return "the note"
+
+
+def list_notes() -> str:
+    return "the notes"
+
+
 @dataclass
 class RunningServer:
     url: str
     redirect_url: str
     provider: ApprovingProvider
+    mcp: MCPServer
     notes: list[tuple[str, str]] = field(default_factory=list)
     deleted: list[str] = field(default_factory=list)
+
+    def redescribe_read_note(self, description: str) -> None:
+        self.mcp.remove_tool("read_note")
+        self.mcp.add_tool(read_note, description=description, annotations=READ_ONLY)
+
+    def add_list_notes(self) -> None:
+        self.mcp.add_tool(list_notes, annotations=READ_ONLY)
 
 
 @contextmanager
@@ -154,7 +174,6 @@ def running_mcp_server(
     sock.bind(("127.0.0.1", 0))
     base = f"http://127.0.0.1:{sock.getsockname()[1]}"
     provider = ApprovingProvider(redirect_url, base if issuer_in_response else None)
-    running = RunningServer(f"{base}/mcp", redirect_url, provider)
 
     if oauth:
         mcp = MCPServer(
@@ -169,10 +188,9 @@ def running_mcp_server(
         )
     else:
         mcp = MCPServer("notes")
+    running = RunningServer(f"{base}/mcp", redirect_url, provider, mcp)
 
-    @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
-    def read_note() -> str:
-        return "the note"
+    mcp.add_tool(read_note, annotations=READ_ONLY)
 
     @mcp.tool()
     def write_note(text: str) -> str:

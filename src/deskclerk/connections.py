@@ -95,7 +95,7 @@ class OAuthConnections:
         client_name: str,
         flow_timeout_seconds: float,
     ) -> None:
-        self._tokens = tokens
+        self.tokens = tokens
         self._redirect_url = redirect_url
         self._client_name = client_name
         self._flow_timeout_seconds = flow_timeout_seconds
@@ -128,7 +128,7 @@ class OAuthConnections:
         if server.auth == "none":
             raise NoSignInNeeded(f"{server.name} needs no sign-in")
         loop = asyncio.get_running_loop()
-        storage = self._tokens.storage_for(user_id, server, self._redirect_url)
+        storage = self.tokens.storage_for(user_id, server, self._redirect_url)
         authorization_url: asyncio.Future[str] = loop.create_future()
         code: asyncio.Future[AuthorizationCodeResult] = loop.create_future()
 
@@ -203,7 +203,7 @@ class OAuthConnections:
             async with self._client(None, server) as client:
                 yield client
             return
-        storage = self._tokens.storage_for(user_id, server, self._redirect_url)
+        storage = self.tokens.storage_for(user_id, server, self._redirect_url)
         if await storage.get_tokens() is None:
             raise NotConnected(f"{user_id} has not connected {server.name}")
 
