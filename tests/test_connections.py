@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 from cryptography.fernet import Fernet
+from mcp.client.auth import OAuthFlowError
 from mcp.shared.auth import OAuthToken
 
 from deskclerk.connections import (
@@ -263,3 +264,32 @@ async def test_a_server_with_no_sign_in_lists_its_tools_with_their_hints(
             await connections.begin("ada", server)
     assert (tools["read_note"].read_only, tools["read_note"].destructive) == (True, False)
     assert (tools["write_note"].read_only, tools["write_note"].destructive) == (False, True)
+
+
+@pytest.mark.anyio
+async def test_a_server_that_names_its_issuer_on_the_redirect_connects_when_it_is_forwarded(
+    token_path: Path, key: str
+) -> None:
+    connections = make_connections(token_path, key)
+    with running_mcp_server(REDIRECT, issuer_in_response=True) as issuing:
+        server = server_record(issuing)
+        authorization_url = await connections.begin("ada", server)
+        async with httpx.AsyncClient() as browser:
+            response = await browser.get(authorization_url)
+        query = parse_qs(urlparse(response.headers["location"]).query)
+        assert query["iss"] == [issuing.url.removesuffix("/mcp")]
+        await connections.complete("ada", query["state"][0], query["code"][0], query["iss"][0])
+        tools = await connections.tools("ada", server)
+    assert {tool.name for tool in tools} == {"read_note", "write_note", "break_note"}
+
+
+@pytest.mark.anyio
+async def test_a_wrong_issuer_fails_the_connection_as_an_upstream_error_not_a_group(
+    token_path: Path, key: str
+) -> None:
+    connections = make_connections(token_path, key)
+    with running_mcp_server(REDIRECT, issuer_in_response=True) as issuing:
+        authorization_url = await connections.begin("ada", server_record(issuing))
+        state, code = await approve(authorization_url)
+        with pytest.raises(OAuthFlowError):
+            await connections.complete("ada", state, code, "https://elsewhere.example")

@@ -80,6 +80,12 @@ def open_server() -> Iterator[RunningServer]:
         yield running
 
 
+@pytest.fixture
+def issuing_server() -> Iterator[RunningServer]:
+    with running_mcp_server(REDIRECT, issuer_in_response=True) as running:
+        yield running
+
+
 def make_settings(token_settings: Settings, **changes: object) -> Settings:
     return token_settings.model_copy(update={"session_key": SecretStr(SESSION_KEY), **changes})
 
@@ -186,7 +192,7 @@ def start_connect(site: Web, headers: dict[str, str], name: str = "notes") -> di
     assert response.status_code == 200
     approval = httpx.get(response.json()["authorization_url"])
     query = parse_qs(urlparse(approval.headers["location"]).query)
-    return {"state": query["state"][0], "code": query["code"][0]}
+    return {name: query[name][0] for name in ("state", "code", "iss") if name in query}
 
 
 def connect(site: Web, headers: dict[str, str]) -> None:
@@ -1021,3 +1027,46 @@ def test_an_unreachable_login_server_gives_503_and_no_session(
         assert callback.status_code == 503
         assert SESSION_COOKIE not in site.client.cookies
         assert site.client.get("/me").status_code == 401
+
+
+def test_a_server_that_names_its_issuer_on_the_redirect_connects_when_the_callback_forwards_it(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    issuing_server: RunningServer,
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(token_settings)
+    ada = as_user(sign_token, "ada")
+    with web(settings, [notes(issuing_server)], script(), token_signing_key, tmp_path) as site:
+        started = start_connect(site, ada)
+        assert started["iss"] == issuing_server.url.removesuffix("/mcp")
+        finished = site.client.get(
+            "/oauth/callback", params=started, headers=ada, follow_redirects=False
+        )
+        assert finished.status_code == 303
+        assert site.tokens.get("ada", "notes", "tokens") is not None
+
+
+@pytest.mark.parametrize("iss", ["https://elsewhere.example", None])
+def test_a_callback_with_the_wrong_or_missing_issuer_gives_502_and_connects_nothing(
+    iss: str | None,
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    issuing_server: RunningServer,
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(token_settings)
+    ada = as_user(sign_token, "ada")
+    with web(settings, [notes(issuing_server)], script(), token_signing_key, tmp_path) as site:
+        started = start_connect(site, ada)
+        started.pop("iss")
+        if iss is not None:
+            started["iss"] = iss
+        response = site.client.get(
+            "/oauth/callback", params=started, headers=ada, follow_redirects=False
+        )
+        assert response.status_code == 502
+        assert response.json()["detail"] == "the server did not accept the sign-in"
+        assert site.tokens.get("ada", "notes", "tokens") is None

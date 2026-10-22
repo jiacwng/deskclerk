@@ -352,6 +352,7 @@ def create_app(
         state: str,
         code: str | None = None,
         error: str | None = None,
+        iss: str | None = None,
         who: Caller = Depends(caller),
     ) -> Response:
         if error is not None or code is None:
@@ -361,7 +362,7 @@ def create_app(
                 raise HTTPException(CONNECT_ERRORS[type(refused)], str(refused)) from None
             raise HTTPException(400, "the server did not give access, so nothing was connected")
         try:
-            server_name = await connections.complete(who.identity.user_id, state, code)
+            server_name = await connections.complete(who.identity.user_id, state, code, iss)
         except tuple(CONNECT_ERRORS) as failure:
             raise HTTPException(CONNECT_ERRORS[type(failure)], str(failure)) from None
         except UPSTREAM_ERRORS:
