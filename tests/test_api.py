@@ -746,7 +746,7 @@ def test_the_code_verifier_sent_to_the_token_endpoint_is_the_one_in_the_login_co
     assert challenge == base64.urlsafe_b64encode(digest).decode().rstrip("=")
 
 
-def test_the_session_ends_when_the_id_token_does(
+def test_the_session_lasts_the_session_hours_after_the_id_token_expires(
     sign_token: Sign,
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
@@ -761,6 +761,9 @@ def test_the_session_ends_when_the_id_token_does(
         assert site.client.get("/me").json() == {"user": "district-1"}
         now = time.time()
         monkeypatch.setattr(cookies, "time", SimpleNamespace(time=lambda: now + 10))
+        assert site.client.get("/me").json() == {"user": "district-1"}
+        later = now + 8 * 3600 + 10
+        monkeypatch.setattr(cookies, "time", SimpleNamespace(time=lambda: later))
         assert site.client.get("/me").status_code == 401
 
 
@@ -797,6 +800,7 @@ def test_the_authorize_url_carries_the_nonce_and_the_three_scopes(
     [
         pytest.param({"nonce": "another-nonce"}, id="the-nonce-is-not-the-one-sent"),
         pytest.param({"aud": "another-service"}, id="the-audience-is-another-service"),
+        pytest.param({"exp": int(time.time()) - 60}, id="the-id-token-is-already-expired"),
     ],
 )
 def test_a_refused_id_token_gives_a_fixed_message_on_the_browser_path(

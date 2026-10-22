@@ -16,7 +16,6 @@ from typing import Any
 
 import anthropic
 import httpx
-import jwt
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from langchain_core.language_models import BaseChatModel
@@ -140,10 +139,6 @@ def _session_payload(identity: Identity) -> dict[str, Any]:
         "user": identity.user_id,
         "client": identity.client_id,
     }
-
-
-def _token_expiry(token: str) -> int:
-    return int(jwt.decode(token, options={"verify_signature": False})["exp"])
 
 
 def _identity_from(payload: dict[str, Any]) -> Identity | None:
@@ -304,16 +299,13 @@ def create_app(
             raise HTTPException(401, BROWSER_AUTH_REFUSED) from None
         except AuthUnavailable:
             raise HTTPException(503, "the login server cannot be reached") from None
-        lifetime = min(session_seconds, _token_expiry(token) - int(time.time()))
-        if lifetime <= 0:
-            raise HTTPException(401, BROWSER_AUTH_REFUSED)
-        session = cookies.sign(session_key, "session", _session_payload(identity), lifetime)
+        session = cookies.sign(session_key, "session", _session_payload(identity), session_seconds)
         response = RedirectResponse("/", status_code=303)
         response.delete_cookie(LOGIN_COOKIE, path="/login")
         response.set_cookie(
             SESSION_COOKIE,
             session,
-            lifetime,
+            session_seconds,
             path="/",
             httponly=True,
             samesite="lax",
