@@ -1,6 +1,7 @@
 # A real MCP server with OAuth for the tests: the SDK's server side on a free localhost port,
 # an authorization server that approves every request, a read tool, a write tool and a tool
-# that fails, plus a delete tool on request. With oauth=False it has no sign-in at all.
+# that fails, plus a delete tool on request. With oauth=False it has no sign-in at all. With
+# issuer_in_response it advertises and sends the RFC 9207 iss parameter on the redirect.
 
 import secrets
 import socket
@@ -21,17 +22,23 @@ from mcp.server.auth.provider import (
     TokenError,
     construct_redirect_uri,
 )
-from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
+from mcp.server.auth.routes import build_metadata
+from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.server.mcpserver import MCPServer
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from mcp.types import ToolAnnotations
+from pydantic import AnyHttpUrl
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+from starlette.routing import Route
 
 PRESET_CLIENT_ID = "admin-registered"
 PRESET_CLIENT_SECRET = "admin-secret"  # noqa: S105
 
 
 class ApprovingProvider:
-    def __init__(self, redirect_url: str) -> None:
+    def __init__(self, redirect_url: str, issuer: str | None = None) -> None:
+        self.issuer = issuer
         self.preset = OAuthClientInformationFull(
             client_id=PRESET_CLIENT_ID,
             client_secret=PRESET_CLIENT_SECRET,
@@ -69,7 +76,9 @@ class ApprovingProvider:
             redirect_uri_provided_explicitly=params.redirect_uri_provided_explicitly,
             resource=params.resource,
         )
-        return construct_redirect_uri(str(params.redirect_uri), code=code, state=params.state)
+        return construct_redirect_uri(
+            str(params.redirect_uri), code=code, state=params.state, iss=self.issuer
+        )
 
     async def load_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: str
@@ -135,12 +144,15 @@ class RunningServer:
 
 @contextmanager
 def running_mcp_server(
-    redirect_url: str, oauth: bool = True, delete_tool: bool = False
+    redirect_url: str,
+    oauth: bool = True,
+    delete_tool: bool = False,
+    issuer_in_response: bool = False,
 ) -> Iterator[RunningServer]:
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     base = f"http://127.0.0.1:{sock.getsockname()[1]}"
-    provider = ApprovingProvider(redirect_url)
+    provider = ApprovingProvider(redirect_url, base if issuer_in_response else None)
     running = RunningServer(f"{base}/mcp", redirect_url, provider)
 
     if oauth:
@@ -178,7 +190,20 @@ def running_mcp_server(
             running.deleted.append(note_id)
             return f"deleted {note_id}"
 
-    server = uvicorn.Server(uvicorn.Config(mcp.streamable_http_app(), log_level="warning"))
+    app = mcp.streamable_http_app()
+    if issuer_in_response:
+        metadata = build_metadata(
+            AnyHttpUrl(base), None, ClientRegistrationOptions(enabled=True), RevocationOptions()
+        )
+        metadata.authorization_response_iss_parameter_supported = True
+        document = metadata.model_dump(mode="json", exclude_none=True) | {"issuer": base}
+
+        async def serve_metadata(request: Request) -> Response:
+            return JSONResponse(document)
+
+        app.routes.insert(0, Route("/.well-known/oauth-authorization-server", serve_metadata))
+
+    server = uvicorn.Server(uvicorn.Config(app, log_level="warning"))
     thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]})
     thread.start()
     while not server.started:

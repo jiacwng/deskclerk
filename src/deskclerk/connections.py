@@ -159,10 +159,10 @@ class OAuthConnections:
         await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
         if authorization_url.done():
             return authorization_url.result()
-        task.result()
+        await _outcome(task)
         raise AlreadyConnected(f"{user_id} is already connected to {server.name}")
 
-    async def complete(self, user_id: str, state: str, code: str) -> str:
+    async def complete(self, user_id: str, state: str, code: str, iss: str | None = None) -> str:
         flow = self._pending.get(state)
         if flow is None:
             raise UnknownState("no connection is waiting for this state")
@@ -172,8 +172,8 @@ class OAuthConnections:
         if asyncio.get_running_loop().time() > flow.deadline:
             flow.task.cancel()
             raise FlowExpired("the connection was not finished in time")
-        flow.code.set_result(AuthorizationCodeResult(code=code, state=state))
-        await flow.task
+        flow.code.set_result(AuthorizationCodeResult(code=code, state=state, iss=iss))
+        await _outcome(flow.task)
         return flow.server_name
 
     def cancel(self, user_id: str, state: str) -> None:
@@ -242,6 +242,16 @@ def _tool_info(tool: Tool) -> ToolInfo:
     read_only = hints is not None and hints.read_only_hint is True
     destructive = not read_only and (hints is None or hints.destructive_hint is not False)
     return ToolInfo(tool.name, tool.description or "", tool.input_schema, read_only, destructive)
+
+
+async def _outcome(task: asyncio.Task[None]) -> None:
+    try:
+        await task
+    except BaseExceptionGroup as group:
+        upstream = group.subgroup(UPSTREAM_ERRORS)
+        if upstream is None:
+            raise
+        raise first_leaf(upstream) from None
 
 
 def _consume_exception(task: asyncio.Task[None]) -> None:
