@@ -27,6 +27,13 @@ WRITE_SCHEMA = {
 }
 
 
+PAID_SCHEMA = {"type": "object", "properties": {"paid": {"type": "string"}}}
+UUID_SCHEMA = {
+    "type": "object",
+    "properties": {"target": {"type": "string", "format": "uuid"}},
+}
+
+
 def proposed(
     schema: dict[str, Any],
     arguments: dict[str, Any],
@@ -46,54 +53,72 @@ async def test_arguments_that_break_the_schema_are_refused() -> None:
 
 
 @pytest.mark.anyio
-async def test_a_destructive_call_on_an_id_it_has_not_seen_is_refused() -> None:
-    call = proposed(DELETE_SCHEMA, {"note_id": "n-7"}, observed=("n-1 groceries",))
+@pytest.mark.parametrize(
+    ("call", "allowed", "reasons"),
+    [
+        pytest.param(
+            proposed(DELETE_SCHEMA, {"note_id": "n-7"}, observed=("n-1 groceries",)),
+            False,
+            ("grounding check", "n-7"),
+            id="a-destructive-call-on-an-id-it-has-not-seen-is-refused",
+        ),
+        pytest.param(
+            proposed(DELETE_SCHEMA, {"note_id": "n-7"}, observed=("n-1", "n-7 old")),
+            True,
+            (),
+            id="an-id-seen-in-an-observed-result-is-allowed",
+        ),
+        pytest.param(
+            proposed(DELETE_SCHEMA, {"note_id": "n-7"}, request="delete note n-7"),
+            True,
+            (),
+            id="an-id-seen-in-the-request-is-allowed",
+        ),
+        pytest.param(
+            proposed(DELETE_SCHEMA, {"note_id": "n-1"}, observed=("n-12 groceries",)),
+            False,
+            (),
+            id="an-id-only-seen-inside-a-longer-id-is-refused",
+        ),
+        pytest.param(
+            proposed(PAID_SCHEMA, {"paid": "yes"}),
+            True,
+            (),
+            id="a-name-that-merely-ends-in-id-is-not-an-identifier",
+        ),
+        pytest.param(
+            proposed(UUID_SCHEMA, {"target": "0b1f"}),
+            False,
+            ("grounding check",),
+            id="a-uuid-argument-is-an-identifier-whatever-its-name",
+        ),
+        pytest.param(
+            proposed(WRITE_SCHEMA, {"text": "hi", "owner_id": "u-9"}, destructive=False),
+            True,
+            (),
+            id="a-non-destructive-write-is-not-grounding-checked",
+        ),
+        pytest.param(
+            proposed(WRITE_SCHEMA, {"text": "hi"}),
+            True,
+            (),
+            id="a-valid-write-passes",
+        ),
+        pytest.param(
+            proposed(WRITE_SCHEMA, {}),
+            False,
+            (),
+            id="a-write-missing-a-required-field-is-refused",
+        ),
+    ],
+)
+async def test_the_write_check_allows_a_call_only_when_its_ids_are_grounded(
+    call: ProposedCall, allowed: bool, reasons: tuple[str, ...]
+) -> None:
     verdict = await write_check()(call)
-    assert not verdict.allowed
-    assert "grounding check" in verdict.reason
-    assert "n-7" in verdict.reason
-
-
-@pytest.mark.anyio
-async def test_an_id_seen_in_an_observed_result_or_in_the_request_is_allowed() -> None:
-    gate = write_check()
-    in_result = proposed(DELETE_SCHEMA, {"note_id": "n-7"}, observed=("n-1", "n-7 old"))
-    in_request = proposed(DELETE_SCHEMA, {"note_id": "n-7"}, request="delete note n-7")
-    assert (await gate(in_result)).allowed
-    assert (await gate(in_request)).allowed
-
-
-@pytest.mark.anyio
-async def test_an_id_only_seen_inside_a_longer_id_is_refused() -> None:
-    call = proposed(DELETE_SCHEMA, {"note_id": "n-1"}, observed=("n-12 groceries",))
-    assert not (await write_check()(call)).allowed
-
-
-@pytest.mark.anyio
-async def test_a_name_that_merely_ends_in_id_is_not_an_identifier() -> None:
-    schema = {"type": "object", "properties": {"paid": {"type": "string"}}}
-    assert (await write_check()(proposed(schema, {"paid": "yes"}))).allowed
-
-
-@pytest.mark.anyio
-async def test_a_uuid_argument_is_an_identifier_whatever_its_name() -> None:
-    schema = {"type": "object", "properties": {"target": {"type": "string", "format": "uuid"}}}
-    verdict = await write_check()(proposed(schema, {"target": "0b1f"}))
-    assert not verdict.allowed
-    assert "grounding check" in verdict.reason
-
-
-@pytest.mark.anyio
-async def test_a_non_destructive_write_is_not_grounding_checked() -> None:
-    call = proposed(WRITE_SCHEMA, {"text": "hi", "owner_id": "u-9"}, destructive=False)
-    assert (await write_check()(call)).allowed
-
-
-@pytest.mark.anyio
-async def test_a_valid_write_passes_and_a_missing_field_does_not() -> None:
-    gate = write_check()
-    assert (await gate(proposed(WRITE_SCHEMA, {"text": "hi"}))).allowed
-    assert not (await gate(proposed(WRITE_SCHEMA, {}))).allowed
+    assert verdict.allowed is allowed
+    for reason in reasons:
+        assert reason in verdict.reason
 
 
 @pytest.mark.anyio

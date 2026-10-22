@@ -40,10 +40,12 @@ def test_a_400_max_tokens_exceeded_from_typesafe_is_jev_input_too_long() -> None
         jev_with(RefusingClient(body)).noul({}, "q")
 
 
-def test_any_other_400_from_typesafe_is_a_plain_jev_error() -> None:
+def test_any_other_400_from_typesafe_is_a_plain_jev_error_and_reports_no_tokens() -> None:
+    reported: list[int] = []
     with pytest.raises(JevError) as raised:
-        jev_with(RefusingClient({"detail": "bad state"})).noul({}, "q")
+        jev_with(RefusingClient({"detail": "bad state"})).noul({}, "q", on_tokens=reported.append)
     assert not isinstance(raised.value, JevInputTooLong)
+    assert reported == []
 
 
 def test_on_tokens_is_called_with_the_input_tokens_of_each_answer() -> None:
@@ -53,13 +55,6 @@ def test_on_tokens_is_called_with_the_input_tokens_of_each_answer() -> None:
     jev.noul({}, "q", on_tokens=reported.append)
     assert reported == [120, 120]
     assert jev.cost_usd == pytest.approx(240 * PRICE_PER_INPUT_TOKEN)
-
-
-def test_on_tokens_is_not_called_when_jev_fails() -> None:
-    reported: list[int] = []
-    with pytest.raises(JevError):
-        jev_with(RefusingClient({"detail": "bad"})).noul({}, "q", on_tokens=reported.append)
-    assert reported == []
 
 
 def test_a_spent_budget_refuses_the_next_question() -> None:

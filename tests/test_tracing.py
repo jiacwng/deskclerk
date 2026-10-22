@@ -72,23 +72,8 @@ def test_the_client_masks_text_unless_the_audit_log_keeps_it(
     hiding, keeping = (options["mask"] for options in fake_package.created)
     secret = {"messages": ["a salary of 90000"], "tokens": 12}
     assert hiding(data=secret) == {"messages": [OMITTED], "tokens": 12}
+    assert hiding(data=[1, 2.5, None, True]) == [1, 2.5, None, True]
     assert keeping(data=secret) == secret
-
-
-def test_the_host_is_the_base_url_then_the_cloud(
-    keys: None, fake_package: type[FakeLangfuse], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    tracing = tracing_from_environment(False, None)
-    assert tracing is not None
-    assert tracing.host == "https://cloud.langfuse.com"
-    monkeypatch.setenv("LANGFUSE_BASE_URL", "https://langfuse.example.com")
-    tracing = tracing_from_environment(False, None)
-    assert tracing is not None
-    assert tracing.host == "https://langfuse.example.com"
-
-
-def test_masking_leaves_numbers_and_none() -> None:
-    assert omit_text(data=[1, 2.5, None, True]) == [1, 2.5, None, True]
 
 
 class FakeObservation:

@@ -43,12 +43,19 @@ def test_the_cost_is_the_model_plus_jev(tmp_path: Path) -> None:
 
 def test_spending_survives_a_new_store_on_the_same_file(tmp_path: Path) -> None:
     path = tmp_path / "spending.sqlite"
-    spending_for(path).record(Usage(1_000_000, 200, 3, 4))
+    first = spending_for(path, budget=0.04)
+    first.record(Usage(1_000_000, 200, 3, 4))
+    first.record_jev(1_000_000)
 
-    again = spending_for(path)
+    again = spending_for(path, budget=0.04)
 
     assert again.usage == Usage(1_000_000, 200, 3, 4)
-    assert again.cost_usd == pytest.approx(PRICE.cost(Usage(1_000_000, 200, 3, 4)))
+    assert again.jev_usd == pytest.approx(1_000_000 * PRICE_PER_INPUT_TOKEN)
+    assert again.cost_usd == pytest.approx(
+        PRICE.cost(Usage(1_000_000, 200, 3, 4)) + 1_000_000 * PRICE_PER_INPUT_TOKEN
+    )
+    with pytest.raises(BudgetExceeded):
+        again.check()
 
 
 def test_a_spent_budget_still_stops_the_employee_after_a_restart(tmp_path: Path) -> None:
@@ -75,14 +82,3 @@ def test_each_employee_has_their_own_spending(tmp_path: Path) -> None:
     spending_for(path, user_id="ada").record(Usage(1_000_000, 0, 0, 0))
 
     assert spending_for(path, user_id="grace").cost_usd == 0.0
-
-
-def test_jev_spending_persists(tmp_path: Path) -> None:
-    path = tmp_path / "spending.sqlite"
-    spending_for(path, budget=0.04).record_jev(1_000_000)
-
-    again = spending_for(path, budget=0.04)
-
-    assert again.jev_usd == pytest.approx(1_000_000 * PRICE_PER_INPUT_TOKEN)
-    with pytest.raises(BudgetExceeded):
-        again.check()

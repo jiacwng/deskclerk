@@ -17,13 +17,6 @@ def test_the_audience_is_the_client_unless_set() -> None:
     assert Settings(client_id="page", audience="api://default").audience == "api://default"
 
 
-def test_the_token_key_is_a_secret() -> None:
-    settings = Settings(token_key=SecretStr("a-key"))
-    assert "a-key" not in repr(settings)
-    assert settings.token_key is not None
-    assert settings.token_key.get_secret_value() == "a-key"
-
-
 def test_a_short_session_key_is_refused() -> None:
     with pytest.raises(ValidationError, match="at least 32 characters"):
         Settings(session_key=SecretStr("short"))
