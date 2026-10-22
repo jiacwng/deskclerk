@@ -1,6 +1,7 @@
 # One employee's request answered by a chat model that calls the tools of the MCP servers the
 # employee has connected. Tools that are not read-only pass a gate first; a refused call never runs.
-# Every result a tool returns passes the screen before the model reads it.
+# Every result a tool returns passes the screen before the model reads it, and a tool whose
+# definition changed since the employee first used its server is not offered at all.
 
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
@@ -18,9 +19,11 @@ from deskclerk.connections import (
     ToolInfo,
     first_leaf,
 )
+from deskclerk.pinning import pin_tools
 from deskclerk.providers import Usage, usage_from
 from deskclerk.screen import UNCHECKED, WITHHELD, Screen
 from deskclerk.servers import McpServer
+from deskclerk.tokens import TokenStore
 
 
 @dataclass(frozen=True)
@@ -68,6 +71,7 @@ class AgentResult:
     step_limit_hit: bool
     cut_off: bool
     withheld: int
+    changed_tools: tuple[str, ...]
 
     @property
     def total_usage(self) -> Usage:
@@ -117,6 +121,7 @@ async def run_agent(
     system: str,
     servers: list[McpServer],
     connections: OAuthConnections,
+    tokens: TokenStore,
     model: BaseChatModel,
     gate: Gate,
     screen: Screen,
@@ -127,6 +132,7 @@ async def run_agent(
 ) -> AgentResult:
     tools: dict[str, _Tool] = {}
     not_connected: list[str] = []
+    changed_tools: list[str] = []
     for server in servers:
         try:
             listed = await connections.tools(user_id, server)
@@ -138,7 +144,9 @@ async def run_agent(
             if failure is None:
                 raise
             raise failure from None
-        for info in listed:
+        pinned = pin_tools(tokens, user_id, server.name, listed)
+        changed_tools += [f"{server.name}__{name}" for name in pinned.changed]
+        for info in pinned.kept:
             tools[f"{server.name}__{info.name}"] = _Tool(server, info)
 
     chat_model: Any = model
@@ -224,6 +232,7 @@ async def run_agent(
         step_limit_hit,
         cut_off,
         withheld,
+        tuple(changed_tools),
     )
 
 
