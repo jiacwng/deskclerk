@@ -50,12 +50,11 @@ Linux and WSL supports.
 The employees' MCP tokens are stored in the `deskclerk-data` volume, encrypted with
 `DESKCLERK_TOKEN_KEY`. deskclerk refuses to start with a different key, so keep it.
 
-For your company login, set `DESKCLERK_ISSUER`, `DESKCLERK_CLIENT_ID` and
-`DESKCLERK_SIGN_IN_REDIRECT_URL` in `.env` and start the app alone with
-`docker compose up -d --no-deps deskclerk`. Register deskclerk there with that redirect URL.
-If the provider gives the app a client secret, set `DESKCLERK_CLIENT_SECRET`. If your provider has
-no `preferred_username` claim, as with Google, set `DESKCLERK_USER_CLAIM=email`. The `DESKCLERK_`
-settings are listed in `src/deskclerk/config.py`.
+For your company login, set `DESKCLERK_ISSUER`, `DESKCLERK_CLIENT_ID` and `DESKCLERK_PUBLIC_URL`
+in `.env` and start the app alone with `docker compose up -d --no-deps deskclerk`. Register its
+`/login/callback` address with your provider. If the provider gives the app a client secret, set
+`DESKCLERK_CLIENT_SECRET`. If your provider has no `preferred_username` claim, as with Google, set
+`DESKCLERK_USER_CLAIM=email`. The `DESKCLERK_` settings are listed in `src/deskclerk/config.py`.
 
 ## Serving it over HTTPS
 
@@ -69,10 +68,9 @@ deskclerk.example.com {
 }
 ```
 
-Set `DESKCLERK_SIGN_IN_REDIRECT_URL` to `https://deskclerk.example.com/login/callback` and
-`DESKCLERK_REDIRECT_URL` to `https://deskclerk.example.com/oauth/callback`, and register the
-sign-in URL with your identity provider. With an https sign-in URL, deskclerk marks its cookies
-Secure.
+Set `DESKCLERK_PUBLIC_URL` to `https://deskclerk.example.com` and register
+`https://deskclerk.example.com/login/callback` with your identity provider. With an https public
+URL, deskclerk marks its cookies Secure.
 
 ## Results
 
