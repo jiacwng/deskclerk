@@ -146,7 +146,10 @@ async def test_the_model_gets_the_system_message_before_the_request(
     model = script(answer("done"))
     await run(connections, [server_record(mcp_server)], model)
     first_call = model.seen[0]
-    assert first_call == [SystemMessage(SYSTEM), HumanMessage("save a note")]
+    assert [(type(message), message.content) for message in first_call] == [
+        (SystemMessage, SYSTEM),
+        (HumanMessage, "save a note"),
+    ]
 
 
 @pytest.mark.anyio
@@ -162,9 +165,9 @@ async def test_a_read_tool_runs_without_asking_the_gate(
     ]
     assert result.answer == "It says: the note"
     assert result.step_limit_hit is False
-    bound = {tool["function"]["name"]: tool["function"] for tool in model.bound}
+    bound = {tool.name: tool for tool in model.bound}
     assert set(bound) == {"notes__read_note", "notes__write_note", "notes__break_note"}
-    assert bound["notes__write_note"]["parameters"]["required"] == ["text"]
+    assert bound["notes__write_note"].args_schema["required"] == ["text"]
 
 
 @pytest.mark.anyio
@@ -213,7 +216,7 @@ async def test_a_server_the_employee_has_not_connected_is_skipped_and_reported(
     model = script(answer("nothing to call"))
     result = await run(connections, [server_record(mcp_server), other], model)
     assert result.not_connected == ("other",)
-    names = [tool["function"]["name"] for tool in model.bound]
+    names = [tool.name for tool in model.bound]
     assert names and all(name.startswith("notes__") for name in names)
 
 
@@ -221,7 +224,7 @@ async def test_a_server_the_employee_has_not_connected_is_skipped_and_reported(
 async def test_the_step_limit_stops_a_model_that_keeps_calling_tools(
     mcp_server: RunningServer, connections: OAuthConnections
 ) -> None:
-    forever = itertools.repeat(calls(("notes__read_note", {})))
+    forever = (calls(("notes__read_note", {})) for _ in itertools.count())
     model = ScriptedModel(messages=forever)
     result = await run(connections, [server_record(mcp_server)], model, step_limit=3)
     assert result.step_limit_hit is True
@@ -417,7 +420,7 @@ async def test_a_traced_tool_call_is_a_masked_observation_and_changes_nothing(
 
 
 def bound_names(model: ScriptedModel) -> set[str]:
-    return {tool["function"]["name"] for tool in model.bound}
+    return {tool.name for tool in model.bound}
 
 
 @pytest.mark.anyio
@@ -534,3 +537,66 @@ async def test_a_tool_outside_the_list_is_never_pinned(
     stored = connections.tokens.get("ada", "notes", "tool_pins")
     assert stored is not None
     assert set(json.loads(stored)) == {"read_note"}
+
+
+class FlakyCalls(OAuthConnections):
+    attempts = 0
+    failures = 0
+
+    async def call(
+        self, user_id: str, server: McpServer, tool_name: str, arguments: dict[str, Any]
+    ) -> ToolResult:
+        self.attempts += 1
+        if self.attempts <= self.failures:
+            raise httpx2.ConnectError("refused")
+        return await super().call(user_id, server, tool_name, arguments)
+
+
+async def flaky_connections(tmp_path: Path, mcp_server: RunningServer, failures: int) -> FlakyCalls:
+    store = TokenStore(tmp_path / "tokens.sqlite", Fernet.generate_key().decode())
+    connections = FlakyCalls(store, REDIRECT, "deskclerk test", 600)
+    connections.failures = failures
+    await connect(connections, "ada", server_record(mcp_server))
+    return connections
+
+
+@pytest.mark.anyio
+async def test_a_read_tool_is_retried_after_a_transport_error(
+    tmp_path: Path, mcp_server: RunningServer
+) -> None:
+    connections = await flaky_connections(tmp_path, mcp_server, failures=1)
+    model = script(calls(("notes__read_note", {})), answer("done"))
+    result = await run(connections, [server_record(mcp_server)], model)
+    assert connections.attempts == 2
+    assert [call.result for call in result.executed] == ["the note"]
+
+
+@pytest.mark.anyio
+async def test_a_write_tool_is_called_once_even_when_it_raises_a_transport_error(
+    tmp_path: Path, mcp_server: RunningServer
+) -> None:
+    connections = await flaky_connections(tmp_path, mcp_server, failures=1)
+    model = script(calls(("notes__write_note", {"text": "hi"})), answer("done"))
+    with pytest.raises(McpServerFailed) as failed:
+        await run(connections, [server_record(mcp_server)], model)
+    assert (failed.value.server_name, failed.value.cause) == ("notes", "ConnectError")
+    assert connections.attempts == 1
+    assert mcp_server.notes == []
+
+
+@pytest.mark.anyio
+async def test_the_step_limit_ends_the_run_and_a_final_answer_on_the_last_step_does_not(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    servers = [server_record(mcp_server)]
+    stopped = await run(
+        connections,
+        servers,
+        script(calls(("notes__read_note", {})), calls(("notes__read_note", {}))),
+        step_limit=2,
+    )
+    finished = await run(
+        connections, servers, script(calls(("notes__read_note", {})), answer("done")), step_limit=2
+    )
+    assert (stopped.step_limit_hit, finished.step_limit_hit) == (True, False)
+    assert finished.answer == "done"
