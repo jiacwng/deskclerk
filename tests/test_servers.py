@@ -84,3 +84,23 @@ def test_auth_none_is_read_and_refuses_a_client(tmp_path: Path) -> None:
     ]
     with pytest.raises(ServersError, match="and a client"):
         load_servers(write(tmp_path, entry + 'client_id = "x"\n'), {})
+
+
+def test_a_tool_list_is_read_and_stays_absent_when_not_set(tmp_path: Path) -> None:
+    entry = '[[server]]\nname = "a"\nurl = "https://a.test/mcp"\n'
+    assert load_servers(write(tmp_path, entry + 'tools = ["x", "y"]\n'), {}) == [
+        McpServer("a", "https://a.test/mcp", None, None, "oauth", ("x", "y"))
+    ]
+    assert load_servers(write(tmp_path, entry), {})[0].tools is None
+
+
+def test_a_tool_name_must_not_be_empty(tmp_path: Path) -> None:
+    entry = '[[server]]\nname = "a"\nurl = "https://a.test/mcp"\ntools = ["x", " "]\n'
+    with pytest.raises(ServersError, match="needs a name"):
+        load_servers(write(tmp_path, entry), {})
+
+
+def test_a_repeated_tool_name_is_refused(tmp_path: Path) -> None:
+    entry = '[[server]]\nname = "a"\nurl = "https://a.test/mcp"\ntools = ["x", "x"]\n'
+    with pytest.raises(ServersError, match="tool name"):
+        load_servers(write(tmp_path, entry), {})

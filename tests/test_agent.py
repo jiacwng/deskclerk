@@ -2,7 +2,9 @@
 # write tools wait for the gate, a refused call never reaches the server, and the loop stops.
 
 import itertools
+import json
 from collections.abc import Callable, Iterator, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -498,3 +500,37 @@ async def test_disconnecting_a_server_without_sign_in_clears_its_pins(tmp_path: 
         accepted = await run(connections, [server], model)
     assert accepted.changed_tools == ()
     assert [call.result for call in accepted.executed] == ["the note"]
+
+
+@pytest.mark.anyio
+async def test_only_the_listed_tools_are_bound_and_an_unlisted_one_cannot_be_called(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    server = replace(server_record(mcp_server), tools=("read_note",))
+    model = script(calls(("notes__write_note", {"text": "hi"})), answer("done"))
+    result = await run(connections, [server], model)
+    assert bound_names(model) == {"notes__read_note"}
+    assert result.executed == ()
+    reply = model.seen[1][-1]
+    assert isinstance(reply, ToolMessage)
+    assert "no tool named notes__write_note" in str(reply.content)
+
+
+@pytest.mark.anyio
+async def test_a_server_without_a_tool_list_binds_every_tool(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    model = script(answer("done"))
+    await run(connections, [server_record(mcp_server)], model)
+    assert bound_names(model) == {"notes__read_note", "notes__write_note", "notes__break_note"}
+
+
+@pytest.mark.anyio
+async def test_a_tool_outside_the_list_is_never_pinned(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    server = replace(server_record(mcp_server), tools=("read_note",))
+    await run(connections, [server], script(answer("done")))
+    stored = connections.tokens.get("ada", "notes", "tool_pins")
+    assert stored is not None
+    assert set(json.loads(stored)) == {"read_note"}
