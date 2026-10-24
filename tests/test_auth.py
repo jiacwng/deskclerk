@@ -50,7 +50,7 @@ def test_valid_token_gives_the_user_and_the_client(
         pytest.param({"token_use": "id"}, "token_use is 'id'", id="cognito-id-token"),
         pytest.param({"scope": None}, "grants no scope", id="no-scope"),
         pytest.param({"nbf": 60}, "not yet valid", id="not-before-in-the-future"),
-        pytest.param({"preferred_username": None}, "preferred_username", id="no-username"),
+        pytest.param({"sub": None}, "sub", id="no-subject"),
     ],
 )
 def test_bad_claims_are_refused(
@@ -142,7 +142,7 @@ def test_bad_signature_is_refused(
     token_settings: Settings, token_signing_key: SigningKeyLookup
 ) -> None:
     other_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    token = jwt.encode({"preferred_username": "district-1"}, other_key, algorithm="RS256")
+    token = jwt.encode({"sub": "district-1"}, other_key, algorithm="RS256")
     with pytest.raises(AuthError, match="Signature verification failed"):
         authenticate(token, token_settings, token_signing_key, token_settings.audience)
 
@@ -150,9 +150,7 @@ def test_bad_signature_is_refused(
 def test_symmetric_algorithm_is_refused(
     token_settings: Settings, token_signing_key: SigningKeyLookup
 ) -> None:
-    token = jwt.encode(
-        {"preferred_username": "district-1"}, "a-shared-secret-of-32-bytes-long", "HS256"
-    )
+    token = jwt.encode({"sub": "district-1"}, "a-shared-secret-of-32-bytes-long", "HS256")
     with pytest.raises(AuthError, match="invalid token"):
         authenticate(token, token_settings, token_signing_key, token_settings.audience)
 
@@ -305,7 +303,7 @@ def test_an_id_token_names_the_user_and_this_client(
         pytest.param({"exp": -60}, "expired", id="expired"),
         pytest.param({"aud": ["deskclerk-api", "x"], "azp": None}, "azp", id="no-azp"),
         pytest.param({"aud": ["deskclerk-api", "x"], "azp": "x"}, "azp", id="other-azp"),
-        pytest.param({"preferred_username": None}, "preferred_username", id="no-username"),
+        pytest.param({"sub": None}, "sub", id="no-subject"),
     ],
 )
 def test_a_bad_id_token_is_refused(

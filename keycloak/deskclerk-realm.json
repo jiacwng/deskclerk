@@ -4,6 +4,7 @@
   "enabled": true,
   "users": [
     {
+      "id": "3ae22b84-4942-4923-b71f-750b1a81d026",
       "username": "kaminski-v",
       "enabled": true,
       "email": "kaminski-v@deskclerk.example",
@@ -19,6 +20,7 @@
       ]
     },
     {
+      "id": "e805236f-a2a7-4f4b-aaa7-ad8f1f9de5d9",
       "username": "dasovich-j",
       "enabled": true,
       "email": "dasovich-j@deskclerk.example",
@@ -34,6 +36,7 @@
       ]
     },
     {
+      "id": "25c20be7-c5d0-43fc-a8b2-bf0027df0f89",
       "username": "kean-s",
       "enabled": true,
       "email": "kean-s@deskclerk.example",
@@ -49,6 +52,7 @@
       ]
     },
     {
+      "id": "9b4b543d-97d6-4f35-a82f-5472175aea9c",
       "username": "district-1",
       "enabled": true,
       "email": "district-1@deskclerk.example",
@@ -64,6 +68,7 @@
       ]
     },
     {
+      "id": "75ab7823-defd-4a7f-82cc-391c43ad00cc",
       "username": "county-sierra",
       "enabled": true,
       "email": "county-sierra@deskclerk.example",
@@ -79,6 +84,7 @@
       ]
     },
     {
+      "id": "d183d272-1ffc-441e-b18a-1f7636684edc",
       "username": "analyst",
       "enabled": true,
       "email": "analyst@deskclerk.example",

@@ -19,9 +19,9 @@ class Settings(BaseSettings):
     client_id: str = "deskclerk-api"
     client_secret: SecretStr | None = None
     audience: str
-    # The claim that names the employee. Keycloak's username is readable; on Entra ID use oid
-    # and on Okta sub, the identifiers that never change when a person is renamed.
-    user_claim: str = "preferred_username"
+    # The claim that names the employee. It must never change or be reused for someone else: sub,
+    # or oid on Entra ID. Changing it later orphans every stored token and conversation.
+    user_claim: str = "sub"
     model: str = "anthropic:claude-haiku-5-5"
     budget_usd: float = 2.0
     audit_text: bool = False
