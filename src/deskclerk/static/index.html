@@ -180,7 +180,7 @@ async function start() {
     el("signin").hidden = false;
     return;
   }
-  el("status").textContent = "Signed in as " + (await response.json()).user;
+  el("status").textContent = "Signed in as " + (await response.json()).name;
   el("app").hidden = false;
   el("ask").addEventListener("click", ask);
   el("new-conversation").addEventListener("click", newConversation);

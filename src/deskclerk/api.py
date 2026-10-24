@@ -152,6 +152,7 @@ def _session_payload(identity: Identity) -> dict[str, Any]:
     return {
         "user": identity.user_id,
         "client": identity.client_id,
+        "name": identity.display_name,
     }
 
 
@@ -160,6 +161,7 @@ def _identity_from(payload: dict[str, Any]) -> Identity | None:
         return Identity(
             user_id=str(payload["user"]),
             client_id=str(payload["client"]),
+            display_name=str(payload["name"]),
         )
     except (KeyError, TypeError):
         return None
@@ -343,7 +345,7 @@ def create_app(
 
     @app.get("/me")
     async def me(who: Caller = Depends(caller)) -> dict[str, str]:
-        return {"user": who.identity.user_id}
+        return {"user": who.identity.user_id, "name": who.identity.display_name}
 
     @app.get("/servers")
     async def list_servers(who: Caller = Depends(caller)) -> list[ServerOut]:

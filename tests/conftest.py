@@ -51,6 +51,7 @@ def sign_token(token_settings: Settings) -> Callable[[dict[str, object]], str]:
             "scope": "openid profile",
             "iat": now,
             "exp": now + 300,
+            "sub": "district-1",
             "preferred_username": "district-1",
         }
         merged = {name: value for name, value in (base | claims).items() if value is not None}

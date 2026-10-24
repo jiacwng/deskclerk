@@ -185,7 +185,7 @@ def open_notes(running: RunningServer) -> McpServer:
 
 
 def as_user(sign_token: Sign, user: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {sign_token({'preferred_username': user})}"}
+    return {"Authorization": f"Bearer {sign_token({'sub': user, 'preferred_username': user})}"}
 
 
 def start_connect(site: Web, headers: dict[str, str], name: str = "notes") -> dict[str, str]:
@@ -216,6 +216,7 @@ def session_cookie(user: str) -> str:
     payload = {
         "user": user,
         "client": "deskclerk-api",
+        "name": user,
     }
     return cookies.sign(SESSION_KEY.encode(), "session", payload, 3600)
 
@@ -272,7 +273,7 @@ def test_a_bad_bearer_token_is_refused_and_a_good_one_names_the_employee(
         refused = site.client.get("/me", headers={"Authorization": f"Bearer {other_service}"})
         assert refused.status_code == 401
         accepted = site.client.get("/me", headers=as_user(sign_token, "ada"))
-        assert accepted.json() == {"user": "ada"}
+        assert accepted.json() == {"user": "ada", "name": "ada"}
 
 
 def test_a_callback_without_the_sign_in_cookie_is_refused(
@@ -679,7 +680,7 @@ def test_a_cookie_post_needs_the_custom_header_and_a_bearer_post_does_not(
     model = ScriptedModel(messages=itertools.repeat(answer("ok")))
     with web(settings, [], model, token_signing_key, tmp_path) as site:
         site.client.cookies.set(SESSION_COOKIE, session_cookie("ada"))
-        assert site.client.get("/me").json() == {"user": "ada"}
+        assert site.client.get("/me").json() == {"user": "ada", "name": "ada"}
         assert ask(site, {}).status_code == 403
         assert ask(site, {CSRF_HEADER: "something else"}).status_code == 403
         assert ask(site, {CSRF_HEADER: CSRF_VALUE}).status_code == 200
@@ -694,7 +695,7 @@ def test_a_forged_expired_or_misplaced_cookie_is_not_a_session(
 ) -> None:
     settings = make_settings(token_settings)
     key = SESSION_KEY.encode()
-    payload = {"user": "ada", "client": "c"}
+    payload = {"user": "ada", "client": "c", "name": "ada"}
     refused = [
         tampered_signature(session_cookie("ada")),
         cookies.sign(b"another key", "session", payload, 3600),
@@ -760,7 +761,9 @@ def test_an_employee_signs_in_through_keycloak_and_asks(tmp_path: Path) -> None:
 
         finished = site.client.get(f"{landing.path}?{landing.query}")
         assert (finished.status_code, finished.headers["location"]) == (303, "/")
-        assert site.client.get("/me").json() == {"user": "analyst"}
+        me = site.client.get("/me").json()
+        assert me["name"] == "analyst"
+        assert re.fullmatch(r"[0-9a-f-]{36}", me["user"])
         asked = ask(site, {CSRF_HEADER: CSRF_VALUE})
         assert asked.json()["answer"] == "hello analyst"
 
@@ -805,10 +808,10 @@ def test_the_session_lasts_the_session_hours_after_the_id_token_expires(
     with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
         state, _, _ = begin_sign_in(site)
         finish_sign_in(site, idp, sign_token, state, {"exp": int(time.time()) + 5})
-        assert site.client.get("/me").json() == {"user": "district-1"}
+        assert site.client.get("/me").json() == {"user": "district-1", "name": "district-1"}
         now = time.time()
         monkeypatch.setattr(cookies, "time", SimpleNamespace(time=lambda: now + 10))
-        assert site.client.get("/me").json() == {"user": "district-1"}
+        assert site.client.get("/me").json() == {"user": "district-1", "name": "district-1"}
         later = now + 8 * 3600 + 10
         monkeypatch.setattr(cookies, "time", SimpleNamespace(time=lambda: later))
         assert site.client.get("/me").status_code == 401
@@ -823,7 +826,7 @@ def test_sign_in_works_when_the_access_token_is_opaque(
         state, _, _ = begin_sign_in(site)
         done = finish_sign_in(site, idp, sign_token, state, {"scope": None, "typ": "ID"})
         assert (done.status_code, done.headers["location"]) == (303, "/")
-        assert site.client.get("/me").json() == {"user": "district-1"}
+        assert site.client.get("/me").json() == {"user": "district-1", "name": "district-1"}
 
 
 def test_the_authorize_url_carries_the_nonce_and_the_three_scopes(
@@ -1056,7 +1059,7 @@ def test_logging_out_clears_the_session_cookie(
     settings = make_settings(token_settings)
     with web(settings, [], script(), token_signing_key, tmp_path) as site:
         site.client.cookies.set(SESSION_COOKIE, session_cookie("ada"))
-        assert site.client.get("/me").json() == {"user": "ada"}
+        assert site.client.get("/me").json() == {"user": "ada", "name": "ada"}
         loggedout = site.client.post("/logout", headers={CSRF_HEADER: CSRF_VALUE})
         assert loggedout.status_code == 204
         cleared = loggedout.headers["set-cookie"]
@@ -1194,3 +1197,22 @@ def test_another_employees_or_an_unknown_conversation_gives_404_and_runs_nothing
         "unknown_conversation",
         "answered",
     ]
+
+
+def test_a_renamed_employee_keeps_the_same_conversation(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(token_settings)
+    model = script(answer("first answer"), answer("second answer"))
+    before = {"Authorization": f"Bearer {sign_token({'sub': 'u-1', 'preferred_username': 'ada'})}"}
+    after = {"Authorization": f"Bearer {sign_token({'sub': 'u-1', 'preferred_username': 'ada-l'})}"}
+    with web(settings, [notes(notes_server)], model, token_signing_key, tmp_path) as site:
+        first = ask(site, before).json()
+        second = ask_in(site, after, first["conversation"])
+        me = site.client.get("/me", headers=after).json()
+    assert second.status_code == 200
+    assert me == {"user": "u-1", "name": "ada-l"}

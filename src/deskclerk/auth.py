@@ -32,6 +32,15 @@ class AuthUnavailable(Exception):
 class Identity:
     user_id: str
     client_id: str
+    display_name: str
+
+
+def _display_name(claims: dict[str, Any], user_id: str) -> str:
+    for name in ("preferred_username", "email"):
+        value = claims.get(name)
+        if isinstance(value, str) and value:
+            return value
+    return user_id
 
 
 def discover_jwks_url(settings: Settings, client: httpx.Client) -> str:
@@ -98,7 +107,9 @@ def authenticate(
     if not isinstance(client, str):
         raise AuthError("azp must be a string")
 
-    return Identity(user_id=username, client_id=client)
+    return Identity(
+        user_id=username, client_id=client, display_name=_display_name(claims, username)
+    )
 
 
 def identify(
@@ -134,7 +145,11 @@ def identify(
     if not isinstance(username, str) or not username:
         raise AuthError(f"{settings.user_claim} must be a non-empty string")
 
-    return Identity(user_id=username, client_id=settings.client_id)
+    return Identity(
+        user_id=username,
+        client_id=settings.client_id,
+        display_name=_display_name(claims, username),
+    )
 
 
 # An ID token is signed by the same keys and can name the API as its audience. Only access tokens
