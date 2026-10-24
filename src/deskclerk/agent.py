@@ -280,8 +280,7 @@ async def run_agent(
         system_prompt=system,
         middleware=middleware,
     )
-    config: RunnableConfig = {**(trace_config or {}), "recursion_limit": 6 * (step_limit + 1)}
-    await agent.ainvoke({"messages": [HumanMessage(request)]}, config=config)
+    await agent.ainvoke({"messages": [HumanMessage(request)]}, config=trace_config)
 
     last = guard.last_response
     return AgentResult(
