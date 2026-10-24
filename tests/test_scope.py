@@ -144,6 +144,15 @@ async def test_per_server_with_one_server_asks_nothing_and_offers_every_tool() -
 
 
 @pytest.mark.anyio
+async def test_jev_reads_every_employee_message_oldest_first() -> None:
+    jev = FakeJev(answers({}))
+    messages = [HumanMessage(REQUEST), AIMessage("Done."), HumanMessage("And for Bob?")]
+    await offered(ToolSelection(as_jev(jev)), messages=messages)
+    [(state, _)] = jev.asked
+    assert state["request"] == f"{REQUEST}\n\nAnd for Bob?"
+
+
+@pytest.mark.anyio
 async def test_a_request_without_a_user_message_offers_every_tool() -> None:
     jev = FakeJev(answers({"email__send_email": 1.0}))
     seen = await offered(ToolSelection(as_jev(jev)), messages=[])
