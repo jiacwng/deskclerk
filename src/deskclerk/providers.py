@@ -1,9 +1,13 @@
-# The chat model behind the agent, and what it costs. DESKCLERK_MODEL names an Anthropic model
-# as anthropic:model. Every model call is priced from the token usage in its response.
+# The chat model behind the agent, and what it costs. DESKCLERK_MODEL names a model as
+# provider:model, with provider anthropic or openai. Every model call is priced by genai-prices
+# from the token usage in its response.
 
 import os
 from dataclasses import dataclass
+from typing import Any
 
+from genai_prices import Usage as PriceUsage
+from genai_prices import calc_price
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
@@ -12,6 +16,8 @@ from deskclerk.config import Settings
 
 MAX_TOKENS = 16000
 EFFORT = "low"
+
+API_KEYS = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 
 
 class BudgetExceeded(RuntimeError):
@@ -47,71 +53,57 @@ def usage_from(message: AIMessage) -> Usage:
     )
 
 
-@dataclass(frozen=True)
-class Price:
-    input_per_million: float
-    output_per_million: float
-    cache_read_per_million: float
-    cache_write_per_million: float
-
-    def cost(self, usage: Usage) -> float:
-        uncached = usage.input_tokens - usage.cache_read_tokens - usage.cache_write_tokens
-        if uncached < 0:
-            raise InconsistentUsage(
-                f"{usage.cache_read_tokens} cache read and {usage.cache_write_tokens} cache write "
-                f"tokens exceed the {usage.input_tokens} input tokens"
-            )
-        return (
-            uncached * self.input_per_million
-            + usage.cache_read_tokens * self.cache_read_per_million
-            + usage.cache_write_tokens * self.cache_write_per_million
-            + usage.output_tokens * self.output_per_million
-        ) / 1_000_000
+def split_model(model: str) -> tuple[str, str]:
+    provider, _, name = model.partition(":")
+    if provider not in API_KEYS:
+        known = ", ".join(sorted(API_KEYS))
+        raise ValueError(f"unknown provider {provider!r} in {model!r}: use one of {known}")
+    return provider, name
 
 
-# Anthropic bills a 5-minute cache write at 1.25 times the input price and a cache read at 0.1
-# times, or 0.05 times on Opus 5.5:
-# https://platform.claude.com/docs/en/build-with-claude/prompt-caching
-CACHE_WRITE_MULTIPLIER = 1.25
-CACHE_READ_MULTIPLIER = 0.1
+def cost_of(model: str, usage: Usage) -> float:
+    provider, name = split_model(model)
+    uncached = usage.input_tokens - usage.cache_read_tokens - usage.cache_write_tokens
+    if uncached < 0:
+        raise InconsistentUsage(
+            f"{usage.cache_read_tokens} cache read and {usage.cache_write_tokens} cache write "
+            f"tokens exceed the {usage.input_tokens} input tokens"
+        )
+    try:
+        calculation = calc_price(
+            PriceUsage(
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cache_read_tokens=usage.cache_read_tokens,
+                cache_write_tokens=usage.cache_write_tokens,
+            ),
+            name,
+            provider_id=provider,
+        )
+    except LookupError as error:
+        raise ValueError(f"no price for model {name!r} from {provider}: {error}") from error
+    return float(calculation.total_price)
 
 
-def _anthropic_price(input_per_million: float, output_per_million: float, read: float) -> Price:
-    return Price(
-        input_per_million,
-        output_per_million,
-        input_per_million * read,
-        input_per_million * CACHE_WRITE_MULTIPLIER,
-    )
+def model_options(provider: str) -> dict[str, Any]:
+    # Low effort keeps reasoning short; each provider names it and the output cap its own way.
+    if provider == "openai":
+        return {"max_tokens": MAX_TOKENS, "reasoning_effort": EFFORT}
+    return {"max_tokens": MAX_TOKENS, "effort": EFFORT}
 
 
-# List prices in USD per million input and output tokens, for prompts up to 100,000 tokens.
-PRICES = {
-    "anthropic:claude-haiku-5-5": _anthropic_price(0.10, 0.50, CACHE_READ_MULTIPLIER),
-    "anthropic:claude-sonnet-5-5": _anthropic_price(2.00, 10.00, CACHE_READ_MULTIPLIER),
-    "anthropic:claude-opus-5-5": _anthropic_price(4.00, 20.00, 0.05),
-}
-
-
-def price_of(settings: Settings) -> Price:
-    if settings.model not in PRICES:
-        known = ", ".join(sorted(PRICES))
-        raise ValueError(f"no price for model {settings.model!r}: use one of {known}")
-    return PRICES[settings.model]
-
-
-def missing_api_key() -> str | None:
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        return "ANTHROPIC_API_KEY is not set; put it in .env"
+def missing_api_key(provider: str) -> str | None:
+    variable = API_KEYS[provider]
+    if not os.environ.get(variable):
+        return f"{variable} is not set; put it in .env"
     return None
 
 
 def chat_model(settings: Settings) -> BaseChatModel:
-    price_of(settings)
-    missing = missing_api_key()
+    cost_of(settings.model, Usage(0, 0, 0, 0))
+    provider, name = split_model(settings.model)
+    missing = missing_api_key(provider)
     if missing is not None:
         raise MissingApiKey(missing)
-    name = settings.model.removeprefix("anthropic:")
-    # Low effort keeps adaptive thinking short; thinking itself is left at the model's default
-    # because some models refuse a request that turns it off.
-    return init_chat_model(name, model_provider="anthropic", max_tokens=MAX_TOKENS, effort=EFFORT)
+    model: BaseChatModel = init_chat_model(name, model_provider=provider, **model_options(provider))
+    return model

@@ -1,6 +1,6 @@
 # What each employee has spent this calendar month (UTC), kept in an SQLite file so a restart does
-# not reset it. Model calls are counted as tokens and priced when read; Jev input tokens are
-# counted in USD. Every spend is written to the file before the next check.
+# not reset it. Every model call is priced on its own when it is recorded, and Jev input tokens
+# are priced at Jev's rate. One row per priced call is written before the next check.
 
 import sqlite3
 import threading
@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from deskclerk.jev import PRICE_PER_INPUT_TOKEN
-from deskclerk.providers import BudgetExceeded, Price, Usage
+from deskclerk.providers import BudgetExceeded, Usage, cost_of
 
 
 def month_of(moment: datetime) -> str:
@@ -23,11 +23,14 @@ class SpendingStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         with self._database() as database:
             database.execute(
-                "CREATE TABLE IF NOT EXISTS spending ("
-                "user_id TEXT NOT NULL, month TEXT NOT NULL, "
+                "CREATE TABLE IF NOT EXISTS costs ("
+                "user_id TEXT NOT NULL, month TEXT NOT NULL, source TEXT NOT NULL, "
                 "input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, "
                 "cache_read_tokens INTEGER NOT NULL, cache_write_tokens INTEGER NOT NULL, "
-                "jev_usd REAL NOT NULL, PRIMARY KEY (user_id, month))"
+                "usd REAL NOT NULL)"
+            )
+            database.execute(
+                "CREATE INDEX IF NOT EXISTS costs_user_month ON costs (user_id, month)"
             )
 
     @contextmanager
@@ -39,55 +42,47 @@ class SpendingStore:
         finally:
             database.close()
 
-    def load(self, user_id: str, month: str) -> tuple[Usage, float]:
+    def load(self, user_id: str, month: str) -> float:
         with self._database() as database:
             row = database.execute(
-                "SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, "
-                "jev_usd FROM spending WHERE user_id = ? AND month = ?",
+                "SELECT COALESCE(SUM(usd), 0.0) FROM costs WHERE user_id = ? AND month = ?",
                 (user_id, month),
             ).fetchone()
-        if row is None:
-            return Usage(0, 0, 0, 0), 0.0
-        return Usage(row[0], row[1], row[2], row[3]), row[4]
+        return float(row[0])
 
-    def add(self, user_id: str, month: str, usage: Usage, jev_usd: float) -> None:
+    def add(self, user_id: str, month: str, source: str, usage: Usage, usd: float) -> None:
         with self._database() as database:
             database.execute(
-                "INSERT INTO spending (user_id, month, input_tokens, output_tokens, "
-                "cache_read_tokens, cache_write_tokens, jev_usd) VALUES (?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT (user_id, month) DO UPDATE SET "
-                "input_tokens = input_tokens + excluded.input_tokens, "
-                "output_tokens = output_tokens + excluded.output_tokens, "
-                "cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens, "
-                "cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens, "
-                "jev_usd = jev_usd + excluded.jev_usd",
+                "INSERT INTO costs (user_id, month, source, input_tokens, output_tokens, "
+                "cache_read_tokens, cache_write_tokens, usd) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     user_id,
                     month,
+                    source,
                     usage.input_tokens,
                     usage.output_tokens,
                     usage.cache_read_tokens,
                     usage.cache_write_tokens,
-                    jev_usd,
+                    usd,
                 ),
             )
 
 
 class Spending:
     def __init__(
-        self, price: Price, budget_usd: float, store: SpendingStore, user_id: str, month: str
+        self, model: str, budget_usd: float, store: SpendingStore, user_id: str, month: str
     ) -> None:
-        self.price = price
+        self.model = model
         self.budget_usd = budget_usd
         self._store = store
         self._user_id = user_id
         self._month = month
-        self.usage, self.jev_usd = store.load(user_id, month)
+        self.spent_usd = store.load(user_id, month)
         self._lock = threading.Lock()
 
     @property
     def cost_usd(self) -> float:
-        return self.price.cost(self.usage) + self.jev_usd
+        return self.spent_usd
 
     def check(self) -> None:
         with self._lock:
@@ -100,16 +95,12 @@ class Spending:
 
     def record(self, usage: Usage) -> None:
         with self._lock:
-            self._store.add(self._user_id, self._month, usage, 0.0)
-            self.usage = Usage(
-                self.usage.input_tokens + usage.input_tokens,
-                self.usage.output_tokens + usage.output_tokens,
-                self.usage.cache_read_tokens + usage.cache_read_tokens,
-                self.usage.cache_write_tokens + usage.cache_write_tokens,
-            )
+            cost = cost_of(self.model, usage)
+            self._store.add(self._user_id, self._month, "model", usage, cost)
+            self.spent_usd += cost
 
     def record_jev(self, tokens: int) -> None:
         with self._lock:
             cost = tokens * PRICE_PER_INPUT_TOKEN
-            self._store.add(self._user_id, self._month, Usage(0, 0, 0, 0), cost)
-            self.jev_usd += cost
+            self._store.add(self._user_id, self._month, "jev", Usage(tokens, 0, 0, 0), cost)
+            self.spent_usd += cost
