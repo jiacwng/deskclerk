@@ -301,6 +301,14 @@ class _Guard(AgentMiddleware[AgentState[Any], None, Any]):
             )
 
 
+def _hit_output_limit(metadata: dict[str, Any]) -> bool:
+    return (
+        metadata.get("stop_reason") == "max_tokens"
+        or metadata.get("finish_reason") == "length"
+        or metadata.get("stopReason") == "max_tokens"
+    )
+
+
 def _cut(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
@@ -401,9 +409,7 @@ async def run_agent(
         unavailable_names,
         tuple(guard.usage),
         last is None or bool(last.tool_calls),
-        last is not None
-        and not last.tool_calls
-        and last.response_metadata.get("stop_reason") == "max_tokens",
+        last is not None and not last.tool_calls and _hit_output_limit(last.response_metadata),
         guard.withheld,
         tuple(changed_tools),
     )

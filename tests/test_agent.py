@@ -251,16 +251,23 @@ async def test_the_step_limit_stops_a_model_that_keeps_calling_tools(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    ("stop_reason", "cut_off"),
+    ("metadata", "cut_off"),
     [
-        pytest.param("max_tokens", True, id="a-reply-cut-off-at-the-output-limit-is-reported"),
-        pytest.param("end_turn", False, id="a-reply-that-ends-normally-is-not-cut-off"),
+        pytest.param({"stop_reason": "max_tokens"}, True, id="anthropic-cut-off"),
+        pytest.param({"stop_reason": "end_turn"}, False, id="anthropic-ends-normally"),
+        pytest.param({"finish_reason": "length"}, True, id="openai-cut-off"),
+        pytest.param({"finish_reason": "stop"}, False, id="openai-ends-normally"),
+        pytest.param({"stopReason": "max_tokens"}, True, id="bedrock-cut-off"),
+        pytest.param({"stopReason": "end_turn"}, False, id="bedrock-ends-normally"),
     ],
 )
 async def test_a_reply_is_reported_as_cut_off_only_when_it_hit_the_output_limit(
-    stop_reason: str, cut_off: bool, mcp_server: RunningServer, connections: OAuthConnections
+    metadata: dict[str, str],
+    cut_off: bool,
+    mcp_server: RunningServer,
+    connections: OAuthConnections,
 ) -> None:
-    reply = AIMessage(content="The meeting is at", response_metadata={"stop_reason": stop_reason})
+    reply = AIMessage(content="The meeting is at", response_metadata=metadata)
     model = script(reply, answer("never asked for"))
     result = await run(connections, [server_record(mcp_server)], model)
     assert result.cut_off is cut_off

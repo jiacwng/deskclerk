@@ -13,7 +13,7 @@ from deskclerk.auth import AuthUnavailable, discover_jwks_url, jwks_signing_key
 from deskclerk.config import load_settings
 from deskclerk.connections import OAuthConnections
 from deskclerk.jev import jev_from_environment
-from deskclerk.providers import MissingApiKey, chat_model
+from deskclerk.providers import MissingApiKey, ProviderNotInstalled, chat_model
 from deskclerk.servers import ServersError, load_servers
 from deskclerk.spending import SpendingStore
 from deskclerk.tokens import TokenKeyError, TokenStore
@@ -71,6 +71,7 @@ def main() -> None:
         TokenKeyError,
         MissingSessionKey,
         MissingApiKey,
+        ProviderNotInstalled,
         AuthUnavailable,
         TracingNotInstalled,
         ValueError,

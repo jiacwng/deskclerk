@@ -201,7 +201,7 @@ def create_app(
     session_key = settings.session_key.get_secret_value().encode()
     secure_cookies = settings.sign_in_redirect_url.startswith("https://")
     session_seconds = settings.session_hours * SECONDS_PER_HOUR
-    cost_of(settings.model, Usage(0, 0, 0, 0))
+    cost_of(settings.price_model, Usage(0, 0, 0, 0))
     quota = Quota(settings.requests_per_minute)
     audit = Audit(settings.audit_text, settings.audit_key)
     spendings: dict[tuple[str, str], Spending] = {}
@@ -427,7 +427,11 @@ def create_app(
             month = month_of(datetime.now(UTC))
             if (identity.user_id, month) not in spendings:
                 spendings[identity.user_id, month] = Spending(
-                    settings.model, settings.budget_usd, spending_store, identity.user_id, month
+                    settings.price_model,
+                    settings.budget_usd,
+                    spending_store,
+                    identity.user_id,
+                    month,
                 )
             spending = spendings[identity.user_id, month]
             try:
