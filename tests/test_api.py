@@ -23,6 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 import httpx2
+import openai
 import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
@@ -461,14 +462,16 @@ def test_asks_beyond_the_per_minute_quota_get_429_for_that_employee_only(
 def test_an_employee_who_spent_the_cap_is_stopped_with_402_and_others_are_not(
     sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
 ) -> None:
-    settings = make_settings(token_settings, budget_usd=0.05)
-    million_tokens = UsageMetadata(input_tokens=1_000_000, output_tokens=0, total_tokens=1_000_000)
-    model = ScriptedModel(messages=itertools.repeat(answer("ok", usage=million_tokens)))
+    settings = make_settings(token_settings, budget_usd=0.005)
+    ninety_thousand_tokens = UsageMetadata(
+        input_tokens=90_000, output_tokens=0, total_tokens=90_000
+    )
+    model = ScriptedModel(messages=itertools.repeat(answer("ok", usage=ninety_thousand_tokens)))
     ada, grace = as_user(sign_token, "ada"), as_user(sign_token, "grace")
     with web(settings, [], model, token_signing_key, tmp_path) as site:
         first = ask(site, ada)
         assert first.status_code == 200
-        assert first.json()["cost_usd"] == pytest.approx(0.10)
+        assert first.json()["cost_usd"] == pytest.approx(0.009)
         stopped = ask(site, ada)
         assert stopped.status_code == 402
         assert "DESKCLERK_BUDGET_USD" in stopped.json()["detail"]
@@ -484,10 +487,12 @@ def test_tokens_billed_before_a_provider_failure_count_against_the_cap(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger="deskclerk.audit")
-    settings = make_settings(token_settings, budget_usd=0.05)
-    million_tokens = UsageMetadata(input_tokens=1_000_000, output_tokens=0, total_tokens=1_000_000)
+    settings = make_settings(token_settings, budget_usd=0.005)
+    ninety_thousand_tokens = UsageMetadata(
+        input_tokens=90_000, output_tokens=0, total_tokens=90_000
+    )
     model = ProviderGoneAfterScript(
-        messages=iter([calls(("notes__read_note", {}), usage=million_tokens)])
+        messages=iter([calls(("notes__read_note", {}), usage=ninety_thousand_tokens)])
     )
     ada = as_user(sign_token, "ada")
     with web(settings, [notes(notes_server)], model, token_signing_key, tmp_path) as site:
@@ -497,7 +502,7 @@ def test_tokens_billed_before_a_provider_failure_count_against_the_cap(
     assert (failed.status_code, stopped.status_code) == (502, 402)
     asks = [line for line in audit_lines(caplog) if line["entry"] == "ask"]
     assert [line["outcome"] for line in asks] == ["upstream_error", "over_budget"]
-    assert [line["cost_usd"] for line in asks] == [pytest.approx(0.10), 0.0]
+    assert [line["cost_usd"] for line in asks] == [pytest.approx(0.009), 0.0]
 
 
 def test_a_withheld_result_is_reported_and_jev_tokens_count_against_the_cap(
@@ -973,6 +978,22 @@ def test_a_model_that_fails_gives_502_naming_the_model_and_the_audit_cause(
     assert response.json()["detail"] == "the model did not answer (APIConnectionError)"
     asks = [line for line in audit_lines(caplog) if line["entry"] == "ask"]
     assert asks[0]["cause"] == "the model did not answer (APIConnectionError)"
+
+
+class OpenAiGone(ScriptedModel):
+    def _generate(self, *args: Any, **kwargs: Any) -> Any:
+        request = httpx2.Request("POST", "https://api.openai.com/v1/chat/completions")
+        raise openai.APIConnectionError(request=request)
+
+
+def test_an_openai_failure_gives_502_like_an_anthropic_one(
+    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings)
+    with web(settings, [], OpenAiGone(messages=iter([])), token_signing_key, tmp_path) as site:
+        response = ask(site, as_user(sign_token, "ada"))
+    assert response.status_code == 502
+    assert response.json()["detail"] == "the model did not answer (APIConnectionError)"
 
 
 def _server_refuses(site: Web, started: dict[str, str], ada: dict[str, str]) -> int:

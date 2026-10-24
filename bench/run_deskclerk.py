@@ -34,7 +34,7 @@ from deskclerk.config import Settings
 from deskclerk.connections import OAuthConnections
 from deskclerk.instructions import INSTRUCTIONS
 from deskclerk.jev import PRICE_PER_INPUT_TOKEN, Jev, jev_from_environment
-from deskclerk.providers import EFFORT, MAX_TOKENS, PRICES, Usage, usage_from
+from deskclerk.providers import Usage, cost_of, model_options, usage_from
 from deskclerk.scope import jev_tool_selection
 from deskclerk.screen import pass_through
 from deskclerk.servers import McpServer
@@ -77,7 +77,7 @@ class Worker:
     connections: OAuthConnections
     model: BaseChatModel
     gate: Gate
-    price_key: str
+    model_name: str
     selection: str = "all"
     jev: Jev | None = None
     selector: BaseChatModel | None = None
@@ -163,8 +163,7 @@ async def run_task(worker: Worker, task: Task, text: WorkbenchText) -> dict[str,
             selector.cache_read_tokens + call.cache_read_tokens,
             selector.cache_write_tokens + call.cache_write_tokens,
         )
-    price = PRICES[worker.price_key]
-    selection_usd = sum(jev_tokens) * PRICE_PER_INPUT_TOKEN + price.cost(selector)
+    selection_usd = sum(jev_tokens) * PRICE_PER_INPUT_TOKEN + cost_of(worker.model_name, selector)
     return {
         "domain": task.domain,
         "task": task.text,
@@ -175,7 +174,7 @@ async def run_task(worker: Worker, task: Task, text: WorkbenchText) -> dict[str,
         "output_tokens": total.output_tokens,
         "cache_read_tokens": total.cache_read_tokens,
         "cache_write_tokens": total.cache_write_tokens,
-        "cost_usd": price.cost(total) + selection_usd,
+        "cost_usd": cost_of(worker.model_name, total) + selection_usd,
         "blocked": json.dumps(blocked),
         "selection_usd": selection_usd,
         "selector_input_tokens": selector.input_tokens,
@@ -247,7 +246,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--workbench", type=Path, required=True)
     parser.add_argument("--split", choices=["dev", "test"], required=True)
     parser.add_argument("--gate", choices=["none", "rules"], required=True)
-    parser.add_argument("--model", default="anthropic:claude-haiku-5-5", choices=sorted(PRICES))
+    parser.add_argument("--model", default="anthropic:claude-haiku-5-5")
     parser.add_argument("--server-python", required=True)
     parser.add_argument("--selection", choices=SELECTIONS, default="all")
     parser.add_argument("--jev-budget-usd", type=float, default=1.0)
@@ -279,10 +278,9 @@ def make_model(name: str, provider: str, callbacks: list[BaseCallbackHandler] | 
     return init_chat_model(
         name,
         model_provider=provider,
-        max_tokens=MAX_TOKENS,
-        effort=EFFORT,
         max_retries=MODEL_RETRIES,
         callbacks=callbacks,
+        **model_options(provider),
     )
 
 
@@ -307,6 +305,7 @@ def make_worker(
 def main() -> None:
     arguments = parse_arguments()
     workbench: Path = arguments.workbench.resolve()
+    cost_of(arguments.model, Usage(0, 0, 0, 0))
     gate = make_gate(arguments.gate)
     text = load_workbench_text(workbench)
     tasks = split_tasks(workbench, arguments.split)

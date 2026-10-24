@@ -21,7 +21,7 @@ from typesafe_sdk import TypeSafeClient
 from deskclerk.agent import ProposedCall
 from deskclerk.connections import ToolInfo
 from deskclerk.jev import PRICE_PER_INPUT_TOKEN, Jev, JevError, JevInputTooLong
-from deskclerk.providers import PRICES, Usage, usage_from
+from deskclerk.providers import Usage, cost_of, usage_from
 
 QUESTION = (
     "Does this tool call do what the employee asked for, "
@@ -306,7 +306,7 @@ def cost_lines(records: list[dict[str, Any]], cache: dict[tuple[str, str], Score
         f"{jev_tokens * PRICE_PER_INPUT_TOKEN:.4f} USD.",
         f"- Haiku 5.5: {len(haiku)} calls, {haiku_usage.input_tokens} input tokens, "
         f"{haiku_usage.output_tokens} output tokens, "
-        f"{PRICES[HAIKU_KEY].cost(haiku_usage):.4f} USD.",
+        f"{cost_of(HAIKU_KEY, haiku_usage):.4f} USD.",
         "",
     ]
 

@@ -50,7 +50,7 @@ from deskclerk.connections import (
 from deskclerk.conversations import open_checkpointer, saved_messages, thread_id
 from deskclerk.instructions import system_prompt
 from deskclerk.jev import Jev
-from deskclerk.providers import BudgetExceeded, price_of
+from deskclerk.providers import BudgetExceeded, Usage, cost_of
 from deskclerk.quota import Quota
 from deskclerk.scope import jev_tool_selection
 from deskclerk.screen import jev_screen
@@ -76,13 +76,19 @@ CONNECT_ERRORS: dict[type[Exception], int] = {
     AlreadyConnected: 409,
     NoSignInNeeded: 400,
 }
+try:
+    import openai
+
+    MODEL_ERRORS: tuple[type[Exception], ...] = (anthropic.APIError, openai.APIError)
+except ImportError:
+    MODEL_ERRORS = (anthropic.APIError,)
 BROWSER_AUTH_REFUSED = "the login server's ID token was refused"
 
 
 def _upstream_detail(error: BaseException) -> str:
     if isinstance(error, McpServerFailed):
         return f"the MCP server {error.server_name} did not answer ({error.cause})"
-    if isinstance(error, anthropic.APIError):
+    if isinstance(error, MODEL_ERRORS):
         return f"the model did not answer ({type(error).__name__})"
     return f"an MCP server did not answer ({type(error).__name__})"
 
@@ -192,7 +198,7 @@ def create_app(
     session_key = settings.session_key.get_secret_value().encode()
     secure_cookies = settings.sign_in_redirect_url.startswith("https://")
     session_seconds = settings.session_hours * SECONDS_PER_HOUR
-    price = price_of(settings)
+    cost_of(settings.model, Usage(0, 0, 0, 0))
     quota = Quota(settings.requests_per_minute)
     audit = Audit(settings.audit_text, settings.audit_key)
     spendings: dict[tuple[str, str], Spending] = {}
@@ -200,7 +206,7 @@ def create_app(
     discovered: dict[str, oidc.Endpoints] = {}
     ask_failures: tuple[type[Exception], ...] = (
         McpServerFailed,
-        anthropic.APIError,
+        *MODEL_ERRORS,
         *UPSTREAM_ERRORS,
     )
     server_by_name = {server.name: server for server in servers}
@@ -418,7 +424,7 @@ def create_app(
             month = month_of(datetime.now(UTC))
             if (identity.user_id, month) not in spendings:
                 spendings[identity.user_id, month] = Spending(
-                    price, settings.budget_usd, spending_store, identity.user_id, month
+                    settings.model, settings.budget_usd, spending_store, identity.user_id, month
                 )
             spending = spendings[identity.user_id, month]
             try:
