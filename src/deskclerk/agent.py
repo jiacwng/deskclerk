@@ -9,7 +9,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
@@ -22,13 +22,23 @@ from langchain.agents.middleware import (
     ToolRetryMiddleware,
 )
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, RemoveMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    AnyMessage,
+    BaseMessage,
+    HumanMessage,
+    RemoveMessage,
+    ToolMessage,
+    trim_messages,
+)
+from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 
+from deskclerk.config import DEFAULT_HISTORY_TOKENS, DEFAULT_TOOL_OUTPUT_CHARS
 from deskclerk.connections import (
     UPSTREAM_ERRORS,
     NotConnected,
@@ -149,6 +159,8 @@ class _Guard(AgentMiddleware[AgentState[Any], None, Any]):
         screen: Screen,
         tool_span: ToolSpan,
         record_usage: Callable[[Usage], None],
+        tool_output_chars: int,
+        history_tokens: int,
     ) -> None:
         super().__init__()
         self.request = request
@@ -158,6 +170,8 @@ class _Guard(AgentMiddleware[AgentState[Any], None, Any]):
         self.screen = screen
         self.tool_span = tool_span
         self.record_usage = record_usage
+        self.tool_output_chars = tool_output_chars
+        self.history_tokens = history_tokens
         self.one_call_at_a_time = asyncio.Lock()
         self.executed: list[ExecutedCall] = []
         self.blocked: list[BlockedCall] = []
@@ -172,7 +186,7 @@ class _Guard(AgentMiddleware[AgentState[Any], None, Any]):
         handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[Any]]],
     ) -> ModelResponse[Any]:
         self.shown = {tool.name for tool in request.tools if isinstance(tool, BaseTool)}
-        response = await handler(request)
+        response = await handler(request.override(messages=self._within_budget(request.messages)))
         message = response.result[-1]
         if not isinstance(message, AIMessage):
             raise TypeError(f"the model returned a {type(message).__name__}")
@@ -181,6 +195,23 @@ class _Guard(AgentMiddleware[AgentState[Any], None, Any]):
         self.record_usage(step_usage)
         self.last_response = message
         return response
+
+    def _within_budget(self, messages: list[AnyMessage]) -> list[AnyMessage]:
+        current = max(
+            index for index, message in enumerate(messages) if isinstance(message, HumanMessage)
+        )
+        earlier, this_ask = messages[:current], messages[current:]
+        room = self.history_tokens - count_tokens_approximately(this_ask)
+        if room <= 0:
+            return this_ask
+        kept = trim_messages(
+            earlier,
+            max_tokens=room,
+            token_counter=count_tokens_approximately,
+            strategy="last",
+            start_on="human",
+        )
+        return [*cast(list[AnyMessage], kept), *this_ask]
 
     async def aafter_agent(
         self, state: AgentState[Any], runtime: Runtime[Any]
@@ -231,7 +262,9 @@ class _Guard(AgentMiddleware[AgentState[Any], None, Any]):
                         raise failure from None
                     if not isinstance(reply, ToolMessage):
                         raise TypeError(f"the tool returned a {type(reply).__name__}")
-                    result_text = await self.screen(self.request, str(reply.content))
+                    result_text = await self.screen(
+                        self.request, _cut(str(reply.content), self.tool_output_chars)
+                    )
                     record_output(result_text)
                 is_error = bool(reply.artifact)
                 if result_text in (WITHHELD, UNCHECKED):
@@ -244,6 +277,12 @@ class _Guard(AgentMiddleware[AgentState[Any], None, Any]):
             return ToolMessage(
                 result_text, tool_call_id=call_id, status="error" if is_error else "success"
             )
+
+
+def _cut(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}\n[deskclerk: {limit:,} of {len(text):,} characters shown]"
 
 
 async def run_agent(
@@ -264,6 +303,8 @@ async def run_agent(
     trace_config: RunnableConfig | None = None,
     tool_span: ToolSpan = no_tool_span,
     selection: AgentMiddleware[Any, Any, Any] | None = None,
+    tool_output_chars: int = DEFAULT_TOOL_OUTPUT_CHARS,
+    history_tokens: int = DEFAULT_HISTORY_TOKENS,
 ) -> AgentResult:
     tools: dict[str, _Tool] = {}
     not_connected: list[str] = []
@@ -287,7 +328,17 @@ async def run_agent(
             tools[f"{server.name}__{info.name}"] = _Tool(server, info)
 
     earlier = earlier_texts(history)
-    guard = _Guard(request, earlier, tools, gate, screen, tool_span, record_usage)
+    guard = _Guard(
+        request,
+        earlier,
+        tools,
+        gate,
+        screen,
+        tool_span,
+        record_usage,
+        tool_output_chars,
+        history_tokens,
+    )
     read_only_names: list[BaseTool | str] = [
         name for name, tool in tools.items() if tool.info.read_only
     ]

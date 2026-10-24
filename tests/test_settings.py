@@ -67,3 +67,9 @@ def test_a_public_url_without_a_scheme_is_refused(monkeypatch: pytest.MonkeyPatc
 def test_the_old_sign_in_redirect_setting_has_no_effect(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DESKCLERK_SIGN_IN_REDIRECT_URL", "https://old.example/login/callback")
     assert Settings().sign_in_redirect_url == "http://localhost:8000/login/callback"
+
+
+@pytest.mark.parametrize("name", ["ask_seconds", "tool_output_chars", "history_tokens"])
+def test_the_deadline_and_the_caps_must_be_positive(name: str) -> None:
+    with pytest.raises(ValidationError):
+        Settings.model_validate({name: 0})
