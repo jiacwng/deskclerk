@@ -1099,3 +1099,70 @@ def test_a_callback_with_the_wrong_or_missing_issuer_gives_502_and_connects_noth
         assert response.status_code == 502
         assert response.json()["detail"] == "the server did not accept the sign-in"
         assert site.tokens.get("ada", "notes", "tokens") is None
+
+
+def ask_in(
+    site: Web, headers: dict[str, str], conversation: object, request: str = "and then?"
+) -> httpx2.Response:
+    body = {"request": request, "conversation": conversation}
+    return site.client.post("/ask", json=body, headers=headers)
+
+
+def test_a_follow_up_in_the_same_conversation_sees_the_earlier_turn(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings = make_settings(token_settings)
+    model = script(answer("first answer"), answer("second answer"), answer("fresh"))
+    ada = as_user(sign_token, "ada")
+    caplog.set_level(logging.INFO, logger="deskclerk.audit")
+    with web(settings, [notes(notes_server)], model, token_signing_key, tmp_path) as site:
+        first = ask(site, ada, "find the login bug").json()
+        second = ask_in(site, ada, first["conversation"]).json()
+        fresh = ask(site, ada, "something else").json()
+    assert (first["answer"], second["answer"]) == ("first answer", "second answer")
+    assert second["conversation"] == first["conversation"] != fresh["conversation"]
+    assert [m.content for m in model.seen[1][1:] if m.type != "ai"] == [
+        "find the login bug",
+        "and then?",
+    ]
+    assert [m.content for m in model.seen[2][1:]] == ["something else"]
+    assert [line["conversation"] for line in audit_lines(caplog)] == [
+        first["conversation"],
+        first["conversation"],
+        fresh["conversation"],
+    ]
+
+
+def test_another_employees_or_an_unknown_conversation_gives_404_and_runs_nothing(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings = make_settings(token_settings)
+    model = script(answer("ada's answer"), answer("ada follow-up"))
+    ada, grace = as_user(sign_token, "ada"), as_user(sign_token, "grace")
+    caplog.set_level(logging.INFO, logger="deskclerk.audit")
+    with web(settings, [notes(notes_server)], model, token_signing_key, tmp_path) as site:
+        conversation = ask(site, ada).json()["conversation"]
+        taken = ask_in(site, grace, conversation)
+        unknown = ask_in(site, grace, "0d6b2c3e-9d5e-4c27-8f3e-3c1d2b4a5e6f")
+        malformed = ask_in(site, ada, "../ada/" + conversation)
+        mine = ask_in(site, ada, conversation)
+    assert (taken.status_code, unknown.status_code) == (404, 404)
+    assert taken.json() == unknown.json() == {"detail": "no such conversation"}
+    assert malformed.status_code == 422
+    assert mine.status_code == 200
+    assert [line["outcome"] for line in audit_lines(caplog)] == [
+        "answered",
+        "unknown_conversation",
+        "unknown_conversation",
+        "answered",
+    ]

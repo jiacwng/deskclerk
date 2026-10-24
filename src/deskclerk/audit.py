@@ -11,6 +11,7 @@ import sys
 import time
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 
 from pydantic import SecretStr
 
@@ -32,6 +33,7 @@ class Audit:
     def asked(
         self,
         identity: Identity,
+        conversation: UUID | None,
         request: str,
         started: float,
         outcome: str,
@@ -42,6 +44,7 @@ class Audit:
         line = self._line(identity, "ask")
         line.update(
             {
+                "conversation": None if conversation is None else str(conversation),
                 "outcome": outcome,
                 "text_chars": len(request),
                 "text_hmac": self._hmac(request),
