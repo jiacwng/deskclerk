@@ -93,6 +93,7 @@ async def test_a_delete_of_an_unseen_id_is_refused_by_the_write_check(
         pass_through,
         5,
         lambda usage: None,
+        confirm_writes=False,
     )
     assert result.executed == ()
     [blocked] = result.blocked

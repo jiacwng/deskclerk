@@ -131,6 +131,7 @@ async def run_task(worker: Worker, task: Task, text: WorkbenchText) -> dict[str,
                 Settings.model_fields["step_limit"].default,
                 usage.append,
                 selection=make_selection(worker, jev_tokens.append),
+                confirm_writes=False,
             )
             answer = result.answer
             for call in result.blocked:

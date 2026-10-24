@@ -28,10 +28,14 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from deskclerk.agent import (
     AgentResult,
+    ConversationWaiting,
+    Decision,
     McpServerFailed,
+    NothingToConfirm,
     ProposedCall,
     ToolSpan,
     Verdict,
+    WrongDecisions,
     no_tool_span,
     run_agent,
 )
@@ -133,6 +137,8 @@ async def run(
     thread: str = "ada/test",
     tool_output_chars: int = 20000,
     history_tokens: int = 40000,
+    confirm_writes: bool = False,
+    decisions: dict[str, Decision] | None = None,
 ) -> AgentResult:
     return await run_agent(
         "ada",
@@ -153,6 +159,8 @@ async def run(
         tool_span,
         tool_output_chars=tool_output_chars,
         history_tokens=history_tokens,
+        confirm_writes=confirm_writes,
+        decisions=decisions,
     )
 
 
@@ -905,3 +913,271 @@ async def test_the_model_gets_only_the_newest_turns_while_the_conversation_keeps
     assert [type(message) for message in sent] == [HumanMessage, AIMessage, HumanMessage]
     assert [str(message.content)[:6] for message in sent[::2]] == ["second", "third "]
     assert len(stored) == 6
+
+
+@pytest.mark.anyio
+async def test_a_write_waits_for_the_employee_and_runs_once_when_approved(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
+) -> None:
+    servers = [server_record(mcp_server)]
+    model = script(calls(("notes__write_note", {"text": "hi"})), answer("saved it"))
+    paused = await run(connections, servers, model, checkpointer=saver, confirm_writes=True)
+    [waiting] = paused.pending
+    assert (waiting.server, waiting.tool, waiting.arguments) == (
+        "notes",
+        "write_note",
+        {"text": "hi"},
+    )
+    assert (paused.answer, paused.step_limit_hit, mcp_server.notes) == ("", False, [])
+    resumed = await run(
+        connections,
+        servers,
+        model,
+        checkpointer=saver,
+        confirm_writes=True,
+        decisions={waiting.id: "approve"},
+    )
+    assert resumed.pending == ()
+    assert [note[1] for note in mcp_server.notes] == ["hi"]
+    assert resumed.answer == "saved it"
+    assert [(call.tool, call.result) for call in resumed.executed] == [("write_note", "wrote hi")]
+    assert [(call.tool, call.decision) for call in resumed.decided] == [("write_note", "approve")]
+
+
+@pytest.mark.anyio
+async def test_a_rejected_write_never_runs_and_the_model_reads_that_it_was_declined(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
+) -> None:
+    servers = [server_record(mcp_server)]
+    model = script(calls(("notes__write_note", {"text": "hi"})), answer("understood"))
+    paused = await run(connections, servers, model, checkpointer=saver, confirm_writes=True)
+    resumed = await run(
+        connections,
+        servers,
+        model,
+        checkpointer=saver,
+        confirm_writes=True,
+        decisions={paused.pending[0].id: "reject"},
+    )
+    assert mcp_server.notes == []
+    assert resumed.executed == ()
+    assert [(call.tool, call.reason) for call in resumed.blocked] == [
+        ("write_note", "the employee declined")
+    ]
+    reply = model.seen[1][-1]
+    assert isinstance(reply, ToolMessage)
+    assert "The tool was not executed" in str(reply.content)
+    assert resumed.answer == "understood"
+
+
+@pytest.mark.anyio
+async def test_two_writes_in_one_turn_wait_separately_and_only_the_waiting_calls_run_again(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
+) -> None:
+    servers = [server_record(mcp_server)]
+    model = script(
+        calls(
+            ("notes__read_note", {}),
+            ("notes__write_note", {"text": "one"}),
+            ("notes__write_note", {"text": "two"}),
+        ),
+        answer("done"),
+    )
+    gate = RecordingGate(True)
+    paused = await run(connections, servers, model, gate, checkpointer=saver, confirm_writes=True)
+    assert [call.arguments["text"] for call in paused.pending] == ["one", "two"]
+    assert len({call.id for call in paused.pending}) == 2
+    assert [call.tool for call in paused.executed] == ["read_note"]
+    first, second = paused.pending
+    resumed = await run(
+        connections,
+        servers,
+        model,
+        gate,
+        checkpointer=saver,
+        confirm_writes=True,
+        decisions={first.id: "approve", second.id: "reject"},
+    )
+    assert [note[1] for note in mcp_server.notes] == ["one"]
+    assert [call.tool for call in resumed.executed] == ["write_note"]
+    assert len(model.seen) == 2
+    assert [(call.tool, call.decision) for call in resumed.decided] == [
+        ("write_note", "approve"),
+        ("write_note", "reject"),
+    ]
+
+
+@pytest.mark.anyio
+async def test_a_new_run_on_the_same_token_file_resumes_a_pause(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    servers = [server_record(mcp_server)]
+    tokens = connections.tokens
+    async with open_checkpointer(tokens.path, tokens.fernet) as before:
+        model = script(calls(("notes__write_note", {"text": "hi"})))
+        paused = await run(connections, servers, model, checkpointer=before, confirm_writes=True)
+    async with open_checkpointer(tokens.path, tokens.fernet) as after:
+        resumed = await run(
+            connections,
+            servers,
+            script(answer("saved it")),
+            checkpointer=after,
+            confirm_writes=True,
+            decisions={paused.pending[0].id: "approve"},
+        )
+    assert [note[1] for note in mcp_server.notes] == ["hi"]
+    assert resumed.answer == "saved it"
+
+
+@pytest.mark.anyio
+async def test_a_write_the_gate_refuses_never_waits_for_the_employee(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    gate = RecordingGate(False, "not asked for")
+    model = script(calls(("notes__write_note", {"text": "hi"})), answer("could not"))
+    result = await run(connections, [server_record(mcp_server)], model, gate, confirm_writes=True)
+    assert result.pending == ()
+    assert [call.reason for call in result.blocked] == ["not asked for"]
+    assert result.answer == "could not"
+
+
+@pytest.mark.anyio
+async def test_a_read_tool_never_waits_for_the_employee(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    model = script(calls(("notes__read_note", {})), answer("It says: the note"))
+    result = await run(connections, [server_record(mcp_server)], model, confirm_writes=True)
+    assert result.pending == ()
+    assert [call.tool for call in result.executed] == ["read_note"]
+    assert result.answer == "It says: the note"
+
+
+@pytest.mark.anyio
+async def test_a_reply_written_beside_a_waiting_call_is_not_given_as_the_answer(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    spoken = AIMessage(
+        content="I will save that note now.",
+        tool_calls=[{"name": "notes__write_note", "args": {"text": "hi"}, "id": "call-0"}],
+    )
+    result = await run(
+        connections, [server_record(mcp_server)], script(spoken), confirm_writes=True
+    )
+    assert len(result.pending) == 1
+    assert result.answer == ""
+
+
+@pytest.mark.anyio
+async def test_a_write_that_failed_after_approval_cannot_be_rejected_into_running_again(
+    tmp_path: Path, mcp_server: RunningServer
+) -> None:
+    connections = await flaky_connections(tmp_path, mcp_server, failures=1)
+    servers = [server_record(mcp_server)]
+    model = script(calls(("notes__write_note", {"text": "hi"})), answer("never read"))
+    async with open_checkpointer(tmp_path / "tokens.sqlite", connections.tokens.fernet) as saver:
+        paused = await run(connections, servers, model, checkpointer=saver, confirm_writes=True)
+        waiting_id = paused.pending[0].id
+        with pytest.raises(McpServerFailed):
+            await run(
+                connections,
+                servers,
+                model,
+                checkpointer=saver,
+                confirm_writes=True,
+                decisions={waiting_id: "approve"},
+            )
+        with pytest.raises(NothingToConfirm):
+            await run(
+                connections,
+                servers,
+                model,
+                checkpointer=saver,
+                confirm_writes=True,
+                decisions={waiting_id: "reject"},
+            )
+    assert connections.attempts == 1
+    assert mcp_server.notes == []
+
+
+@pytest.mark.anyio
+async def test_a_failed_run_does_not_leave_the_conversation_waiting(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
+) -> None:
+    servers = [server_record(mcp_server)]
+
+    async def broken_screen(request: str, output: str) -> str:
+        raise RuntimeError("the screen is down")
+
+    model = script(calls(("notes__write_note", {"text": "hi"}), ("notes__read_note", {})))
+    with pytest.raises(RuntimeError, match="the screen is down"):
+        await run(
+            connections,
+            servers,
+            model,
+            screen=broken_screen,
+            checkpointer=saver,
+            confirm_writes=True,
+        )
+    follow_up = await run(
+        connections,
+        servers,
+        script(answer("fine")),
+        checkpointer=saver,
+        confirm_writes=True,
+        request="try again",
+    )
+    assert follow_up.answer == "fine"
+    assert mcp_server.notes == []
+
+
+@pytest.mark.anyio
+async def test_a_conversation_that_waits_refuses_a_new_request(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
+) -> None:
+    servers = [server_record(mcp_server)]
+    model = script(calls(("notes__write_note", {"text": "hi"})))
+    await run(connections, servers, model, checkpointer=saver, confirm_writes=True)
+    with pytest.raises(ConversationWaiting):
+        await run(connections, servers, model, checkpointer=saver, confirm_writes=True)
+
+
+@pytest.mark.anyio
+async def test_decisions_that_do_not_match_the_waiting_calls_are_refused(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
+) -> None:
+    servers = [server_record(mcp_server)]
+    model = script(calls(("notes__write_note", {"text": "hi"})))
+    paused = await run(connections, servers, model, checkpointer=saver, confirm_writes=True)
+    with pytest.raises(WrongDecisions):
+        await run(
+            connections,
+            servers,
+            model,
+            checkpointer=saver,
+            confirm_writes=True,
+            decisions={paused.pending[0].id: "approve", "other": "reject"},
+        )
+    assert mcp_server.notes == []
+
+
+@pytest.mark.anyio
+async def test_a_rejected_call_stays_rejected_when_its_tool_became_read_only(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
+) -> None:
+    server = server_record(mcp_server)
+    model = script(calls(("notes__write_note", {"text": "hi"})), answer("understood"))
+    paused = await run(connections, [server], model, checkpointer=saver, confirm_writes=True)
+    mcp_server.make_write_note_read_only()
+    connections.tokens.delete_connection("ada", "notes")
+    await connect(connections, "ada", server)
+    resumed = await run(
+        connections,
+        [server],
+        model,
+        checkpointer=saver,
+        confirm_writes=True,
+        decisions={paused.pending[0].id: "reject"},
+    )
+    assert mcp_server.notes == []
+    assert [(call.tool, call.decision) for call in resumed.decided] == [("write_note", "reject")]
+    assert [call.reason for call in resumed.blocked] == ["the employee declined"]

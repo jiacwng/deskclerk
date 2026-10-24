@@ -13,6 +13,7 @@ textarea { width: 100%; box-sizing: border-box; min-height: 6rem; }
 pre { white-space: pre-wrap; background: #f3f3f3; padding: 0.5rem; }
 .error { color: #b00020; }
 .muted { color: #666; }
+.verdict { margin-left: 0.5rem; font-weight: bold; }
 @media (prefers-color-scheme: dark) {
   body { background: #161616; color: #eee; }
   pre { background: #2a2a2a; }
@@ -39,6 +40,12 @@ pre { white-space: pre-wrap; background: #f3f3f3; padding: 0.5rem; }
     <button id="new-conversation" type="button">New conversation</button>
   </p>
   <p id="error" class="error"></p>
+  <div id="confirm" hidden>
+    <h2>Confirm changes</h2>
+    <p class="muted">Each call below changes data. Approve or reject each one, then press Send.</p>
+    <ul id="pending"></ul>
+    <p><button id="send" type="button" disabled>Send</button></p>
+  </div>
   <div id="result" hidden>
     <h2>Answer</h2>
     <pre id="answer"></pre>
@@ -146,20 +153,58 @@ function showCalls(result) {
   }
 }
 
-function showTurn(request, answer) {
+function showAsked(request) {
   const asked = document.createElement("p");
   asked.className = "muted";
   asked.textContent = "You: " + request;
+  el("turns").append(asked);
+}
+
+function showReply(answer) {
   const replied = document.createElement("pre");
   replied.textContent = answer;
-  el("turns").append(asked, replied);
+  el("turns").append(replied);
 }
 
 function newConversation() {
   conversation = null;
   el("turns").replaceChildren();
   el("result").hidden = true;
+  showPending([]);
   showError("");
+}
+
+let decisions = {};
+
+function showPending(pending) {
+  decisions = {};
+  const list = el("pending");
+  list.replaceChildren();
+  for (const call of pending) {
+    const verdict = document.createElement("span");
+    verdict.className = "verdict";
+    const decide = (choice) => {
+      decisions[call.id] = choice;
+      verdict.textContent = choice === "approve" ? "Approved" : "Rejected";
+      el("send").disabled = Object.keys(decisions).length < pending.length;
+    };
+    const item = line(call.server + "." + call.tool + " " + JSON.stringify(call.arguments) + " ");
+    item.append(button("Approve", () => decide("approve")), button("Reject", () => decide("reject")), verdict);
+    list.append(item);
+  }
+  el("send").disabled = true;
+  el("confirm").hidden = pending.length === 0;
+  el("ask").disabled = pending.length > 0;
+}
+
+function showResult(result) {
+  conversation = result.conversation;
+  if (result.pending.length === 0) showReply(result.answer);
+  el("answer").textContent = result.answer;
+  showCalls(result);
+  showPending(result.pending);
+  el("cost").textContent = "Cost: " + result.cost_usd.toFixed(4) + " USD";
+  el("result").hidden = false;
 }
 
 async function ask() {
@@ -167,14 +212,19 @@ async function ask() {
   const request = el("request").value;
   const response = await post("/ask", { request, conversation });
   if (!response.ok) return showError(await detail(response));
-  const result = await response.json();
-  conversation = result.conversation;
-  showTurn(request, result.answer);
+  showAsked(request);
   el("request").value = "";
-  el("answer").textContent = result.answer;
-  showCalls(result);
-  el("cost").textContent = "Cost: " + result.cost_usd.toFixed(4) + " USD";
-  el("result").hidden = false;
+  showResult(await response.json());
+}
+
+async function send() {
+  showError("");
+  const response = await post("/ask/confirm", { conversation, decisions });
+  if (!response.ok) {
+    if (response.status >= 500) showPending([]);
+    return showError(await detail(response));
+  }
+  showResult(await response.json());
 }
 
 async function start() {
@@ -186,6 +236,7 @@ async function start() {
   el("status").textContent = "Signed in as " + (await response.json()).name;
   el("app").hidden = false;
   el("ask").addEventListener("click", ask);
+  el("send").addEventListener("click", send);
   el("new-conversation").addEventListener("click", newConversation);
   loadServers();
 }

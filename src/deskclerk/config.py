@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     tool_output_chars: int = Field(default=DEFAULT_TOOL_OUTPUT_CHARS, gt=0)
     history_tokens: int = Field(default=DEFAULT_HISTORY_TOKENS, gt=0)
     tool_selection: bool = False
+    allow_unscreened: bool = False
     public_url: str = "http://localhost:8000"
     session_key: SecretStr | None = None
     session_hours: int = 8

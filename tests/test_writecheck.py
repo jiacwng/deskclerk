@@ -145,6 +145,7 @@ async def test_a_delete_of_an_unseen_id_never_reaches_the_server(tmp_path: Path)
             pass_through,
             5,
             lambda usage: None,
+            confirm_writes=False,
         )
     assert running.deleted == []
     assert result.executed == ()
@@ -180,6 +181,7 @@ async def test_a_delete_may_name_an_id_the_employee_gave_in_an_earlier_turn(tmp_
                     pass_through,
                     5,
                     lambda usage: None,
+                    confirm_writes=False,
                 )
     assert running.deleted == ["n-7"]
     assert result.blocked == ()
