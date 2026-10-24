@@ -6,6 +6,8 @@
 # transport error.
 
 import asyncio
+import logging
+import re
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
@@ -53,6 +55,10 @@ from deskclerk.providers import Usage, usage_from
 from deskclerk.screen import UNCHECKED, WITHHELD, Screen
 from deskclerk.servers import McpServer
 from deskclerk.tokens import TokenStore
+
+TOOL_NAME = re.compile(r"[a-zA-Z0-9_-]{1,64}")
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -157,6 +163,21 @@ class _Listing:
     tools: list[ToolInfo]
     connected: bool
     failure: McpServerFailed | None
+
+
+def _names_the_model_accepts(server: str, listed: list[ToolInfo]) -> list[ToolInfo]:
+    accepted = []
+    for info in listed:
+        full_name = f"{server}__{info.name}"
+        if TOOL_NAME.fullmatch(full_name) is None:
+            _log.warning(
+                "tool %s is not offered: its name must be 1 to 64 letters, digits, "
+                "underscores or hyphens",
+                full_name,
+            )
+            continue
+        accepted.append(info)
+    return accepted
 
 
 async def _list_tools(user_id: str, server: McpServer, connections: OAuthConnections) -> _Listing:
@@ -354,6 +375,7 @@ async def run_agent(
         listed = listing.tools
         if server.tools is not None:
             listed = [info for info in listed if info.name in server.tools]
+        listed = _names_the_model_accepts(server.name, listed)
         pinned = pin_tools(tokens, user_id, server.name, listed)
         changed_tools += [f"{server.name}__{name}" for name in pinned.changed]
         for info in pinned.kept:

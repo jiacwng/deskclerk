@@ -22,6 +22,7 @@ from pydantic import (
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1"}
 ENV_REFERENCE = re.compile(r"\$\{env:([^}]+)\}")
+SERVER_NAME = re.compile(r"[A-Za-z0-9-]+(_[A-Za-z0-9-]+)*")
 
 
 class ServersError(Exception):
@@ -57,9 +58,12 @@ class _ServerEntry(BaseModel):
 
     @field_validator("name")
     @classmethod
-    def _name_is_not_empty(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("a server needs a name")
+    def _name_is_safe_in_a_tool_name(cls, value: str) -> str:
+        if SERVER_NAME.fullmatch(value) is None:
+            raise ValueError(
+                f"server name {value!r} must use only letters, digits and hyphens, with single "
+                "underscores between them, such as google-drive or jira_cloud"
+            )
         return value
 
     @field_validator("tools")

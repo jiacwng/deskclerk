@@ -181,6 +181,13 @@ class RunningServer:
     def add_list_notes(self) -> None:
         self.mcp.add_tool(list_notes, annotations=READ_ONLY)
 
+    def add_long_named_tool(self) -> None:
+        self.mcp.add_tool(
+            list_notes,
+            name="list_every_note_saved_by_every_employee_in_the_whole_company",
+            annotations=READ_ONLY,
+        )
+
 
 @contextmanager
 def running_mcp_server(

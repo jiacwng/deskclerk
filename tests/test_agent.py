@@ -597,6 +597,18 @@ async def test_only_the_listed_tools_are_bound_and_an_unlisted_one_cannot_be_cal
 
 
 @pytest.mark.anyio
+async def test_a_tool_whose_full_name_is_too_long_is_not_offered_and_is_logged(
+    mcp_server: RunningServer, connections: OAuthConnections, caplog: pytest.LogCaptureFixture
+) -> None:
+    mcp_server.add_long_named_tool()
+    model = script(answer("done"))
+    await run(connections, [server_record(mcp_server)], model)
+    assert bound_names(model) == {"notes__read_note", "notes__write_note", "notes__break_note"}
+    long_name = "notes__list_every_note_saved_by_every_employee_in_the_whole_company"
+    assert any(long_name in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.anyio
 async def test_a_server_without_a_tool_list_binds_every_tool(
     mcp_server: RunningServer, connections: OAuthConnections
 ) -> None:
