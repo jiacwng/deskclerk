@@ -437,27 +437,40 @@ def create_app(
             spent_before = spending.cost_usd
             try:
                 with tracing.ask(identity.user_id) if tracing else nullcontext(None) as trace:
-                    result = await run_agent(
-                        identity.user_id,
-                        body.request,
-                        system_prompt(datetime.now(UTC).date()),
-                        servers,
-                        connections,
-                        tokens,
-                        checkpointer,
-                        thread,
-                        history,
-                        model,
-                        gate,
-                        jev_screen(jev, spending.record_jev),
-                        settings.step_limit,
-                        spending.record,
-                        trace.config if trace else None,
-                        trace.tool_span if trace else no_tool_span,
-                        jev_tool_selection(jev, settings.tool_selection, spending.record_jev),
-                    )
+                    async with asyncio.timeout(settings.ask_seconds):
+                        result = await run_agent(
+                            identity.user_id,
+                            body.request,
+                            system_prompt(datetime.now(UTC).date()),
+                            servers,
+                            connections,
+                            tokens,
+                            checkpointer,
+                            thread,
+                            history,
+                            model,
+                            gate,
+                            jev_screen(jev, spending.record_jev),
+                            settings.step_limit,
+                            spending.record,
+                            trace.config if trace else None,
+                            trace.tool_span if trace else no_tool_span,
+                            jev_tool_selection(jev, settings.tool_selection, spending.record_jev),
+                            tool_output_chars=settings.tool_output_chars,
+                            history_tokens=settings.history_tokens,
+                        )
                     if trace:
                         trace.finish(result.withheld)
+            except TimeoutError:
+                cost = spending.cost_usd - spent_before
+                detail = (
+                    f"the ask took longer than {settings.ask_seconds} seconds "
+                    "(set DESKCLERK_ASK_SECONDS to change it)"
+                )
+                audit.asked(
+                    identity, conversation, body.request, started, "timed_out", None, cost, detail
+                )
+                raise HTTPException(504, detail) from None
             except ask_failures as error:
                 cost = spending.cost_usd - spent_before
                 raise upstream_failure(

@@ -965,6 +965,30 @@ def test_an_mcp_server_that_stopped_gives_502_and_an_upstream_error_line(
     assert asks[0]["cause"] == detail
 
 
+def test_an_ask_past_the_deadline_gives_504_and_the_conversation_still_works(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="deskclerk.audit")
+    settings = make_settings(token_settings, ask_seconds=1)
+    model = script(answer("hello"), calls(("notes__pause", {"seconds": 5})), answer("recovered"))
+    ada = as_user(sign_token, "ada")
+    with running_mcp_server(REDIRECT, heavy_tools=True) as running:
+        with web(settings, [notes(running)], model, token_signing_key, tmp_path) as site:
+            connect(site, ada)
+            conversation = ask(site, ada, "hi").json()["conversation"]
+            slow = ask_in(site, ada, conversation, "rest a while")
+            after = ask_in(site, ada, conversation, "are you there?")
+    assert slow.status_code == 504
+    assert "DESKCLERK_ASK_SECONDS" in slow.json()["detail"]
+    assert (after.status_code, after.json()["answer"]) == (200, "recovered")
+    asks = [line for line in audit_lines(caplog) if line["entry"] == "ask"]
+    assert [line["outcome"] for line in asks] == ["answered", "timed_out", "answered"]
+
+
 def test_a_model_that_fails_gives_502_naming_the_model_and_the_audit_cause(
     sign_token: Sign,
     token_settings: Settings,

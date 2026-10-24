@@ -129,6 +129,8 @@ async def run(
     request: str = "save a note",
     checkpointer: BaseCheckpointSaver[Any] | None = None,
     thread: str = "ada/test",
+    tool_output_chars: int = 20000,
+    history_tokens: int = 40000,
 ) -> AgentResult:
     return await run_agent(
         "ada",
@@ -147,6 +149,8 @@ async def run(
         lambda usage: None,
         trace_config,
         tool_span,
+        tool_output_chars=tool_output_chars,
+        history_tokens=history_tokens,
     )
 
 
@@ -786,3 +790,44 @@ async def test_the_step_limit_message_is_not_kept_in_the_conversation(
     assert stopped.step_limit_hit is True
     assert not any("Model call limits exceeded" in str(m.content) for m in model.seen[0])
     assert model.seen[0][-1].content == "stop now"
+
+
+@pytest.mark.anyio
+async def test_a_long_tool_result_reaches_the_model_cut_to_the_cap_with_a_notice(
+    tmp_path: Path,
+) -> None:
+    connections = make_connections(tmp_path / "tokens.sqlite", Fernet.generate_key().decode())
+    with running_mcp_server(REDIRECT, heavy_tools=True) as running:
+        server = server_record(running)
+        await connect(connections, "ada", server)
+        model = script(calls(("notes__long_note", {"characters": 50000})), answer("done"))
+        result = await run(connections, [server], model, tool_output_chars=1000)
+    seen = model.seen[1][-1]
+    assert isinstance(seen, ToolMessage)
+    assert seen.content == "x" * 1000 + "\n[deskclerk: 1,000 of 50,000 characters shown]"
+    assert result.executed[0].result == seen.content
+
+
+@pytest.mark.anyio
+async def test_the_model_gets_only_the_newest_turns_while_the_conversation_keeps_all(
+    tmp_path: Path,
+) -> None:
+    connections = make_connections(tmp_path / "tokens.sqlite", Fernet.generate_key().decode())
+    thread = "ada/trim"
+    async with open_checkpointer(connections.tokens.path, connections.tokens.fernet) as saver:
+        model = script(answer("one"), answer("two"), answer("three"))
+        for turn in ("first", "second", "third"):
+            await run(
+                connections,
+                [],
+                model,
+                request=f"{turn} " + "a" * 200,
+                checkpointer=saver,
+                thread=thread,
+                history_tokens=150,
+            )
+        stored = await saved_messages(saver, thread)
+    sent = model.seen[2][1:]
+    assert [type(message) for message in sent] == [HumanMessage, AIMessage, HumanMessage]
+    assert [str(message.content)[:6] for message in sent[::2]] == ["second", "third "]
+    assert len(stored) == 6
