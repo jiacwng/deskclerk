@@ -5,7 +5,7 @@
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 MIN_SESSION_KEY_CHARS = 32
@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     # or oid on Entra ID. Changing it later orphans every stored token and conversation.
     user_claim: str = "sub"
     model: str = "anthropic:claude-haiku-5-5"
+    price_model: str = ""
     budget_usd: float = 2.0
     audit_text: bool = False
     audit_key: SecretStr | None = None
@@ -49,6 +50,8 @@ class Settings(BaseSettings):
     def _audience_is_the_client(cls, values: dict[str, Any]) -> dict[str, Any]:
         if not values.get("audience"):
             values["audience"] = values.get("client_id") or cls.model_fields["client_id"].default
+        if not values.get("price_model"):
+            values["price_model"] = values.get("model") or cls.model_fields["model"].default
         return values
 
     @field_validator("public_url")
@@ -78,14 +81,14 @@ class Settings(BaseSettings):
             )
         return value
 
-    @field_validator("model")
+    @field_validator("model", "price_model")
     @classmethod
-    def _provider_and_model(cls, value: str) -> str:
+    def _provider_and_model(cls, value: str, info: ValidationInfo) -> str:
         provider, _, name = value.partition(":")
         if not provider or not name:
             raise ValueError(
-                f"DESKCLERK_MODEL is provider:model, such as anthropic:claude-haiku-5-5, "
-                f"not {value!r}"
+                f"DESKCLERK_{str(info.field_name).upper()} is provider:model, such as "
+                f"anthropic:claude-haiku-5-5, not {value!r}"
             )
         return value
 
