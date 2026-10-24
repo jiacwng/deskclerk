@@ -32,8 +32,12 @@ pre { white-space: pre-wrap; background: #f3f3f3; padding: 0.5rem; }
   <ul id="servers"></ul>
 
   <h2>Ask</h2>
+  <div id="turns"></div>
   <textarea id="request" maxlength="4000"></textarea>
-  <p><button id="ask" type="button">Ask</button></p>
+  <p>
+    <button id="ask" type="button">Ask</button>
+    <button id="new-conversation" type="button">New conversation</button>
+  </p>
   <p id="error" class="error"></p>
   <div id="result" hidden>
     <h2>Answer</h2>
@@ -58,6 +62,8 @@ const post = (path, body) => api(path, {
 });
 
 const el = (id) => document.getElementById(id);
+
+let conversation = null;
 
 async function detail(response) {
   try {
@@ -137,11 +143,31 @@ function showCalls(result) {
   }
 }
 
+function showTurn(request, answer) {
+  const asked = document.createElement("p");
+  asked.className = "muted";
+  asked.textContent = "You: " + request;
+  const replied = document.createElement("pre");
+  replied.textContent = answer;
+  el("turns").append(asked, replied);
+}
+
+function newConversation() {
+  conversation = null;
+  el("turns").replaceChildren();
+  el("result").hidden = true;
+  showError("");
+}
+
 async function ask() {
   showError("");
-  const response = await post("/ask", { request: el("request").value });
+  const request = el("request").value;
+  const response = await post("/ask", { request, conversation });
   if (!response.ok) return showError(await detail(response));
   const result = await response.json();
+  conversation = result.conversation;
+  showTurn(request, result.answer);
+  el("request").value = "";
   el("answer").textContent = result.answer;
   showCalls(result);
   el("cost").textContent = "Cost: " + result.cost_usd.toFixed(4) + " USD";
@@ -157,6 +183,7 @@ async function start() {
   el("status").textContent = "Signed in as " + (await response.json()).user;
   el("app").hidden = false;
   el("ask").addEventListener("click", ask);
+  el("new-conversation").addEventListener("click", newConversation);
   loadServers();
 }
 

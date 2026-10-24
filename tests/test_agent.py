@@ -3,7 +3,8 @@
 
 import itertools
 import json
-from collections.abc import Callable, Iterator, Sequence
+import sqlite3
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -11,7 +12,7 @@ from typing import Any
 import anthropic
 import httpx2
 import pytest
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -19,6 +20,9 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_core.messages.ai import UsageMetadata
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import BaseTool
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from deskclerk.agent import (
     AgentResult,
@@ -30,6 +34,7 @@ from deskclerk.agent import (
     run_agent,
 )
 from deskclerk.connections import OAuthConnections, ToolResult
+from deskclerk.conversations import FernetCipher, open_checkpointer, saved_messages
 from deskclerk.screen import UNCHECKED, WITHHELD, Screen, pass_through
 from deskclerk.servers import McpServer
 from deskclerk.tokens import TokenStore
@@ -121,14 +126,20 @@ async def run(
     step_limit: int = 5,
     trace_config: RunnableConfig | None = None,
     tool_span: ToolSpan = no_tool_span,
+    request: str = "save a note",
+    checkpointer: BaseCheckpointSaver[Any] | None = None,
+    thread: str = "ada/test",
 ) -> AgentResult:
     return await run_agent(
         "ada",
-        "save a note",
+        request,
         SYSTEM,
         servers,
         connections,
         connections.tokens,
+        checkpointer or InMemorySaver(),
+        thread,
+        await saved_messages(checkpointer, thread) if checkpointer else [],
         model,
         gate or RecordingGate(True),
         screen,
@@ -600,3 +611,178 @@ async def test_the_step_limit_ends_the_run_and_a_final_answer_on_the_last_step_d
     )
     assert (stopped.step_limit_hit, finished.step_limit_hit) == (True, False)
     assert finished.answer == "done"
+
+
+@pytest.fixture
+async def saver(connections: OAuthConnections) -> AsyncIterator[AsyncSqliteSaver]:
+    async with open_checkpointer(connections.tokens.path, connections.tokens.fernet) as opened:
+        yield opened
+
+
+@pytest.mark.anyio
+async def test_a_follow_up_sees_the_earlier_turn_and_its_per_ask_fields_stay_per_ask(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
+) -> None:
+    servers = [server_record(mcp_server)]
+    first = await run(
+        connections,
+        servers,
+        script(calls(("notes__read_note", {})), answer("It says: the note")),
+        request="find the note",
+        checkpointer=saver,
+    )
+    model = script(answer("The same note."))
+    second = await run(connections, servers, model, request="what was it?", checkpointer=saver)
+    assert [(type(message), message.content) for message in model.seen[0][1:]] == [
+        (HumanMessage, "find the note"),
+        (AIMessage, ""),
+        (ToolMessage, "the note"),
+        (AIMessage, "It says: the note"),
+        (HumanMessage, "what was it?"),
+    ]
+    assert len(first.executed) == 1
+    assert (second.executed, len(second.usage), second.step_limit_hit) == ((), 1, False)
+
+
+@pytest.mark.anyio
+async def test_a_conversation_is_not_shared_with_another_thread(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
+) -> None:
+    servers = [server_record(mcp_server)]
+    await run(connections, servers, script(answer("one")), request="first", checkpointer=saver)
+    model = script(answer("two"))
+    await run(connections, servers, model, request="second", checkpointer=saver, thread="ada/other")
+    assert [message.content for message in model.seen[0][1:]] == ["second"]
+
+
+@pytest.mark.anyio
+async def test_the_step_limit_counts_each_ask_and_not_the_whole_conversation(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
+) -> None:
+    servers = [server_record(mcp_server)]
+    for _ in range(2):
+        model = script(calls(("notes__read_note", {})), answer("done"))
+        result = await run(connections, servers, model, step_limit=2, checkpointer=saver)
+        assert (result.step_limit_hit, result.answer) == (False, "done")
+
+
+@pytest.mark.anyio
+async def test_a_withheld_result_stays_withheld_in_the_next_turn(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
+) -> None:
+    servers = [server_record(mcp_server)]
+    await run(
+        connections,
+        servers,
+        script(calls(("notes__read_note", {})), answer("withheld")),
+        screen=RecordingScreen(WITHHELD),
+        checkpointer=saver,
+    )
+    model = script(answer("ok"))
+    await run(connections, servers, model, checkpointer=saver)
+    shown = [str(message.content) for message in model.seen[0]]
+    assert WITHHELD in shown
+    assert "the note" not in shown
+
+
+@pytest.mark.anyio
+async def test_the_gate_is_shown_the_earlier_messages_and_results_of_the_conversation(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
+) -> None:
+    servers = [server_record(mcp_server)]
+    gate = RecordingGate(True)
+    await run(
+        connections,
+        servers,
+        script(calls(("notes__read_note", {})), answer("done")),
+        gate,
+        request="find the note",
+        checkpointer=saver,
+    )
+    model = script(calls(("notes__write_note", {"text": "hi"})), answer("saved"))
+    await run(connections, servers, model, gate, request="save it", checkpointer=saver)
+    [asked] = gate.asked
+    assert (asked.request, asked.observed) == ("save it", ("find the note", "the note"))
+
+
+@pytest.mark.anyio
+async def test_stored_checkpoints_are_unreadable_without_the_token_key(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
+) -> None:
+    servers = [server_record(mcp_server)]
+    model = script(calls(("notes__read_note", {})), answer("It says: the note"))
+    await run(connections, servers, model, request="find my secret plan", checkpointer=saver)
+    database = sqlite3.connect(connections.tokens.path)
+    try:
+        stored = [
+            bytes(value)
+            for table, column in (("checkpoints", "checkpoint"), ("writes", "value"))
+            for (value,) in database.execute(f"SELECT {column} FROM {table}")  # noqa: S608
+        ]
+    finally:
+        database.close()
+    assert stored
+    for value in stored:
+        assert b"secret plan" not in value
+        assert b"the note" not in value
+    wrong = Fernet(Fernet.generate_key())
+    async with open_checkpointer(connections.tokens.path, wrong) as other:
+        with pytest.raises(InvalidToken):
+            await other.aget_tuple({"configurable": {"thread_id": "ada/test"}})
+
+
+def test_the_cipher_refuses_data_made_by_another_cipher() -> None:
+    cipher = FernetCipher(Fernet(Fernet.generate_key()))
+    with pytest.raises(ValueError, match="unknown cipher"):
+        cipher.decrypt("aes", b"x")
+
+
+@pytest.mark.anyio
+async def test_the_token_store_and_the_checkpointer_share_one_file(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
+) -> None:
+    servers = [server_record(mcp_server)]
+    await run(connections, servers, script(answer("one")), checkpointer=saver)
+    connections.tokens.put("ada", "other", "tool_pins", "{}")
+    await run(connections, servers, script(answer("two")), checkpointer=saver)
+    assert connections.tokens.get("ada", "other", "tool_pins") == "{}"
+    assert connections.tokens.get("ada", "notes", "tokens") is not None
+
+
+@pytest.mark.anyio
+async def test_a_follow_up_after_a_failed_run_has_every_tool_call_answered(
+    tmp_path: Path, mcp_server: RunningServer
+) -> None:
+    connections = await flaky_connections(tmp_path, mcp_server, failures=1)
+    servers = [server_record(mcp_server)]
+    async with open_checkpointer(connections.tokens.path, connections.tokens.fernet) as saver:
+        failing = script(calls(("notes__write_note", {"text": "hi"})), answer("never"))
+        with pytest.raises(McpServerFailed):
+            await run(connections, servers, failing, request="save hi", checkpointer=saver)
+        model = script(answer("ok"))
+        await run(connections, servers, model, request="try again", checkpointer=saver)
+    sent = model.seen[0]
+    asked = [call["id"] for m in sent if isinstance(m, AIMessage) for call in m.tool_calls]
+    answered = [m.tool_call_id for m in sent if isinstance(m, ToolMessage)]
+    assert asked == answered == ["call-0"]
+    assert sent[-1].content == "try again"
+
+
+@pytest.mark.anyio
+async def test_the_step_limit_message_is_not_kept_in_the_conversation(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
+) -> None:
+    servers = [server_record(mcp_server)]
+    stopped = await run(
+        connections,
+        servers,
+        script(calls(("notes__read_note", {})), calls(("notes__read_note", {}))),
+        step_limit=2,
+        request="keep reading",
+        checkpointer=saver,
+    )
+    model = script(answer("ok"))
+    await run(connections, servers, model, request="stop now", checkpointer=saver)
+    assert stopped.step_limit_hit is True
+    assert not any("Model call limits exceeded" in str(m.content) for m in model.seen[0])
+    assert model.seen[0][-1].content == "stop now"

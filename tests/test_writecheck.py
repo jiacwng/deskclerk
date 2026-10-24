@@ -6,9 +6,11 @@ from typing import Any
 
 import pytest
 from cryptography.fernet import Fernet
+from langgraph.checkpoint.memory import InMemorySaver
 
 from deskclerk.agent import ProposedCall, run_agent
 from deskclerk.connections import ToolInfo
+from deskclerk.conversations import open_checkpointer, saved_messages
 from deskclerk.screen import pass_through
 from deskclerk.writecheck import write_check
 from mcp_server import running_mcp_server
@@ -135,6 +137,9 @@ async def test_a_delete_of_an_unseen_id_never_reaches_the_server(tmp_path: Path)
             [server],
             connections,
             connections.tokens,
+            InMemorySaver(),
+            "ada/test",
+            [],
             model,
             write_check(),
             pass_through,
@@ -144,3 +149,37 @@ async def test_a_delete_of_an_unseen_id_never_reaches_the_server(tmp_path: Path)
     assert running.deleted == []
     assert result.executed == ()
     assert "grounding check" in result.blocked[0].reason
+
+
+@pytest.mark.anyio
+async def test_a_delete_may_name_an_id_the_employee_gave_in_an_earlier_turn(tmp_path: Path) -> None:
+    connections = make_connections(tmp_path / "tokens.sqlite", Fernet.generate_key().decode())
+    with running_mcp_server(REDIRECT, delete_tool=True) as running:
+        server = server_record(running)
+        await connect(connections, "ada", server)
+        async with open_checkpointer(connections.tokens.path, connections.tokens.fernet) as saver:
+            for request, model in (
+                ("note n-7 is the old one", script(answer("Noted."))),
+                (
+                    "delete it",
+                    script(calls(("notes__delete_note", {"note_id": "n-7"})), answer("deleted")),
+                ),
+            ):
+                result = await run_agent(
+                    "ada",
+                    request,
+                    "system",
+                    [server],
+                    connections,
+                    connections.tokens,
+                    saver,
+                    "ada/test",
+                    await saved_messages(saver, "ada/test"),
+                    model,
+                    write_check(),
+                    pass_through,
+                    5,
+                    lambda usage: None,
+                )
+    assert running.deleted == ["n-7"]
+    assert result.blocked == ()

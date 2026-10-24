@@ -8,17 +8,20 @@ import hashlib
 import hmac
 import re
 import time
-from contextlib import nullcontext
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import resources
 from typing import Any
+from uuid import UUID, uuid4
 
 import anthropic
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from langchain_core.language_models import BaseChatModel
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -44,6 +47,7 @@ from deskclerk.connections import (
     WrongUser,
     first_leaf,
 )
+from deskclerk.conversations import open_checkpointer, saved_messages, thread_id
 from deskclerk.instructions import system_prompt
 from deskclerk.jev import Jev
 from deskclerk.providers import BudgetExceeded, price_of
@@ -90,6 +94,7 @@ class AskBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     request: str = Field(min_length=1, max_length=MAX_REQUEST_CHARS)
+    conversation: UUID | None = None
 
 
 class ServerOut(BaseModel):
@@ -118,6 +123,7 @@ class BlockedOut(BaseModel):
 
 
 class AskOut(BaseModel):
+    conversation: UUID
     answer: str
     executed: list[ExecutedOut]
     blocked: list[BlockedOut]
@@ -205,7 +211,15 @@ def create_app(
         "Referrer-Policy": "no-referrer",
     }
 
-    app = FastAPI(title="deskclerk", docs_url=None, redoc_url=None, openapi_url=None)
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        async with open_checkpointer(tokens.path, tokens.fernet) as checkpointer:
+            app.state.checkpointer = checkpointer
+            yield
+
+    app = FastAPI(
+        title="deskclerk", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan
+    )
 
     async def caller(request: Request) -> Caller:
         header = request.headers.get("authorization")
@@ -384,11 +398,22 @@ def create_app(
         identity = who.identity
         started = time.monotonic()
         if not quota.allows(identity.user_id):
-            audit.asked(identity, body.request, started, "rate_limited", None, 0.0)
+            audit.asked(
+                identity, body.conversation, body.request, started, "rate_limited", None, 0.0
+            )
             raise HTTPException(
                 429, f"at most {settings.requests_per_minute} asks a minute", {"Retry-After": "60"}
             )
+        checkpointer: AsyncSqliteSaver = app.state.checkpointer
+        conversation = body.conversation or uuid4()
+        thread = thread_id(identity.user_id, conversation)
         async with ask_locks.setdefault(identity.user_id, asyncio.Lock()):
+            history = await saved_messages(checkpointer, thread)
+            if body.conversation is not None and not history:
+                audit.asked(
+                    identity, conversation, body.request, started, "unknown_conversation", None, 0.0
+                )
+                raise HTTPException(404, "no such conversation")
             month = month_of(datetime.now(UTC))
             if (identity.user_id, month) not in spendings:
                 spendings[identity.user_id, month] = Spending(
@@ -398,7 +423,7 @@ def create_app(
             try:
                 spending.check()
             except BudgetExceeded as error:
-                audit.asked(identity, body.request, started, "over_budget", None, 0.0)
+                audit.asked(identity, conversation, body.request, started, "over_budget", None, 0.0)
                 raise HTTPException(402, str(error)) from None
             spent_before = spending.cost_usd
             try:
@@ -410,6 +435,9 @@ def create_app(
                         servers,
                         connections,
                         tokens,
+                        checkpointer,
+                        thread,
+                        history,
                         model,
                         gate,
                         jev_screen(jev, spending.record_jev),
@@ -422,18 +450,21 @@ def create_app(
                         trace.finish(result.withheld)
             except ask_failures as error:
                 cost = spending.cost_usd - spent_before
-                raise upstream_failure(identity, body.request, started, cost, error) from None
+                raise upstream_failure(
+                    identity, conversation, body.request, started, cost, error
+                ) from None
             except BaseExceptionGroup as group:
                 failed = group.subgroup(ask_failures)
                 if failed is None:
                     raise
                 cost = spending.cost_usd - spent_before
                 raise upstream_failure(
-                    identity, body.request, started, cost, first_leaf(failed)
+                    identity, conversation, body.request, started, cost, first_leaf(failed)
                 ) from None
         cost = spending.cost_usd - spent_before
-        audit.asked(identity, body.request, started, "answered", result, cost)
+        audit.asked(identity, conversation, body.request, started, "answered", result, cost)
         return AskOut(
+            conversation=conversation,
             answer=result.answer,
             executed=[ExecutedOut(**vars(call)) for call in result.executed],
             blocked=[BlockedOut(**vars(call)) for call in result.blocked],
@@ -446,10 +477,15 @@ def create_app(
         )
 
     def upstream_failure(
-        identity: Identity, request: str, started: float, cost: float, error: BaseException
+        identity: Identity,
+        conversation: UUID | None,
+        request: str,
+        started: float,
+        cost: float,
+        error: BaseException,
     ) -> HTTPException:
         detail = _upstream_detail(error)
-        audit.asked(identity, request, started, "upstream_error", None, cost, detail)
+        audit.asked(identity, conversation, request, started, "upstream_error", None, cost, detail)
         return HTTPException(502, detail)
 
     return app

@@ -31,10 +31,10 @@ class _StoredTokens(BaseModel):
 class TokenStore:
     def __init__(self, path: Path, key: str) -> None:
         try:
-            self._fernet = Fernet(key)
+            self.fernet = Fernet(key)
         except ValueError:
             raise TokenKeyError("the token key is not a Fernet key") from None
-        self._path = path
+        self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
         with self._database() as database:
             database.execute(
@@ -47,14 +47,14 @@ class TokenStore:
             if row is None:
                 database.execute(
                     "INSERT INTO key_check (value) VALUES (?)",
-                    (self._fernet.encrypt(KEY_CHECK_TEXT),),
+                    (self.fernet.encrypt(KEY_CHECK_TEXT),),
                 )
             else:
                 self._decrypt(row[0])
 
     @contextmanager
     def _database(self) -> Iterator[sqlite3.Connection]:
-        database = sqlite3.connect(self._path)
+        database = sqlite3.connect(self.path)
         try:
             with database:
                 yield database
@@ -63,7 +63,7 @@ class TokenStore:
 
     def _decrypt(self, value: bytes) -> str:
         try:
-            return self._fernet.decrypt(value).decode()
+            return self.fernet.decrypt(value).decode()
         except InvalidToken:
             raise TokenKeyError("the token file was not encrypted with this token key") from None
 
@@ -82,7 +82,7 @@ class TokenStore:
             database.execute(
                 "INSERT OR REPLACE INTO secrets (user_id, server_name, kind, value) "
                 "VALUES (?, ?, ?, ?)",
-                (user_id, server_name, kind, self._fernet.encrypt(text.encode())),
+                (user_id, server_name, kind, self.fernet.encrypt(text.encode())),
             )
 
     def delete_connection(self, user_id: str, server_name: str) -> None:

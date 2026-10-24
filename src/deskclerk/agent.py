@@ -1,8 +1,9 @@
-# One employee's request answered by a LangChain agent whose model calls the tools of the MCP
-# servers the employee has connected. Tools that are not read-only pass a gate first; a refused call
-# never runs. Every result a tool returns passes the screen before the model reads it, a tool whose
-# definition changed since the employee first used its server is not offered at all, and only
-# read-only tools are retried after a transport error.
+# One employee's request, in a conversation that remembers the earlier ones, answered by a
+# LangChain agent whose model calls the tools of the MCP servers the employee has connected. Tools
+# that are not read-only pass a gate first; a refused call never runs. Every result a tool returns
+# passes the screen before the model reads it, a tool whose definition changed since the employee
+# first used its server is not offered at all, and only read-only tools are retried after a
+# transport error.
 
 import asyncio
 from collections.abc import Awaitable, Callable, Iterator
@@ -21,9 +22,11 @@ from langchain.agents.middleware import (
     ToolRetryMiddleware,
 )
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, RemoveMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, StructuredTool
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.runtime import Runtime
 from langgraph.types import Command
 
 from deskclerk.connections import (
@@ -33,6 +36,7 @@ from deskclerk.connections import (
     ToolInfo,
     first_leaf,
 )
+from deskclerk.conversations import close_unanswered_calls, earlier_texts
 from deskclerk.pinning import pin_tools
 from deskclerk.providers import Usage, usage_from
 from deskclerk.screen import UNCHECKED, WITHHELD, Screen
@@ -139,6 +143,7 @@ class _Guard(AgentMiddleware[AgentState[Any], None, Any]):
     def __init__(
         self,
         request: str,
+        earlier: tuple[str, ...],
         tools: dict[str, _Tool],
         gate: Gate,
         screen: Screen,
@@ -147,6 +152,7 @@ class _Guard(AgentMiddleware[AgentState[Any], None, Any]):
     ) -> None:
         super().__init__()
         self.request = request
+        self.earlier = earlier
         self.offered = tools
         self.gate = gate
         self.screen = screen
@@ -174,6 +180,15 @@ class _Guard(AgentMiddleware[AgentState[Any], None, Any]):
         self.last_response = message
         return response
 
+    async def aafter_agent(
+        self, state: AgentState[Any], runtime: Runtime[Any]
+    ) -> dict[str, Any] | None:
+        last = state["messages"][-1]
+        spoken = self.last_response
+        if isinstance(last, AIMessage) and (spoken is None or last.id != spoken.id):
+            return {"messages": [RemoveMessage(id=last.id or "")]}
+        return None
+
     async def awrap_tool_call(
         self,
         request: ToolCallRequest,
@@ -194,7 +209,7 @@ class _Guard(AgentMiddleware[AgentState[Any], None, Any]):
                     server_name,
                     tool.info,
                     arguments,
-                    tuple(done.result for done in self.executed),
+                    self.earlier + tuple(done.result for done in self.executed),
                 )
                 verdict = await self.gate(proposed)
                 if not verdict.allowed:
@@ -236,6 +251,9 @@ async def run_agent(
     servers: list[McpServer],
     connections: OAuthConnections,
     tokens: TokenStore,
+    checkpointer: BaseCheckpointSaver[Any],
+    thread: str,
+    history: list[BaseMessage],
     model: BaseChatModel,
     gate: Gate,
     screen: Screen,
@@ -265,7 +283,8 @@ async def run_agent(
         for info in pinned.kept:
             tools[f"{server.name}__{info.name}"] = _Tool(server, info)
 
-    guard = _Guard(request, tools, gate, screen, tool_span, record_usage)
+    earlier = earlier_texts(history)
+    guard = _Guard(request, earlier, tools, gate, screen, tool_span, record_usage)
     read_only_names: list[BaseTool | str] = [
         name for name, tool in tools.items() if tool.info.read_only
     ]
@@ -279,8 +298,15 @@ async def run_agent(
         [_langchain_tool(name, tool, user_id, connections) for name, tool in tools.items()],
         system_prompt=system,
         middleware=middleware,
+        checkpointer=checkpointer,
     )
-    await agent.ainvoke({"messages": [HumanMessage(request)]}, config=trace_config)
+    config: RunnableConfig = {
+        **(trace_config or {}),
+        "configurable": {"thread_id": thread},
+    }
+    await agent.ainvoke(
+        {"messages": [*close_unanswered_calls(history), HumanMessage(request)]}, config=config
+    )
 
     last = guard.last_response
     return AgentResult(
