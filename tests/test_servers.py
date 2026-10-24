@@ -43,6 +43,21 @@ url = "http://127.0.0.1:9000/mcp"
     ]
 
 
+@pytest.mark.parametrize("name", ["google drive", "jira.cloud", "a__b", ""])
+def test_a_server_name_the_model_cannot_take_is_refused(tmp_path: Path, name: str) -> None:
+    path = write(tmp_path, f'[[server]]\nname = "{name}"\nurl = "https://a.test/mcp"\n')
+    with pytest.raises(ServersError, match="must use only letters"):
+        load_servers(path, {})
+
+
+@pytest.mark.parametrize("name", ["linear", "google-drive", "jira_cloud"])
+def test_a_server_name_with_letters_hyphens_and_single_underscores_is_read(
+    tmp_path: Path, name: str
+) -> None:
+    path = write(tmp_path, f'[[server]]\nname = "{name}"\nurl = "https://a.test/mcp"\n')
+    assert load_servers(path, {})[0].name == name
+
+
 def test_a_repeated_name_is_refused(tmp_path: Path) -> None:
     path = write(
         tmp_path,
