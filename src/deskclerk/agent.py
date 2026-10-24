@@ -47,6 +47,7 @@ from deskclerk.connections import (
     first_leaf,
 )
 from deskclerk.conversations import close_unanswered_calls, earlier_texts
+from deskclerk.instructions import unavailable_note
 from deskclerk.pinning import pin_tools
 from deskclerk.providers import Usage, usage_from
 from deskclerk.screen import UNCHECKED, WITHHELD, Screen
@@ -95,6 +96,7 @@ class AgentResult:
     executed: tuple[ExecutedCall, ...]
     blocked: tuple[BlockedCall, ...]
     not_connected: tuple[str, ...]
+    unavailable: tuple[str, ...]
     usage: tuple[Usage, ...]
     step_limit_hit: bool
     cut_off: bool
@@ -147,6 +149,26 @@ def _is_upstream_error(error: BaseException) -> bool:
 class _Tool:
     server: McpServer
     info: ToolInfo
+
+
+@dataclass(frozen=True)
+class _Listing:
+    server: McpServer
+    tools: list[ToolInfo]
+    connected: bool
+    failure: McpServerFailed | None
+
+
+async def _list_tools(user_id: str, server: McpServer, connections: OAuthConnections) -> _Listing:
+    try:
+        return _Listing(server, await connections.tools(user_id, server), True, None)
+    except NotConnected:
+        return _Listing(server, [], False, None)
+    except (*UPSTREAM_ERRORS, BaseExceptionGroup) as error:
+        failure = _server_failure(server.name, error)
+        if failure is None:
+            raise
+        return _Listing(server, [], True, failure)
 
 
 class _Guard(AgentMiddleware[AgentState[Any], None, Any]):
@@ -308,24 +330,31 @@ async def run_agent(
 ) -> AgentResult:
     tools: dict[str, _Tool] = {}
     not_connected: list[str] = []
+    unavailable: list[McpServerFailed] = []
     changed_tools: list[str] = []
-    for server in servers:
-        try:
-            listed = await connections.tools(user_id, server)
-        except NotConnected:
+    listings = await asyncio.gather(
+        *(_list_tools(user_id, server, connections) for server in servers)
+    )
+    for listing in listings:
+        server = listing.server
+        if not listing.connected:
             not_connected.append(server.name)
             continue
-        except (*UPSTREAM_ERRORS, BaseExceptionGroup) as error:
-            failure = _server_failure(server.name, error)
-            if failure is None:
-                raise
-            raise failure from None
+        if listing.failure is not None:
+            unavailable.append(listing.failure)
+            continue
+        listed = listing.tools
         if server.tools is not None:
             listed = [info for info in listed if info.name in server.tools]
         pinned = pin_tools(tokens, user_id, server.name, listed)
         changed_tools += [f"{server.name}__{name}" for name in pinned.changed]
         for info in pinned.kept:
             tools[f"{server.name}__{info.name}"] = _Tool(server, info)
+    listed_any = len(listings) > len(not_connected) + len(unavailable)
+    if unavailable and not listed_any:
+        names = ", ".join(failure.server_name for failure in unavailable)
+        raise McpServerFailed(names, unavailable[0].cause)
+    unavailable_names = tuple(failure.server_name for failure in unavailable)
 
     earlier = earlier_texts(history)
     guard = _Guard(
@@ -351,7 +380,7 @@ async def run_agent(
     agent = create_agent(
         model,
         [_langchain_tool(name, tool, user_id, connections) for name, tool in tools.items()],
-        system_prompt=system,
+        system_prompt=system + unavailable_note(unavailable_names),
         middleware=middleware,
         checkpointer=checkpointer,
     )
@@ -369,6 +398,7 @@ async def run_agent(
         tuple(guard.executed),
         tuple(guard.blocked),
         tuple(not_connected),
+        unavailable_names,
         tuple(guard.usage),
         last is None or bool(last.tool_calls),
         last is not None

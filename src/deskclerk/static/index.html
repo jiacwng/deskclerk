@@ -135,6 +135,9 @@ function showCalls(result) {
   for (const name of result.not_connected) {
     calls.append(line(name + " is not connected, so its tools were not offered"));
   }
+  for (const name of result.unavailable) {
+    calls.append(line(name + " did not answer, so its tools were not offered"));
+  }
   for (const name of result.changed_tools) {
     calls.append(line(name + " was changed since you first used its server, so it was not offered. Disconnect and connect the server to accept the change"));
   }
