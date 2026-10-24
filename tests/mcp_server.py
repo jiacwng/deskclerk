@@ -3,11 +3,13 @@
 # that fails, plus a delete tool, a tool that pauses and a tool with a long result on request.
 # With oauth=False it has no sign-in at all. With issuer_in_response it advertises and sends the
 # RFC 9207 iss parameter on the redirect. A test can change the read tool's description or add a
-# tool while the server runs.
+# tool while the server runs. With required_header=(name, value) it answers 401 to a request
+# without that header. With tls it serves https and demands a client certificate.
 
 import asyncio
 import secrets
 import socket
+import ssl
 import threading
 import time
 from collections.abc import Iterator
@@ -34,6 +36,9 @@ from pydantic import AnyHttpUrl
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
+from starlette.types import ASGIApp, Receive, Scope, Send
+
+from tls_files import TlsFiles
 
 PRESET_CLIENT_ID = "admin-registered"
 PRESET_CLIENT_SECRET = "admin-secret"  # noqa: S105
@@ -136,6 +141,19 @@ class ApprovingProvider:
         self.refresh_tokens.pop(token.token, None)
 
 
+class RequireHeader:
+    def __init__(self, app: ASGIApp, name: str, value: str) -> None:
+        self.app = app
+        self.name = name.lower().encode()
+        self.value = value.encode()
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and (self.name, self.value) not in scope["headers"]:
+            await Response(status_code=401)(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
 READ_ONLY = ToolAnnotations(read_only_hint=True)
 
 
@@ -172,10 +190,13 @@ def running_mcp_server(
     issuer_in_response: bool = False,
     image_tool: bool = False,
     heavy_tools: bool = False,
+    required_header: tuple[str, str] | None = None,
+    tls: TlsFiles | None = None,
 ) -> Iterator[RunningServer]:
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
-    base = f"http://127.0.0.1:{sock.getsockname()[1]}"
+    scheme = "http" if tls is None else "https"
+    base = f"{scheme}://127.0.0.1:{sock.getsockname()[1]}"
     provider = ApprovingProvider(redirect_url, base if issuer_in_response else None)
 
     if oauth:
@@ -245,7 +266,19 @@ def running_mcp_server(
 
         app.routes.insert(0, Route("/.well-known/oauth-authorization-server", serve_metadata))
 
-    server = uvicorn.Server(uvicorn.Config(app, log_level="warning"))
+    if required_header is not None:
+        app.add_middleware(RequireHeader, name=required_header[0], value=required_header[1])
+    config = uvicorn.Config(app, log_level="warning")
+    if tls is not None:
+        config = uvicorn.Config(
+            app,
+            log_level="warning",
+            ssl_certfile=str(tls.server_cert),
+            ssl_keyfile=str(tls.server_key),
+            ssl_ca_certs=str(tls.ca),
+            ssl_cert_reqs=ssl.CERT_REQUIRED,
+        )
+    server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]})
     thread.start()
     while not server.started:

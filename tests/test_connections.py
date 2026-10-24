@@ -13,6 +13,7 @@ from mcp.client.auth import OAuthFlowError
 from mcp.shared.auth import OAuthToken
 
 from deskclerk.connections import (
+    UPSTREAM_ERRORS,
     AlreadyConnected,
     FlowExpired,
     NoSignInNeeded,
@@ -20,10 +21,12 @@ from deskclerk.connections import (
     OAuthConnections,
     UnknownState,
     WrongUser,
+    first_leaf,
 )
 from deskclerk.servers import McpServer
 from deskclerk.tokens import TokenStore
 from mcp_server import PRESET_CLIENT_ID, PRESET_CLIENT_SECRET, RunningServer, running_mcp_server
+from tls_files import write_tls_files
 
 REDIRECT = "http://localhost:8000/oauth/callback"
 
@@ -302,3 +305,49 @@ async def test_content_that_is_not_text_is_named_as_left_out(token_path: Path, k
         server = McpServer("open", open_server.url, None, None, "none")
         result = await connections.call("ada", server, "show_chart", {})
     assert result.text == "sales are up\n[image/png content omitted]"
+
+
+@pytest.mark.anyio
+async def test_a_header_from_the_server_entry_reaches_the_server(
+    token_path: Path, key: str
+) -> None:
+    connections = make_connections(token_path, key)
+    with running_mcp_server(REDIRECT, oauth=False, required_header=("X-Api-Key", "k1")) as guarded:
+        with_header = McpServer(
+            "guarded", guarded.url, None, None, "none", None, (("X-Api-Key", "k1"),)
+        )
+        without_header = McpServer("guarded", guarded.url, None, None, "none")
+        tools = await connections.tools("ada", with_header)
+        result = await connections.call("ada", with_header, "read_note", {})
+        with pytest.raises(ExceptionGroup) as refused:
+            await connections.tools("ada", without_header)
+    assert isinstance(first_leaf(refused.value), UPSTREAM_ERRORS)
+    assert "read_note" in {tool.name for tool in tools}
+    assert result.text == "the note"
+
+
+@pytest.mark.anyio
+async def test_a_client_certificate_lets_a_call_through_mutual_tls(
+    token_path: Path, key: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = write_tls_files(tmp_path)
+    monkeypatch.setenv("SSL_CERT_FILE", str(files.ca))
+    connections = make_connections(token_path, key)
+    with running_mcp_server(REDIRECT, oauth=False, tls=files) as secured:
+        with_cert = McpServer(
+            "secured",
+            secured.url,
+            None,
+            None,
+            "none",
+            None,
+            (),
+            str(files.client_cert),
+            str(files.client_key),
+        )
+        without_cert = McpServer("secured", secured.url, None, None, "none")
+        result = await connections.call("ada", with_cert, "read_note", {})
+        with pytest.raises(ExceptionGroup) as refused:
+            await connections.tools("ada", without_cert)
+    assert isinstance(first_leaf(refused.value), UPSTREAM_ERRORS)
+    assert result.text == "the note"
