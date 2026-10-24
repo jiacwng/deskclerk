@@ -96,7 +96,7 @@ class ToolSelection(AgentMiddleware[AgentState[Any], None, Any]):
             for tool in request.tools
             if isinstance(tool, BaseTool)
         ]
-        batch = server_batch(texts[-1], entries)
+        batch = server_batch("\n\n".join(texts), entries)
         if len(batch.questions) < 2:
             _log.info("tool selection skipped, every tool offered: one server")
             return None
