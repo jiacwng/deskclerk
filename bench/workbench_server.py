@@ -1,17 +1,25 @@
-# Serves the WorkBench tools over MCP (streamable HTTP, no auth) and logs each executed call
-# in the string format WorkBench's grader replays.
+# Serves the WorkBench tools over MCP (streamable HTTP, no auth) as five servers, one per domain,
+# at /<server>/mcp on one port, and logs each executed call in the string format WorkBench's
+# grader replays. The five servers share WorkBench's state and one call log.
 import argparse
 import importlib
 import inspect
 import os
 import sys
+from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
+import uvicorn
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
+from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
+from starlette.routing import Mount, Route
+
+from workbench import SERVERS, server_of
 
 TOOL_ERRORS = (KeyError, ValueError, TypeError, IndexError, AttributeError)
 
@@ -42,7 +50,7 @@ def _make_handler(workbench_tool: Any, calls: list[str], to_call_string: Any) ->
     return handler
 
 
-def create_server(workbench_path: str) -> MCPServer:
+def create_app(workbench_path: str) -> Starlette:
     workbench_path = os.path.abspath(workbench_path)
     sys.path.insert(0, workbench_path)
     os.chdir(workbench_path)
@@ -52,31 +60,43 @@ def create_server(workbench_path: str) -> MCPServer:
 
     side_effect_names = {tool.name for tool in toolkits.tools_with_side_effects}
     calls: list[str] = []
-    server = MCPServer("workbench")
+    servers = {name: MCPServer(name) for name in SERVERS}
 
     for workbench_tool in toolkits.all_tools:
         handler = _make_handler(
             workbench_tool, calls, actions.convert_intermediate_step_to_function_call
         )
-        server.add_tool(
+        servers[server_of(workbench_tool.name)].add_tool(
             handler,
-            name=workbench_tool.name.replace(".", "__"),
+            name=workbench_tool.name.split(".", 1)[1],
             description=workbench_tool.description,
             annotations=_annotations(workbench_tool, side_effect_names),
             structured_output=False,
         )
 
-    @server.custom_route("/bench/reset", methods=["POST"])
     async def reset(request: Request) -> Response:
         state.reset_state()
         calls.clear()
         return JSONResponse({"calls": 0})
 
-    @server.custom_route("/bench/calls", methods=["GET"])
     async def get_calls(request: Request) -> Response:
         return JSONResponse(calls)
 
-    return server
+    apps = {name: server.streamable_http_app() for name, server in servers.items()}
+
+    @asynccontextmanager
+    async def lifespan(parent: Starlette) -> AsyncIterator[None]:
+        async with AsyncExitStack() as stack:
+            for app in apps.values():
+                await stack.enter_async_context(app.router.lifespan_context(app))
+            yield
+
+    routes = [
+        Route("/bench/reset", reset, methods=["POST"]),
+        Route("/bench/calls", get_calls, methods=["GET"]),
+        *(Mount(f"/{name}", app=app) for name, app in apps.items()),
+    ]
+    return Starlette(routes=routes, lifespan=lifespan)
 
 
 def main() -> None:
@@ -84,8 +104,7 @@ def main() -> None:
     parser.add_argument("--workbench", required=True, help="path to the WorkBench checkout")
     parser.add_argument("--port", type=int, required=True)
     arguments = parser.parse_args()
-    server = create_server(arguments.workbench)
-    server.run("streamable-http", host="127.0.0.1", port=arguments.port)
+    uvicorn.run(create_app(arguments.workbench), host="127.0.0.1", port=arguments.port)
 
 
 if __name__ == "__main__":

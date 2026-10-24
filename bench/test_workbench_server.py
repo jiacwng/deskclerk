@@ -1,4 +1,4 @@
-# Runs the WorkBench MCP server on a free port and checks tools, annotations, call log and grading.
+# Runs the WorkBench MCP servers on a free port and checks tools, annotations, call log and grading.
 import ast
 import asyncio
 import csv
@@ -15,6 +15,8 @@ from typing import Any
 
 import pytest
 from mcp import Client
+
+from workbench import SERVERS, server_of
 
 SERVER = Path(__file__).parent / "workbench_server.py"
 WORKBENCH = Path(os.environ["WORKBENCH_PATH"]).resolve()
@@ -38,7 +40,7 @@ def url() -> Iterator[str]:
     else:
         process.terminate()
         pytest.fail("server did not start")
-    yield f"http://127.0.0.1:{port}/mcp"
+    yield f"http://127.0.0.1:{port}"
     process.terminate()
     process.wait(timeout=10)
 
@@ -66,43 +68,59 @@ def single_call_task() -> tuple[str, list[str]]:
 
 
 def call(url: str, name: str, arguments: dict[str, str] | None = None) -> tuple[bool, str]:
+    server, tool = name.split("__", 1)
+
     async def run() -> tuple[bool, str]:
-        async with Client(url) as client:
-            result = await client.call_tool(name, arguments or {})
+        async with Client(f"{url}/{server}/mcp") as client:
+            result = await client.call_tool(tool, arguments or {})
             return result.is_error, result.content[0].text  # type: ignore[union-attr]
 
     return asyncio.run(run())
 
 
 def reset(url: str) -> None:
-    request = urllib.request.Request(url.removesuffix("/mcp") + "/bench/reset", method="POST")  # noqa: S310
+    request = urllib.request.Request(url + "/bench/reset", method="POST")  # noqa: S310
     urllib.request.urlopen(request).close()  # noqa: S310
 
 
 def bench_calls(url: str) -> list[str]:
-    with urllib.request.urlopen(url.removesuffix("/mcp") + "/bench/calls") as response:  # noqa: S310
+    with urllib.request.urlopen(url + "/bench/calls") as response:  # noqa: S310
         return json.load(response)  # type: ignore[no-any-return]
 
 
 def list_tools(url: str) -> dict[str, Any]:
     async def run() -> dict[str, Any]:
-        async with Client(url) as client:
-            return {tool.name: tool for tool in (await client.list_tools()).tools}
+        tools: dict[str, Any] = {}
+        for server in SERVERS:
+            async with Client(f"{url}/{server}/mcp") as client:
+                for tool in (await client.list_tools()).tools:
+                    tools[f"{server}__{tool.name}"] = tool
+        return tools
 
     return asyncio.run(run())
 
 
-def test_lists_workbench_and_bench_tools(url: str, workbench: Any) -> None:
+def test_each_domain_is_a_server_and_together_they_list_every_workbench_tool(
+    url: str, workbench: Any
+) -> None:
     names = set(list_tools(url))
-    expected = {tool.name.replace(".", "__") for tool in workbench.toolkits.all_tools}
+    expected = {
+        f"{server_of(tool.name)}__{tool.name.split('.', 1)[1]}"
+        for tool in workbench.toolkits.all_tools
+    }
     assert len(expected) == 27
     assert names == expected
+    assert "email__find_email_address" in names
+    assert {name.split("__")[0] for name in names} == set(SERVERS)
 
 
 def test_writers_are_workbench_side_effect_tools(url: str, workbench: Any) -> None:
     tools = list_tools(url)
     writers = {n for n, tool in tools.items() if tool.annotations.read_only_hint is False}
-    expected = {t.name.replace(".", "__") for t in workbench.toolkits.tools_with_side_effects}
+    expected = {
+        f"{server_of(t.name)}__{t.name.split('.', 1)[1]}"
+        for t in workbench.toolkits.tools_with_side_effects
+    }
     assert len(writers) == 14
     assert writers == expected
 
@@ -163,4 +181,17 @@ def test_failing_tool_returns_error_and_server_survives(url: str) -> None:
     is_error, text = call(url, "calendar__search_events", {"time_min": "not a date"})
     assert is_error
     assert "Unknown datetime string format" in text
+    assert bench_calls(url) == []
+
+
+def test_calls_on_different_servers_land_in_one_log_and_one_reset_clears_it(url: str) -> None:
+    reset(url)
+    call(url, "email__find_email_address", {"name": "Sam"})
+    call(url, "calendar__search_events", {"query": "x"})
+    logged = bench_calls(url)
+    assert [entry.split(".func")[0] for entry in logged] == [
+        "company_directory.find_email_address",
+        "calendar.search_events",
+    ]
+    reset(url)
     assert bench_calls(url) == []

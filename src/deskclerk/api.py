@@ -52,6 +52,7 @@ from deskclerk.instructions import system_prompt
 from deskclerk.jev import Jev
 from deskclerk.providers import BudgetExceeded, price_of
 from deskclerk.quota import Quota
+from deskclerk.scope import jev_tool_selection
 from deskclerk.screen import jev_screen
 from deskclerk.servers import McpServer
 from deskclerk.spending import Spending, SpendingStore, month_of
@@ -445,6 +446,7 @@ def create_app(
                         spending.record,
                         trace.config if trace else None,
                         trace.tool_span if trace else no_tool_span,
+                        jev_tool_selection(jev, settings.tool_selection, spending.record_jev),
                     )
                     if trace:
                         trace.finish(result.withheld)
