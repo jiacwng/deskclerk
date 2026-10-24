@@ -3,6 +3,7 @@
 
 import json
 import os
+import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -10,9 +11,17 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1"}
+ENV_REFERENCE = re.compile(r"\$\{env:([^}]+)\}")
 
 
 class ServersError(Exception):
@@ -27,17 +36,24 @@ class McpServer:
     client_secret: str | None
     auth: Literal["oauth", "none"] = "oauth"
     tools: tuple[str, ...] | None = None
+    headers: tuple[tuple[str, str], ...] = ()
+    client_cert: str | None = None
+    client_key: str | None = None
 
 
 class _ServerEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
+    plain_http: bool = False
     url: str
     client_id: str | None = None
     client_secret_env: str | None = None
     auth: Literal["oauth", "none"] = "oauth"
     tools: list[str] | None = None
+    headers: dict[str, str] = {}
+    client_cert: str | None = None
+    client_key: str | None = None
 
     @field_validator("name")
     @classmethod
@@ -60,13 +76,31 @@ class _ServerEntry(BaseModel):
 
     @field_validator("url")
     @classmethod
-    def _url_is_https_or_local(cls, value: str) -> str:
+    def _url_is_https_or_allowed_http(cls, value: str, info: ValidationInfo) -> str:
         parsed = urlparse(value)
         if parsed.scheme == "https" and parsed.hostname:
             return value
-        if parsed.scheme == "http" and parsed.hostname in LOCAL_HOSTS:
-            return value
-        raise ValueError(f"{value!r} must be https, or http on localhost or 127.0.0.1")
+        if parsed.scheme == "http" and parsed.hostname:
+            if info.data.get("plain_http") or parsed.hostname in LOCAL_HOSTS:
+                return value
+        raise ValueError(
+            f"{value!r} must be https, or http on localhost or 127.0.0.1 "
+            "(set plain_http = true to allow http for this server)"
+        )
+
+    @model_validator(mode="after")
+    def _certificate_and_key_come_together(self) -> "_ServerEntry":
+        if (self.client_cert is None) != (self.client_key is None):
+            raise ValueError(f"server {self.name!r} needs client_cert and client_key together")
+        return self
+
+    @model_validator(mode="after")
+    def _oauth_owns_the_authorization_header(self) -> "_ServerEntry":
+        if self.auth == "oauth" and any(name.lower() == "authorization" for name in self.headers):
+            raise ValueError(
+                f'server {self.name!r} sets an Authorization header with auth = "oauth"'
+            )
+        return self
 
     @model_validator(mode="after")
     def _secret_needs_client_id(self) -> "_ServerEntry":
@@ -158,5 +192,45 @@ def load_servers(path: Path, environ: Mapping[str, str] = os.environ) -> list[Mc
                     f"variable {entry.client_secret_env}, which is not set"
                 )
         tools = None if entry.tools is None else tuple(entry.tools)
-        servers.append(McpServer(entry.name, entry.url, entry.client_id, secret, entry.auth, tools))
+        headers = tuple(
+            (name, _fill_environment(entry.name, name, value, environ))
+            for name, value in entry.headers.items()
+        )
+        for file in (entry.client_cert, entry.client_key):
+            if file is not None:
+                _check_readable(entry.name, file)
+        servers.append(
+            McpServer(
+                entry.name,
+                entry.url,
+                entry.client_id,
+                secret,
+                entry.auth,
+                tools,
+                headers,
+                entry.client_cert,
+                entry.client_key,
+            )
+        )
     return servers
+
+
+def _fill_environment(server: str, header: str, value: str, environ: Mapping[str, str]) -> str:
+    def replace(match: re.Match[str]) -> str:
+        variable = match.group(1)
+        if variable not in environ:
+            raise ServersError(
+                f"server {server!r} header {header!r} reads the environment variable "
+                f"{variable}, which is not set"
+            )
+        return environ[variable]
+
+    return ENV_REFERENCE.sub(replace, value)
+
+
+def _check_readable(server: str, file: str) -> None:
+    try:
+        with open(file, "rb"):
+            pass
+    except OSError as error:
+        raise ServersError(f"server {server!r} cannot read {file}: {error.strerror}") from None

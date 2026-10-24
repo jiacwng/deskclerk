@@ -3,6 +3,7 @@
 # complete takes the code the server sent the browser back with.
 
 import asyncio
+import ssl
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -119,7 +120,7 @@ class OAuthConnections:
     async def _client(
         self, provider: OAuthClientProvider | None, server: McpServer
     ) -> AsyncIterator[Client]:
-        async with httpx2.AsyncClient(auth=provider, timeout=HTTP_TIMEOUT) as http:
+        async with _http_client(provider, server) as http:
             transport = streamable_http_client(server.url, http_client=http)
             async with Client(transport) as client:
                 yield client
@@ -234,6 +235,16 @@ class OAuthConnections:
         async with self._connected_client(user_id, server) as client:
             result = await client.call_tool(tool_name, arguments)
         return ToolResult(_result_text(result.content), result.is_error)
+
+
+def _http_client(provider: OAuthClientProvider | None, server: McpServer) -> httpx2.AsyncClient:
+    verify: ssl.SSLContext | bool = True
+    if server.client_cert is not None and server.client_key is not None:
+        verify = httpx2.create_ssl_context()
+        verify.load_cert_chain(server.client_cert, server.client_key)
+    return httpx2.AsyncClient(
+        auth=provider, timeout=HTTP_TIMEOUT, headers=dict(server.headers), verify=verify
+    )
 
 
 def _result_text(content: list[ContentBlock]) -> str:

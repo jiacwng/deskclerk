@@ -170,3 +170,106 @@ def test_an_invalid_mcp_json_entry_gives_the_same_error_as_toml(tmp_path: Path) 
 def test_invalid_mcp_json_is_refused(tmp_path: Path) -> None:
     with pytest.raises(ServersError, match="not valid JSON"):
         load_servers(write_json(tmp_path, "{not json"), {})
+
+
+def test_headers_are_read_with_environment_values_filled_in(tmp_path: Path) -> None:
+    path = write(
+        tmp_path,
+        '[[server]]\nname = "a"\nurl = "https://a.test/mcp"\nauth = "none"\n'
+        '[server.headers]\nX-Api-Key = "${env:A_KEY}"\nX-Team = "ops-${env:A_TEAM}"\n',
+    )
+    servers = load_servers(path, {"A_KEY": "k1", "A_TEAM": "red"})
+    assert servers[0].headers == (("X-Api-Key", "k1"), ("X-Team", "ops-red"))
+
+
+def test_headers_in_mcp_json_match_toml(tmp_path: Path) -> None:
+    path = write_json(
+        tmp_path,
+        json.dumps(
+            {
+                "mcpServers": {
+                    "a": {
+                        "url": "https://a.test/mcp",
+                        "auth": "none",
+                        "headers": {"X-Api-Key": "${env:A_KEY}"},
+                    }
+                }
+            }
+        ),
+    )
+    assert load_servers(path, {"A_KEY": "k1"})[0].headers == (("X-Api-Key", "k1"),)
+
+
+def test_a_missing_header_variable_is_named(tmp_path: Path) -> None:
+    path = write(
+        tmp_path,
+        '[[server]]\nname = "a"\nurl = "https://a.test/mcp"\nauth = "none"\n'
+        '[server.headers]\nX-Api-Key = "${env:A_KEY}"\n',
+    )
+    with pytest.raises(ServersError, match="A_KEY"):
+        load_servers(path, {})
+
+
+@pytest.mark.parametrize("name", ["Authorization", "authorization"])
+def test_an_authorization_header_is_refused_with_oauth(tmp_path: Path, name: str) -> None:
+    path = write(
+        tmp_path,
+        f'[[server]]\nname = "a"\nurl = "https://a.test/mcp"\n[server.headers]\n{name} = "x"\n',
+    )
+    with pytest.raises(ServersError, match="Authorization"):
+        load_servers(path, {})
+
+
+def test_an_authorization_header_is_allowed_without_oauth(tmp_path: Path) -> None:
+    path = write(
+        tmp_path,
+        '[[server]]\nname = "a"\nurl = "https://a.test/mcp"\nauth = "none"\n'
+        '[server.headers]\nAuthorization = "Bearer x"\n',
+    )
+    assert load_servers(path, {})[0].headers == (("Authorization", "Bearer x"),)
+
+
+def test_plain_http_allows_http_on_a_remote_host(tmp_path: Path) -> None:
+    refused = write(tmp_path, '[[server]]\nname = "a"\nurl = "http://mesh.internal/mcp"\n')
+    with pytest.raises(ServersError, match="must be https"):
+        load_servers(refused, {})
+    allowed = write(
+        tmp_path, '[[server]]\nname = "a"\nurl = "http://mesh.internal/mcp"\nplain_http = true\n'
+    )
+    assert load_servers(allowed, {})[0].url == "http://mesh.internal/mcp"
+
+
+def test_a_certificate_without_a_key_is_refused(tmp_path: Path) -> None:
+    path = write(
+        tmp_path,
+        '[[server]]\nname = "a"\nurl = "https://a.test/mcp"\nclient_cert = "c.pem"\n',
+    )
+    with pytest.raises(ServersError, match="together"):
+        load_servers(path, {})
+
+
+def test_an_unreadable_certificate_is_named(tmp_path: Path) -> None:
+    key = tmp_path / "key.pem"
+    key.write_text("x")
+    path = write(
+        tmp_path,
+        '[[server]]\nname = "a"\nurl = "https://a.test/mcp"\n'
+        f'client_cert = "{(tmp_path / "missing.pem").as_posix()}"\n'
+        f'client_key = "{key.as_posix()}"\n',
+    )
+    with pytest.raises(ServersError, match="missing.pem"):
+        load_servers(path, {})
+
+
+def test_a_readable_certificate_pair_is_kept(tmp_path: Path) -> None:
+    cert = tmp_path / "c.pem"
+    key = tmp_path / "k.pem"
+    cert.write_text("x")
+    key.write_text("x")
+    path = write(
+        tmp_path,
+        '[[server]]\nname = "a"\nurl = "https://a.test/mcp"\n'
+        f'client_cert = "{cert.as_posix()}"\nclient_key = "{key.as_posix()}"\n',
+    )
+    server = load_servers(path, {})[0]
+    assert (server.client_cert, server.client_key) == (cert.as_posix(), key.as_posix())
