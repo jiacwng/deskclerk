@@ -1,6 +1,7 @@
-# The server list is read from TOML and refused when a name repeats, a remote URL is not https, a
-# secret has no client or its environment variable is missing.
+# The server list is read from TOML or mcpServers JSON and refused when a name repeats, a remote
+# URL is not https, a secret has no client or its environment variable is missing.
 
+import json
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,12 @@ from deskclerk.servers import McpServer, ServersError, load_servers
 
 def write(tmp_path: Path, text: str) -> Path:
     path = tmp_path / "servers.toml"
+    path.write_text(text)
+    return path
+
+
+def write_json(tmp_path: Path, text: str) -> Path:
+    path = tmp_path / "servers.json"
     path.write_text(text)
     return path
 
@@ -104,3 +111,62 @@ def test_a_repeated_tool_name_is_refused(tmp_path: Path) -> None:
     entry = '[[server]]\nname = "a"\nurl = "https://a.test/mcp"\ntools = ["x", "x"]\n'
     with pytest.raises(ServersError, match="tool name"):
         load_servers(write(tmp_path, entry), {})
+
+
+def test_an_mcp_json_file_gives_the_same_servers_as_toml(tmp_path: Path) -> None:
+    toml = write(
+        tmp_path,
+        '[[server]]\nname = "github"\nurl = "https://example.com/mcp"\nclient_id = "abc"\n'
+        'client_secret_env = "GITHUB_SECRET"\ntools = ["x"]\n'
+        '[[server]]\nname = "local"\nurl = "http://127.0.0.1:9000/mcp"\nauth = "none"\n',
+    )
+    json_file = write_json(
+        tmp_path,
+        json.dumps(
+            {
+                "mcpServers": {
+                    "github": {
+                        "type": "http",
+                        "url": "https://example.com/mcp",
+                        "client_id": "abc",
+                        "client_secret_env": "GITHUB_SECRET",
+                        "tools": ["x"],
+                    },
+                    "local": {"url": "http://127.0.0.1:9000/mcp", "auth": "none"},
+                }
+            }
+        ),
+    )
+    from_toml = load_servers(toml, {"GITHUB_SECRET": "shh"})
+    assert from_toml == [
+        McpServer("github", "https://example.com/mcp", "abc", "shh", "oauth", ("x",)),
+        McpServer("local", "http://127.0.0.1:9000/mcp", None, None, "none"),
+    ]
+    assert load_servers(json_file, {"GITHUB_SECRET": "shh"}) == from_toml
+
+
+def test_a_stdio_server_is_refused_in_mcp_json(tmp_path: Path) -> None:
+    path = write_json(
+        tmp_path,
+        json.dumps({"mcpServers": {"fs": {"command": "npx", "args": ["server-fs"]}}}),
+    )
+    with pytest.raises(ServersError, match="over HTTP only"):
+        load_servers(path, {})
+
+
+def test_an_invalid_mcp_json_entry_gives_the_same_error_as_toml(tmp_path: Path) -> None:
+    toml = write(tmp_path, '[[server]]\nname = "a"\nurl = "http://example.com/mcp"\n')
+    json_file = write_json(
+        tmp_path,
+        json.dumps({"mcpServers": {"a": {"url": "http://example.com/mcp"}}}),
+    )
+    with pytest.raises(ServersError) as toml_error:
+        load_servers(toml, {})
+    with pytest.raises(ServersError) as json_error:
+        load_servers(json_file, {})
+    assert str(json_error.value).replace("servers.json", "servers.toml") == str(toml_error.value)
+
+
+def test_invalid_mcp_json_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(ServersError, match="not valid JSON"):
+        load_servers(write_json(tmp_path, "{not json"), {})

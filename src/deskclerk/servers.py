@@ -1,11 +1,13 @@
-# Reads the MCP servers the company admin lists in a TOML file and checks each entry.
+# Reads the MCP servers the company admin lists in a TOML or mcpServers JSON file
+# and checks each entry.
 
+import json
 import os
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
@@ -79,6 +81,12 @@ class _ServerEntry(BaseModel):
         return self
 
 
+class _McpJsonFile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mcpServers: dict[str, dict[str, Any]] = {}
+
+
 class _ServersFile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -95,14 +103,45 @@ class _ServersFile(BaseModel):
         return entries
 
 
-def load_servers(path: Path, environ: Mapping[str, str] = os.environ) -> list[McpServer]:
+def _read_toml(path: Path) -> dict[str, Any]:
     try:
         with path.open("rb") as file:
-            raw = tomllib.load(file)
+            return tomllib.load(file)
     except OSError as error:
         raise ServersError(f"cannot read {path}: {error}") from None
     except tomllib.TOMLDecodeError as error:
         raise ServersError(f"{path} is not valid TOML: {error}") from None
+
+
+def _read_mcp_json(path: Path) -> dict[str, Any]:
+    try:
+        with path.open("rb") as file:
+            raw = json.load(file)
+    except OSError as error:
+        raise ServersError(f"cannot read {path}: {error}") from None
+    except ValueError as error:
+        raise ServersError(f"{path} is not valid JSON: {error}") from None
+    try:
+        file_model = _McpJsonFile.model_validate(raw)
+    except ValidationError as error:
+        raise ServersError(f"{path} is not a valid server list: {error}") from None
+    servers = []
+    for name, body in file_model.mcpServers.items():
+        if "command" in body or body.get("type", "http") != "http":
+            raise ServersError(
+                f"server {name!r} is not an HTTP server; "
+                "deskclerk connects to MCP servers over HTTP only"
+            )
+        fields = {key: value for key, value in body.items() if key != "type"}
+        servers.append({**fields, "name": name})
+    return {"server": servers}
+
+
+def load_servers(path: Path, environ: Mapping[str, str] = os.environ) -> list[McpServer]:
+    if path.suffix == ".json":
+        raw = _read_mcp_json(path)
+    else:
+        raw = _read_toml(path)
     try:
         parsed = _ServersFile.model_validate(raw)
     except ValidationError as error:
