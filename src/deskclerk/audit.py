@@ -1,7 +1,8 @@
-# The audit log: one JSON line per ask and one per connect or disconnect, naming who did it and
-# which tools the agent called. The request, each call's arguments and results, and a gate's
-# reason are logged only when DESKCLERK_AUDIT_TEXT is set; otherwise only the request's length
-# and, when DESKCLERK_AUDIT_KEY is set, its HMAC-SHA256. Tokens are never logged.
+# The audit log: one JSON line per ask or confirmation and one per connect or disconnect, naming
+# who did it, which tools the agent called, which calls wait for the employee and what was decided.
+# The request, each call's arguments and results, and a gate's reason are logged only when
+# DESKCLERK_AUDIT_TEXT is set; otherwise only the request's length and, when DESKCLERK_AUDIT_KEY is
+# set, its HMAC-SHA256. Tokens are never logged.
 
 import hashlib
 import hmac
@@ -15,7 +16,7 @@ from uuid import UUID
 
 from pydantic import SecretStr
 
-from deskclerk.agent import AgentResult, BlockedCall, ExecutedCall
+from deskclerk.agent import AgentResult, BlockedCall, DecidedCall, ExecutedCall, PendingCall
 from deskclerk.auth import Identity
 
 _log = logging.getLogger(__name__)
@@ -40,8 +41,9 @@ class Audit:
         result: AgentResult | None,
         cost_usd: float,
         cause: str | None = None,
+        entry: str = "ask",
     ) -> None:
-        line = self._line(identity, "ask")
+        line = self._line(identity, entry)
         line.update(
             {
                 "conversation": None if conversation is None else str(conversation),
@@ -50,6 +52,8 @@ class Audit:
                 "text_hmac": self._hmac(request),
                 "executed": [] if result is None else [self._executed(c) for c in result.executed],
                 "blocked": [] if result is None else [self._blocked(c) for c in result.blocked],
+                "pending": [] if result is None else [self._pending(c) for c in result.pending],
+                "decided": [] if result is None else [self._decided(c) for c in result.decided],
                 "not_connected": [] if result is None else list(result.not_connected),
                 "unavailable": [] if result is None else list(result.unavailable),
                 "step_limit_hit": False if result is None else result.step_limit_hit,
@@ -96,6 +100,15 @@ class Audit:
         if self.include_text:
             entry.update({"arguments": call.arguments, "reason": call.reason})
         return entry
+
+    def _pending(self, call: PendingCall) -> dict[str, Any]:
+        entry: dict[str, Any] = {"server": call.server, "tool": call.tool}
+        if self.include_text:
+            entry["arguments"] = call.arguments
+        return entry
+
+    def _decided(self, call: DecidedCall) -> dict[str, Any]:
+        return {"server": call.server, "tool": call.tool, "decision": call.decision}
 
     def _hmac(self, text: str) -> str | None:
         if self.key is None:

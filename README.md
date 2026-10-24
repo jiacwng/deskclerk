@@ -5,15 +5,15 @@
 deskclerk is an internal company agent. An admin lists the company's MCP servers. Employees
 sign in with the company login, connect their own accounts on those servers and ask the agent
 to work there. Before a call that changes something runs, deskclerk checks it against the
-tool's schema, and a destructive call against the ids the agent has seen. Each employee has a
-monthly budget, a request quota and their own conversations, and every request goes to an audit
-log.
+tool's schema, and a destructive call against the ids the agent has seen. Then the employee
+approves or rejects it in the page. Each employee has a monthly budget, a request quota and their
+own conversations, and every request goes to an audit log.
 
 ```mermaid
 flowchart LR
     employee[Employee] -->|company sign-in| agent[deskclerk agent]
     agent -->|read-only call| servers[MCP servers, with the employee's accounts]
-    agent -->|call that changes something| check[write check] --> servers
+    agent -->|call that changes something| check[write check] --> confirm[employee approves] --> servers
     servers -->|tool result| screen[Jev screen, with a TypeSafe key] --> agent
 ```
 
@@ -25,7 +25,8 @@ the demo server use the host's network, which Docker Engine on Linux and WSL sup
 Desktop for Mac is not tested.
 
 1. Copy `.env.example` to `.env`. Fill in `ANTHROPIC_API_KEY`, and make `DESKCLERK_TOKEN_KEY` and
-   `DESKCLERK_SESSION_KEY` with the two `python3` commands in the file.
+   `DESKCLERK_SESSION_KEY` with the two `python3` commands in the file. Without a TypeSafe key,
+   also add `DESKCLERK_ALLOW_UNSCREENED=true`.
 2. Copy `servers.example.toml` to `servers.toml`. It lists the demo task server, which keeps a
    task list in memory and needs no account.
 3. Start everything. The first start builds the image and takes about a minute.
@@ -36,6 +37,7 @@ Desktop for Mac is not tested.
 
 4. Open http://localhost:8000 and sign in as `analyst` with the password `deskclerk`. Ask
    "Create a task called Write the release notes", then "Mark it as doing", then "Delete it".
+   Approve each change when the page asks.
 
 ## Your own servers
 
@@ -73,7 +75,8 @@ as an Azure deployment name, is priced as the model in `DESKCLERK_PRICE_MODEL`, 
 `azure_openai:gpt-5`.
 
 With `TYPESAFE_API_KEY`, deskclerk sends every tool result and the employee's request to
-TypeSafe's Jev model, and withholds a result Jev flags or cannot judge. With
+TypeSafe's Jev model, and withholds a result Jev flags or cannot judge. Without the key,
+deskclerk refuses to start unless `DESKCLERK_ALLOW_UNSCREENED=true` is set. With
 `DESKCLERK_TOOL_SELECTION=true` and two or more servers, Jev also picks the servers a request
 needs. With `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`, deskclerk traces each request to
 Langfuse, with its text masked unless `DESKCLERK_AUDIT_TEXT` is set. The audit log is one JSON

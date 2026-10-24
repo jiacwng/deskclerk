@@ -1,6 +1,7 @@
 # The web front of the agent. An employee signs in with the company's OpenID Connect provider,
-# connects their MCP servers and asks the agent. Browsers hold a signed session cookie; other
-# clients send a bearer token. Every dependency is passed to create_app.
+# connects their MCP servers and asks the agent, which waits for the employee's confirmation before
+# a call that changes something. Browsers hold a signed session cookie; other clients send a
+# bearer token. Every dependency is passed to create_app.
 
 import asyncio
 import base64
@@ -13,7 +14,7 @@ from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import resources
-from typing import Any
+from typing import Any, NoReturn
 from uuid import UUID, uuid4
 
 import anthropic
@@ -26,7 +27,16 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from deskclerk import cookies, oidc
-from deskclerk.agent import Gate, McpServerFailed, no_tool_span, run_agent
+from deskclerk.agent import (
+    ConversationWaiting,
+    Decision,
+    Gate,
+    McpServerFailed,
+    NothingToConfirm,
+    WrongDecisions,
+    no_tool_span,
+    run_agent,
+)
 from deskclerk.audit import Audit
 from deskclerk.auth import (
     AuthError,
@@ -47,7 +57,12 @@ from deskclerk.connections import (
     WrongUser,
     first_leaf,
 )
-from deskclerk.conversations import open_checkpointer, saved_messages, thread_id
+from deskclerk.conversations import (
+    last_request,
+    open_checkpointer,
+    saved_messages,
+    thread_id,
+)
 from deskclerk.instructions import system_prompt
 from deskclerk.jev import Jev
 from deskclerk.providers import BudgetExceeded, Usage, cost_of
@@ -104,6 +119,13 @@ class AskBody(BaseModel):
     conversation: UUID | None = None
 
 
+class ConfirmBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    conversation: UUID
+    decisions: dict[str, Decision]
+
+
 class ServerOut(BaseModel):
     name: str
     url: str
@@ -129,11 +151,19 @@ class BlockedOut(BaseModel):
     reason: str
 
 
+class PendingOut(BaseModel):
+    id: str
+    server: str
+    tool: str
+    arguments: dict[str, Any]
+
+
 class AskOut(BaseModel):
     conversation: UUID
     answer: str
     executed: list[ExecutedOut]
     blocked: list[BlockedOut]
+    pending: list[PendingOut]
     not_connected: list[str]
     unavailable: list[str]
     step_limit_hit: bool
@@ -405,25 +435,43 @@ def create_app(
 
     @app.post("/ask")
     async def ask(body: AskBody, who: Caller = Depends(posting_caller)) -> AskOut:
-        identity = who.identity
+        return await take_turn(who.identity, body.conversation, body.request, None)
+
+    @app.post("/ask/confirm")
+    async def confirm(body: ConfirmBody, who: Caller = Depends(posting_caller)) -> AskOut:
+        return await take_turn(who.identity, body.conversation, "", body.decisions)
+
+    async def take_turn(
+        identity: Identity,
+        conversation_id: UUID | None,
+        text: str,
+        decisions: dict[str, Decision] | None,
+    ) -> AskOut:
+        entry = "ask" if decisions is None else "confirm"
         started = time.monotonic()
+        conversation = conversation_id or uuid4()
+
+        def refuse(
+            status: int, detail: str, outcome: str, headers: dict[str, str] | None = None
+        ) -> NoReturn:
+            audit.asked(identity, conversation_id, text, started, outcome, None, 0.0, entry=entry)
+            raise HTTPException(status, detail, headers)
+
         if not quota.allows(identity.user_id):
-            audit.asked(
-                identity, body.conversation, body.request, started, "rate_limited", None, 0.0
-            )
-            raise HTTPException(
-                429, f"at most {settings.requests_per_minute} asks a minute", {"Retry-After": "60"}
+            refuse(
+                429,
+                f"at most {settings.requests_per_minute} asks a minute",
+                "rate_limited",
+                {"Retry-After": "60"},
             )
         checkpointer: AsyncSqliteSaver = app.state.checkpointer
-        conversation = body.conversation or uuid4()
         thread = thread_id(identity.user_id, conversation)
         async with ask_locks.setdefault(identity.user_id, asyncio.Lock()):
             history = await saved_messages(checkpointer, thread)
-            if body.conversation is not None and not history:
-                audit.asked(
-                    identity, conversation, body.request, started, "unknown_conversation", None, 0.0
-                )
-                raise HTTPException(404, "no such conversation")
+            if conversation_id is not None and not history:
+                refuse(404, "no such conversation", "unknown_conversation")
+            if decisions is not None:
+                text = last_request(history)
             month = month_of(datetime.now(UTC))
             if (identity.user_id, month) not in spendings:
                 spendings[identity.user_id, month] = Spending(
@@ -437,15 +485,14 @@ def create_app(
             try:
                 spending.check()
             except BudgetExceeded as error:
-                audit.asked(identity, conversation, body.request, started, "over_budget", None, 0.0)
-                raise HTTPException(402, str(error)) from None
+                refuse(402, str(error), "over_budget")
             spent_before = spending.cost_usd
             try:
                 with tracing.ask(identity.user_id) if tracing else nullcontext(None) as trace:
                     async with asyncio.timeout(settings.ask_seconds):
                         result = await run_agent(
                             identity.user_id,
-                            body.request,
+                            text,
                             system_prompt(datetime.now(UTC).date()),
                             servers,
                             connections,
@@ -463,9 +510,17 @@ def create_app(
                             jev_tool_selection(jev, settings.tool_selection, spending.record_jev),
                             tool_output_chars=settings.tool_output_chars,
                             history_tokens=settings.history_tokens,
+                            confirm_writes=True,
+                            decisions=decisions,
                         )
                     if trace:
                         trace.finish(result.withheld)
+            except ConversationWaiting:
+                refuse(409, "this conversation waits for a confirmation", "conversation_waiting")
+            except NothingToConfirm:
+                refuse(409, "this conversation has nothing to confirm", "nothing_pending")
+            except WrongDecisions:
+                refuse(422, "decide every pending call exactly once", "wrong_decisions")
             except TimeoutError:
                 cost = spending.cost_usd - spent_before
                 detail = (
@@ -473,13 +528,13 @@ def create_app(
                     "(set DESKCLERK_ASK_SECONDS to change it)"
                 )
                 audit.asked(
-                    identity, conversation, body.request, started, "timed_out", None, cost, detail
+                    identity, conversation, text, started, "timed_out", None, cost, detail, entry
                 )
                 raise HTTPException(504, detail) from None
             except ask_failures as error:
                 cost = spending.cost_usd - spent_before
                 raise upstream_failure(
-                    identity, conversation, body.request, started, cost, error
+                    identity, conversation, text, started, cost, error, entry
                 ) from None
             except BaseExceptionGroup as group:
                 failed = group.subgroup(ask_failures)
@@ -487,15 +542,17 @@ def create_app(
                     raise
                 cost = spending.cost_usd - spent_before
                 raise upstream_failure(
-                    identity, conversation, body.request, started, cost, first_leaf(failed)
+                    identity, conversation, text, started, cost, first_leaf(failed), entry
                 ) from None
         cost = spending.cost_usd - spent_before
-        audit.asked(identity, conversation, body.request, started, "answered", result, cost)
+        outcome = "awaiting_confirmation" if result.pending else "answered"
+        audit.asked(identity, conversation, text, started, outcome, result, cost, entry=entry)
         return AskOut(
             conversation=conversation,
             answer=result.answer,
             executed=[ExecutedOut(**vars(call)) for call in result.executed],
             blocked=[BlockedOut(**vars(call)) for call in result.blocked],
+            pending=[PendingOut(**vars(call)) for call in result.pending],
             not_connected=list(result.not_connected),
             unavailable=list(result.unavailable),
             step_limit_hit=result.step_limit_hit,
@@ -512,9 +569,12 @@ def create_app(
         started: float,
         cost: float,
         error: BaseException,
+        entry: str,
     ) -> HTTPException:
         detail = _upstream_detail(error)
-        audit.asked(identity, conversation, request, started, "upstream_error", None, cost, detail)
+        audit.asked(
+            identity, conversation, request, started, "upstream_error", None, cost, detail, entry
+        )
         return HTTPException(502, detail)
 
     return app

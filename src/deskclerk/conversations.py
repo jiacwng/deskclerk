@@ -53,6 +53,10 @@ async def saved_messages(checkpointer: BaseCheckpointSaver[Any], thread: str) ->
     return messages
 
 
+def last_request(messages: list[BaseMessage]) -> str:
+    return next(message.text for message in reversed(messages) if isinstance(message, HumanMessage))
+
+
 def earlier_texts(messages: list[BaseMessage]) -> tuple[str, ...]:
     return tuple(
         message.text for message in messages if isinstance(message, HumanMessage | ToolMessage)

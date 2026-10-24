@@ -372,7 +372,7 @@ def test_an_ask_runs_the_agent_and_the_server_sees_the_write_under_that_employee
     ada, grace = as_user(sign_token, "ada"), as_user(sign_token, "grace")
     with web(settings, [notes(notes_server)], model, token_signing_key, tmp_path) as site:
         connect(site, ada)
-        response = ask(site, ada)
+        response = ask_and_approve(site, ada)
         assert response.status_code == 200
         body = response.json()
         assert body["answer"] == "saved"
@@ -611,15 +611,15 @@ def test_the_audit_log_holds_no_argument_values_unless_audit_text_is_set(
     ada = as_user(sign_token, "ada")
     with web(settings, [notes(notes_server)], model, token_signing_key, tmp_path) as site:
         connect(site, ada)
-        ask(site, ada, "my private request")
+        ask_and_approve(site, ada, "my private request")
         site.client.post("/servers/notes/disconnect", headers=ada)
 
     lines = audit_lines(caplog)
-    assert [line["entry"] for line in lines] == ["connect", "ask", "disconnect"]
-    assert lines[0]["server"] == lines[2]["server"] == "notes"
+    assert [line["entry"] for line in lines] == ["connect", "ask", "confirm", "disconnect"]
+    assert lines[0]["server"] == lines[3]["server"] == "notes"
     line = lines[1]
     assert line["user"] == "ada"
-    assert line["executed"] == [{"server": "notes", "tool": "write_note", "is_error": False}]
+    assert lines[2]["executed"] == [{"server": "notes", "tool": "write_note", "is_error": False}]
     expected = hmac.new(AUDIT_KEY.encode(), b"my private request", hashlib.sha256).hexdigest()
     assert (line["text_chars"], line["text_hmac"]) == (18, expected)
     assert "text" not in line
@@ -641,11 +641,11 @@ def test_the_audit_log_holds_arguments_and_results_when_audit_text_is_set(
     ada = as_user(sign_token, "ada")
     with web(settings, [notes(notes_server)], model, token_signing_key, tmp_path) as site:
         connect(site, ada)
-        ask(site, ada, "my private request")
+        ask_and_approve(site, ada, "my private request")
 
-    line = audit_lines(caplog)[1]
-    assert line["text"] == "my private request"
-    assert line["executed"] == [
+    lines = audit_lines(caplog)
+    assert lines[1]["text"] == "my private request"
+    assert lines[2]["executed"] == [
         {
             "server": "notes",
             "tool": "write_note",
@@ -1270,3 +1270,214 @@ def test_a_renamed_employee_keeps_the_same_conversation(
         me = site.client.get("/me", headers=after).json()
     assert second.status_code == 200
     assert me == {"user": "u-1", "name": "ada-l"}
+
+
+def ask_and_approve(
+    site: Web, headers: dict[str, str], request: str = "save a note"
+) -> httpx2.Response:
+    paused = ask(site, headers, request).json()
+    decisions = {call["id"]: "approve" for call in paused["pending"]}
+    return confirm(site, headers, paused["conversation"], decisions)
+
+
+def confirm(
+    site: Web, headers: dict[str, str], conversation: object, decisions: dict[str, str]
+) -> httpx2.Response:
+    body = {"conversation": conversation, "decisions": decisions}
+    return site.client.post("/ask/confirm", json=body, headers=headers)
+
+
+def test_a_write_waits_for_the_employee_and_runs_once_when_approved(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    tmp_path: Path,
+) -> None:
+    model = script(calls(("notes__write_note", {"text": "hi"})), answer("saved"))
+    ada = as_user(sign_token, "ada")
+    with web(
+        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, tmp_path
+    ) as site:
+        connect(site, ada)
+        paused = ask(site, ada).json()
+        assert paused["answer"] == ""
+        assert paused["executed"] == []
+        assert paused["step_limit_hit"] is False
+        [waiting] = paused["pending"]
+        assert (waiting["server"], waiting["tool"], waiting["arguments"]) == (
+            "notes",
+            "write_note",
+            {"text": "hi"},
+        )
+        assert notes_server.notes == []
+        done = confirm(site, ada, paused["conversation"], {waiting["id"]: "approve"}).json()
+        assert done["answer"] == "saved"
+        assert done["pending"] == []
+        assert [(c["tool"], c["result"]) for c in done["executed"]] == [("write_note", "wrote hi")]
+        assert [note[1] for note in notes_server.notes] == ["hi"]
+
+
+def test_a_rejected_write_never_runs_and_the_model_reads_that_it_was_declined(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    tmp_path: Path,
+) -> None:
+    model = script(calls(("notes__write_note", {"text": "hi"})), answer("understood"))
+    ada = as_user(sign_token, "ada")
+    with web(
+        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, tmp_path
+    ) as site:
+        connect(site, ada)
+        paused = ask(site, ada).json()
+        [waiting] = paused["pending"]
+        done = confirm(site, ada, paused["conversation"], {waiting["id"]: "reject"}).json()
+    assert notes_server.notes == []
+    assert done["executed"] == []
+    assert [(c["tool"], c["reason"]) for c in done["blocked"]] == [
+        ("write_note", "the employee declined")
+    ]
+    assert done["answer"] == "understood"
+    assert "The tool was not executed" in str(model.seen[1][-1].content)
+
+
+def test_two_writes_in_one_turn_are_decided_one_by_one(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    tmp_path: Path,
+) -> None:
+    model = script(
+        calls(("notes__write_note", {"text": "one"}), ("notes__write_note", {"text": "two"})),
+        answer("done"),
+    )
+    ada = as_user(sign_token, "ada")
+    with web(
+        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, tmp_path
+    ) as site:
+        connect(site, ada)
+        paused = ask(site, ada).json()
+        first, second = paused["pending"]
+        assert (first["arguments"], second["arguments"]) == ({"text": "one"}, {"text": "two"})
+        decisions = {first["id"]: "approve", second["id"]: "reject"}
+        done = confirm(site, ada, paused["conversation"], decisions).json()
+    assert [note[1] for note in notes_server.notes] == ["one"]
+    assert [c["result"] for c in done["executed"]] == ["wrote one"]
+
+
+def test_a_new_app_on_the_same_token_file_resumes_a_pause(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(token_settings)
+    key = Fernet.generate_key().decode()
+    ada = as_user(sign_token, "ada")
+    model = script(calls(("notes__write_note", {"text": "hi"})))
+    servers = [notes(notes_server)]
+    with web(settings, servers, model, token_signing_key, tmp_path, key=key) as before:
+        connect(before, ada)
+        paused = ask(before, ada).json()
+    with web(
+        settings, servers, script(answer("saved")), token_signing_key, tmp_path, key=key
+    ) as after:
+        decisions = {paused["pending"][0]["id"]: "approve"}
+        done = confirm(after, ada, paused["conversation"], decisions).json()
+    assert done["answer"] == "saved"
+    assert [note[1] for note in notes_server.notes] == ["hi"]
+
+
+def test_a_conversation_that_waits_refuses_a_new_ask_and_a_wrong_confirmation(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    tmp_path: Path,
+) -> None:
+    model = script(calls(("notes__write_note", {"text": "hi"})), answer("saved"))
+    ada, grace = as_user(sign_token, "ada"), as_user(sign_token, "grace")
+    with web(
+        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, tmp_path
+    ) as site:
+        connect(site, ada)
+        paused = ask(site, ada).json()
+        conversation = paused["conversation"]
+        waiting_id = paused["pending"][0]["id"]
+        again = site.client.post(
+            "/ask", json={"request": "more", "conversation": conversation}, headers=ada
+        )
+        assert (again.status_code, again.json()["detail"]) == (
+            409,
+            "this conversation waits for a confirmation",
+        )
+        assert confirm(site, ada, conversation, {}).status_code == 422
+        assert confirm(site, ada, conversation, {"nope": "approve"}).status_code == 422
+        extra = {waiting_id: "approve", "nope": "reject"}
+        assert confirm(site, ada, conversation, extra).status_code == 422
+        assert confirm(site, ada, conversation, {waiting_id: "maybe"}).status_code == 422
+        assert confirm(site, grace, conversation, {waiting_id: "approve"}).status_code == 404
+        assert notes_server.notes == []
+        assert confirm(site, ada, conversation, {waiting_id: "approve"}).status_code == 200
+        nothing = confirm(site, ada, conversation, {waiting_id: "approve"})
+        assert (nothing.status_code, nothing.json()["detail"]) == (
+            409,
+            "this conversation has nothing to confirm",
+        )
+
+
+def test_a_write_the_check_refuses_and_a_read_tool_never_wait_for_the_employee(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    tmp_path: Path,
+) -> None:
+    model = script(
+        calls(("notes__write_note", {}), ("notes__read_note", {})), answer("could not save")
+    )
+    ada = as_user(sign_token, "ada")
+    with web(
+        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, tmp_path
+    ) as site:
+        connect(site, ada)
+        body = ask(site, ada).json()
+    assert body["pending"] == []
+    assert body["answer"] == "could not save"
+    assert [c["tool"] for c in body["executed"]] == ["read_note"]
+    assert [c["tool"] for c in body["blocked"]] == ["write_note"]
+
+
+def test_a_pause_and_its_confirmation_are_audited(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="deskclerk.audit")
+    model = script(calls(("notes__write_note", {"text": "secret-text"})), answer("saved"))
+    ada = as_user(sign_token, "ada")
+    with web(
+        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, tmp_path
+    ) as site:
+        connect(site, ada)
+        paused = ask(site, ada, "my private request").json()
+        decisions = {paused["pending"][0]["id"]: "approve"}
+        confirm(site, ada, paused["conversation"], decisions)
+    asked, confirmed = [line for line in audit_lines(caplog) if line["entry"] in ("ask", "confirm")]
+    assert asked["outcome"] == "awaiting_confirmation"
+    assert asked["pending"] == [{"server": "notes", "tool": "write_note"}]
+    assert asked["executed"] == []
+    assert (confirmed["entry"], confirmed["outcome"]) == ("confirm", "answered")
+    assert confirmed["decided"] == [
+        {"server": "notes", "tool": "write_note", "decision": "approve"}
+    ]
+    assert confirmed["executed"] == [{"server": "notes", "tool": "write_note", "is_error": False}]
+    assert confirmed["conversation"] == asked["conversation"]
+    assert "secret-text" not in caplog.text

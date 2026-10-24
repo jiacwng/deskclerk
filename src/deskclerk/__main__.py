@@ -25,11 +25,28 @@ MCP_CLIENT_NAME = "deskclerk"
 SPENDING_FILE = "spending.sqlite"
 
 
+class UnscreenedRefused(Exception):
+    pass
+
+
 def main() -> None:
     try:
         settings = load_settings()
         if settings.token_key is None:
             raise TokenKeyError("DESKCLERK_TOKEN_KEY is not set; put it in .env")
+        jev = jev_from_environment()
+        if jev is None:
+            if not settings.allow_unscreened:
+                raise UnscreenedRefused(
+                    "TYPESAFE_API_KEY is not set, so tool outputs cannot be screened for prompt "
+                    "injection. Set it, or set DESKCLERK_ALLOW_UNSCREENED=true to start "
+                    "without the screen."
+                )
+            print(
+                "deskclerk: TYPESAFE_API_KEY is not set, "
+                "so tool outputs are not screened for prompt injection",
+                file=sys.stderr,
+            )
         servers = load_servers(settings.servers_file)
         tokens = TokenStore(settings.token_file, settings.token_key.get_secret_value())
         spending_store = SpendingStore(settings.token_file.parent / SPENDING_FILE)
@@ -38,13 +55,6 @@ def main() -> None:
         )
         with httpx.Client() as client:
             jwks_url = discover_jwks_url(settings, client)
-        jev = jev_from_environment()
-        if jev is None:
-            print(
-                "deskclerk: TYPESAFE_API_KEY is not set, "
-                "so tool outputs are not screened for prompt injection",
-                file=sys.stderr,
-            )
         tracing = tracing_from_environment(settings.audit_text, settings.audit_key)
         if tracing is None:
             print(
@@ -74,6 +84,7 @@ def main() -> None:
         ProviderNotInstalled,
         AuthUnavailable,
         TracingNotInstalled,
+        UnscreenedRefused,
         ValueError,
     ) as error:
         sys.exit(f"deskclerk: {error}")

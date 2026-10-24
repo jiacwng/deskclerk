@@ -264,6 +264,7 @@ async def run_selected(
         5,
         lambda usage: None,
         selection=jev_tool_selection(as_jev(jev), True),
+        confirm_writes=False,
     )
 
 
