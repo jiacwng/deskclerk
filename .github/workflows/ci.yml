@@ -36,7 +36,7 @@ jobs:
             echo "DESKCLERK_TOKEN_KEY=$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
             echo "DESKCLERK_SESSION_KEY=$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
           } > .env
-          touch servers.toml
+          cp servers.example.toml servers.toml
           docker compose up -d --wait deskclerk
           curl -fsS -o /dev/null -w '%{redirect_url}' http://localhost:8000/login \
             | grep '^http://localhost:8080/realms/deskclerk/protocol/openid-connect/auth?'
