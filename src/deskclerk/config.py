@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     token_file: Path = Path("data/tokens.sqlite")
     token_key: SecretStr | None = None
     step_limit: int = 8
+    tool_selection: bool = False
     public_url: str = "http://localhost:8000"
     session_key: SecretStr | None = None
     session_hours: int = 8

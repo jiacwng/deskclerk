@@ -1,5 +1,5 @@
 # What both WorkBench runners share: the task files, the seeded dev/test split, the line WorkBench
-# puts before every task, and the columns of one run's results file.
+# puts before every task, the server of each tool, and the columns of one run's results file.
 import csv
 import hashlib
 from dataclasses import dataclass
@@ -15,6 +15,8 @@ DOMAINS = (
     "project_management",
     "multi_domain",
 )
+SERVERS = ("email", "calendar", "analytics", "customer_relationship_manager", "project_management")
+SERVER_OF_PREFIX = {"company_directory": "email"}
 RESULT_COLUMNS = [
     "domain",
     "task",
@@ -27,6 +29,9 @@ RESULT_COLUMNS = [
     "cache_write_tokens",
     "cost_usd",
     "blocked",
+    "selection_usd",
+    "selector_input_tokens",
+    "jev_input_tokens",
 ]
 
 
@@ -35,6 +40,15 @@ class Task:
     domain: str
     index: int
     text: str
+
+
+def server_of(tool_name: str) -> str:
+    prefix = tool_name.split(".")[0]
+    return SERVER_OF_PREFIX.get(prefix, prefix)
+
+
+def agent_name(tool_name: str) -> str:
+    return f"{server_of(tool_name)}__{tool_name.split('.', 1)[1]}"
 
 
 def tasks_file(workbench: Path, domain: str) -> Path:

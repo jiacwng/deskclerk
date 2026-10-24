@@ -9,7 +9,7 @@ import os
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from cryptography.fernet import Fernet
@@ -21,6 +21,7 @@ from langchain_core.tools import BaseTool
 from deskclerk.agent import Gate, ProposedCall, Verdict
 from deskclerk.config import Settings
 from deskclerk.connections import OAuthConnections
+from deskclerk.jev import Jev
 from deskclerk.tokens import TokenStore
 from run_deskclerk import (
     CUT_OFF_MESSAGE,
@@ -28,6 +29,7 @@ from run_deskclerk import (
     Worker,
     allow_everything,
     load_workbench_text,
+    mixed_domains,
     run_task,
     start_server,
 )
@@ -49,8 +51,8 @@ class ScriptedModel(GenericFakeChatModel):
         return self
 
 
-def tool_call(name: str, arguments: dict[str, Any]) -> AIMessage:
-    call = {"name": name, "args": arguments, "id": "call-0", "type": "tool_call"}
+def tool_call(name: str, arguments: dict[str, Any], call_id: str = "call-0") -> AIMessage:
+    call = {"name": name, "args": arguments, "id": call_id, "type": "tool_call"}
     return AIMessage(content="", tool_calls=[call])
 
 
@@ -102,7 +104,7 @@ def test_an_allowed_write_is_logged_in_workbench_format(
 ) -> None:
     task, event_id, expected = delete_task()
     model = scripted(
-        tool_call("workbench__calendar__delete_event", {"event_id": event_id}),
+        tool_call("calendar__delete_event", {"event_id": event_id}),
         AIMessage(content="Deleted."),
     )
     row = run(worker_for(url, connections, model, allow_everything), task, text)
@@ -117,14 +119,14 @@ def test_a_refused_write_is_blocked_and_not_logged(
 ) -> None:
     task, event_id, _ = delete_task()
     model = scripted(
-        tool_call("workbench__calendar__delete_event", {"event_id": event_id}),
+        tool_call("calendar__delete_event", {"event_id": event_id}),
         AIMessage(content="I could not delete it."),
     )
     row = run(worker_for(url, connections, model, refuse_everything), task, text)
     assert row["function_calls"] == "[]"
     assert json.loads(row["blocked"]) == [
         {
-            "tool": "calendar__delete_event",
+            "tool": "delete_event",
             "arguments": {"event_id": event_id},
             "reason": "not asked for",
         }
@@ -135,11 +137,15 @@ def test_the_step_limit_sets_the_stopped_error(
     url: str, connections: OAuthConnections, text: WorkbenchText
 ) -> None:
     task, event_id, _ = delete_task()
-    look = tool_call(
-        "workbench__calendar__get_event_information_by_id",
-        {"event_id": event_id, "field": "event_name"},
+    looks = (
+        tool_call(
+            "calendar__get_event_information_by_id",
+            {"event_id": event_id, "field": "event_name"},
+            f"call-{number}",
+        )
+        for number in itertools.count()
     )
-    model = ScriptedModel(messages=itertools.repeat(look))
+    model = ScriptedModel(messages=looks)
     row = run(worker_for(url, connections, model, allow_everything), task, text)
     assert row["error"] == text.stopped_message
     assert (
@@ -152,13 +158,13 @@ def test_the_server_is_reset_between_tasks(
 ) -> None:
     task, event_id, expected = delete_task()
     first = scripted(
-        tool_call("workbench__calendar__delete_event", {"event_id": event_id}),
+        tool_call("calendar__delete_event", {"event_id": event_id}),
         AIMessage(content="Deleted."),
     )
     run(worker_for(url, connections, first, allow_everything), task, text)
     second = scripted(
         tool_call(
-            "workbench__calendar__get_event_information_by_id",
+            "calendar__get_event_information_by_id",
             {"event_id": event_id, "field": "event_name"},
         ),
         AIMessage(content="Found."),
@@ -176,3 +182,67 @@ def test_a_reply_cut_off_at_the_output_limit_sets_the_cut_off_error(
     cut = AIMessage(content="The event is", response_metadata={"stop_reason": "max_tokens"})
     row = run(worker_for(url, connections, scripted(cut), allow_everything), task, text)
     assert row["error"] == CUT_OFF_MESSAGE
+
+
+class FakeJev:
+    def __init__(self, wanted: set[str]) -> None:
+        self.wanted = wanted
+        self.calls = 0
+
+    def noul_many(
+        self, state: Any, instructions: dict[str, str], on_tokens: Any = None
+    ) -> dict[str, float]:
+        self.calls += 1
+        on_tokens(100)
+        return {name: 1.0 if name in self.wanted else 0.0 for name in instructions}
+
+
+class RecordingModel(ScriptedModel):
+    binds: list[list[str]] = []
+
+    def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
+        self.binds.append([tool.name for tool in tools])
+        return super().bind_tools(tools, **kwargs)
+
+
+def selecting_worker(url: str, connections: OAuthConnections, selection: str, jev: Any) -> Worker:
+    model = RecordingModel(messages=iter([AIMessage(content="Nothing to do.")]))
+    model.binds = []
+    return Worker(url, connections, model, allow_everything, MODEL, selection, cast(Jev, jev))
+
+
+def test_the_server_arm_offers_only_the_servers_jev_picked_and_bills_jev(
+    url: str, connections: OAuthConnections, text: WorkbenchText
+) -> None:
+    task, _, _ = delete_task()
+    jev = FakeJev({"calendar"})
+    worker = selecting_worker(url, connections, "server", jev)
+    row = run(worker, task, text)
+    [offered] = cast(RecordingModel, worker.model).binds
+    assert offered and all(name.startswith("calendar__") for name in offered)
+    assert jev.calls == 1
+    assert row["jev_input_tokens"] == 100
+    assert row["selection_usd"] == pytest.approx(row["jev_input_tokens"] * 0.042 / 1_000_000)
+
+
+def test_the_all_arm_offers_every_tool_and_asks_nothing(
+    url: str, connections: OAuthConnections, text: WorkbenchText
+) -> None:
+    task, _, _ = delete_task()
+    worker = selecting_worker(url, connections, "all", None)
+    row = run(worker, task, text)
+    [offered] = cast(RecordingModel, worker.model).binds
+    assert len(offered) == 27
+    assert row["selection_usd"] == 0
+
+
+def test_a_limited_run_takes_tasks_round_robin_over_the_domains() -> None:
+    tasks = [Task(domain, index, "") for domain in ("a", "b", "c") for index in range(3)]
+    mixed = mixed_domains(tasks, 5)
+    assert [(task.domain, task.index) for task in mixed] == [
+        ("a", 0),
+        ("b", 0),
+        ("c", 0),
+        ("a", 1),
+        ("b", 1),
+    ]

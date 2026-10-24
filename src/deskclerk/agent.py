@@ -164,12 +164,14 @@ class _Guard(AgentMiddleware[AgentState[Any], None, Any]):
         self.usage: list[Usage] = []
         self.last_response: AIMessage | None = None
         self.withheld = 0
+        self.shown: set[str] = set()
 
     async def awrap_model_call(
         self,
         request: ModelRequest[Any],
         handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[Any]]],
     ) -> ModelResponse[Any]:
+        self.shown = {tool.name for tool in request.tools if isinstance(tool, BaseTool)}
         response = await handler(request)
         message = response.result[-1]
         if not isinstance(message, AIMessage):
@@ -197,7 +199,7 @@ class _Guard(AgentMiddleware[AgentState[Any], None, Any]):
         call = request.tool_call
         call_id = call["id"] or ""
         tool = self.offered.get(call["name"])
-        if tool is None:
+        if tool is None or call["name"] not in self.shown:
             text = f"There is no tool named {call['name']}."
             return ToolMessage(text, tool_call_id=call_id, status="error")
         arguments: dict[str, Any] = call["args"]
@@ -261,6 +263,7 @@ async def run_agent(
     record_usage: Callable[[Usage], None],
     trace_config: RunnableConfig | None = None,
     tool_span: ToolSpan = no_tool_span,
+    selection: AgentMiddleware[Any, Any, Any] | None = None,
 ) -> AgentResult:
     tools: dict[str, _Tool] = {}
     not_connected: list[str] = []
@@ -290,6 +293,7 @@ async def run_agent(
     ]
     middleware: list[AgentMiddleware[Any, Any, Any]] = [
         ModelCallLimitMiddleware(run_limit=step_limit),
+        *([] if selection is None else [selection]),
         guard,
         ToolRetryMiddleware(tools=read_only_names, retry_on=_is_upstream_error, on_failure="error"),
     ]
