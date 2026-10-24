@@ -135,6 +135,7 @@ class AskOut(BaseModel):
     executed: list[ExecutedOut]
     blocked: list[BlockedOut]
     not_connected: list[str]
+    unavailable: list[str]
     step_limit_hit: bool
     cut_off: bool
     withheld: int
@@ -492,6 +493,7 @@ def create_app(
             executed=[ExecutedOut(**vars(call)) for call in result.executed],
             blocked=[BlockedOut(**vars(call)) for call in result.blocked],
             not_connected=list(result.not_connected),
+            unavailable=list(result.unavailable),
             step_limit_hit=result.step_limit_hit,
             cut_off=result.cut_off,
             withheld=result.withheld,

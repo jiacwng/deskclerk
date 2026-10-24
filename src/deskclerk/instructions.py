@@ -15,3 +15,12 @@ INSTRUCTIONS = (
 
 def system_prompt(today: date) -> str:
     return f"{INSTRUCTIONS}\nToday is {today:%A}, {today.isoformat()}."
+
+
+def unavailable_note(names: tuple[str, ...]) -> str:
+    if not names:
+        return ""
+    return (
+        f"\nThese servers did not answer, so their tools are not offered: {', '.join(names)}. "
+        "If the request needs them, tell the employee they are unavailable."
+    )

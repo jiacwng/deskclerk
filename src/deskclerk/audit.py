@@ -51,6 +51,7 @@ class Audit:
                 "executed": [] if result is None else [self._executed(c) for c in result.executed],
                 "blocked": [] if result is None else [self._blocked(c) for c in result.blocked],
                 "not_connected": [] if result is None else list(result.not_connected),
+                "unavailable": [] if result is None else list(result.unavailable),
                 "step_limit_hit": False if result is None else result.step_limit_hit,
                 "cut_off": False if result is None else result.cut_off,
                 "withheld": 0 if result is None else result.withheld,

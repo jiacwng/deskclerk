@@ -965,6 +965,36 @@ def test_an_mcp_server_that_stopped_gives_502_and_an_upstream_error_line(
     assert asks[0]["cause"] == detail
 
 
+def test_an_ask_survives_a_server_that_stopped_and_reports_and_audits_it(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="deskclerk.audit")
+    settings = make_settings(token_settings)
+    ada = as_user(sign_token, "ada")
+    key = Fernet.generate_key().decode()
+    with running_mcp_server(REDIRECT) as running:
+        with web(
+            settings, [notes(running)], script(), token_signing_key, tmp_path, key=key
+        ) as site:
+            connect(site, ada)
+        stopped = notes(running)
+    with running_mcp_server(REDIRECT, oauth=False) as healthy:
+        model = script(calls(("open__read_note", {})), answer("notes is down"))
+        servers = [stopped, open_notes(healthy)]
+        with web(settings, servers, model, token_signing_key, tmp_path, key=key) as site:
+            response = ask(site, ada)
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["unavailable"], body["answer"]) == (["notes"], "notes is down")
+    assert [call["result"] for call in body["executed"]] == ["the note"]
+    [line] = [line for line in audit_lines(caplog) if line["entry"] == "ask"]
+    assert (line["outcome"], line["unavailable"]) == ("answered", ["notes"])
+
+
 def test_an_ask_past_the_deadline_gives_504_and_the_conversation_still_works(
     sign_token: Sign,
     token_settings: Settings,

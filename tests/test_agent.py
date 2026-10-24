@@ -1,9 +1,11 @@
 # The agent loop against a scripted chat model and the real test MCP server: read tools run freely,
 # write tools wait for the gate, a refused call never reaches the server, and the loop stops.
 
+import asyncio
 import itertools
 import json
 import sqlite3
+import time
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -33,7 +35,7 @@ from deskclerk.agent import (
     no_tool_span,
     run_agent,
 )
-from deskclerk.connections import OAuthConnections, ToolResult
+from deskclerk.connections import OAuthConnections, ToolInfo, ToolResult
 from deskclerk.conversations import FernetCipher, open_checkpointer, saved_messages
 from deskclerk.screen import UNCHECKED, WITHHELD, Screen, pass_through
 from deskclerk.servers import McpServer
@@ -305,6 +307,59 @@ async def test_an_unreachable_server_raises_one_error_naming_it(tmp_path: Path) 
     with pytest.raises(McpServerFailed) as failed:
         await run(connections, [gone], script(answer("x")))
     assert failed.value.server_name == "gone"
+
+
+def gone_server(name: str) -> McpServer:
+    return McpServer(name, "http://127.0.0.1:1/mcp", None, None, "none")
+
+
+@pytest.mark.anyio
+async def test_a_server_that_does_not_answer_is_skipped_reported_and_named_to_the_model(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    model = script(calls(("notes__read_note", {})), answer("the other one is down"))
+    servers = [gone_server("gone"), server_record(mcp_server)]
+    result = await run(connections, servers, model)
+    assert result.unavailable == ("gone",)
+    assert result.not_connected == ()
+    assert [call.result for call in result.executed] == ["the note"]
+    system = model.seen[0][0]
+    assert isinstance(system, SystemMessage)
+    assert "gone" in str(system.content) and "notes" not in str(system.content)
+
+
+@pytest.mark.anyio
+async def test_every_server_failing_raises_one_error_naming_all_of_them(tmp_path: Path) -> None:
+    connections = make_connections(tmp_path / "tokens.sqlite", Fernet.generate_key().decode())
+    servers = [gone_server("first"), gone_server("second")]
+    with pytest.raises(McpServerFailed) as failed:
+        await run(connections, servers, script(answer("x")))
+    assert failed.value.server_name == "first, second"
+
+
+class SlowListing(OAuthConnections):
+    async def tools(self, user_id: str, server: McpServer) -> list[ToolInfo]:
+        await asyncio.sleep(1)
+        return await super().tools(user_id, server)
+
+
+@pytest.mark.anyio
+async def test_servers_are_listed_at_the_same_time(tmp_path: Path) -> None:
+    store = TokenStore(tmp_path / "tokens.sqlite", Fernet.generate_key().decode())
+    connections = SlowListing(store, REDIRECT, "deskclerk test", 600)
+    with (
+        running_mcp_server(REDIRECT, oauth=False) as first,
+        running_mcp_server(REDIRECT, oauth=False) as second,
+    ):
+        servers = [
+            McpServer("first", first.url, None, None, "none"),
+            McpServer("second", second.url, None, None, "none"),
+        ]
+        started = time.monotonic()
+        result = await run(connections, servers, script(answer("done")))
+        elapsed = time.monotonic() - started
+    assert result.unavailable == ()
+    assert 1 <= elapsed < 1.8
 
 
 @pytest.mark.anyio
