@@ -1,17 +1,19 @@
-bench/ measures deskclerk's agent on WorkBench (olly-styles/WorkBench), a set of workplace tasks with ground-truth outcomes, against WorkBench's own agent loop, and measures prompt injection screens on AgentDojo.
+bench/ measures deskclerk's agent on WorkBench (olly-styles/WorkBench), a set of workplace tasks with ground-truth outcomes, against WorkBench's own agent loop, and measures prompt injection screens on AgentDojo, LLMail-Inject and InjecAgent.
 
 ## Files
 
 - `workbench.py`: the task files, the dev/test split, the date line WorkBench puts before every task, and the columns of a results file.
 - `workbench_server.py`: serves the WorkBench tools over MCP and logs each executed call in the format WorkBench's grader replays.
 - `run_reference.py`: runs WorkBench's own agent loop, unchanged, on one split.
-- `run_deskclerk.py`: runs deskclerk's agent loop on one split against the WorkBench MCP server, with the write gate set to none or rules, and with the settings the product uses: its system instructions (followed by WorkBench's date line and act-without-confirmation sentence), its output limit, its effort setting and its step limit.
+- `run_deskclerk.py`: runs deskclerk's agent loop on one split against the WorkBench MCP server, with the write gate set to none or rules, and with the settings the product uses: its system instructions (followed by WorkBench's date line and act-without-confirmation sentence), its output limit, its effort setting and its step limit. `--selection all|server|llm` offers every tool, the servers Jev picks, or the tools LangChain's LLMToolSelectorMiddleware picks. The WorkBench tools are served as five MCP servers, one per domain, in every arm.
 - `compare.py`: scores results files with WorkBench's own scorer and compares runs pairwise with an exact McNemar test.
 - `jev_calls.py`: replays the calls logged in results files and lists every write call with its request, arguments, earlier results and whether the ground truth contains it.
 - `jev_score.py`: scores those write calls with Jev and with Claude Haiku 5.5 and reports how well each score separates wanted from unwanted calls.
 - `run_agentdojo.py`: runs the agent through AgentDojo v1.2.2 with one defense (none, spotlighting, deberta, promptguard or jev) and writes a JSON summary. The jev defense asks Jev through `src/deskclerk/screen.py`, the file the product screens tool outputs with.
 - `compare_agentdojo.py`: prints one table of the summaries and an exact McNemar test of each defense against no defense.
 - `dojo_summary.py`: the summary arithmetic and the model cost used by the two files above.
+- `llmail_inject.py`: scores the phase 2 attacks of Microsoft's LLMail-Inject challenge and clean texts with Jev, Prompt Guard 2 and DeBERTa.
+- `run_injecagent.py`: runs InjecAgent's own prompted agent with no defense and with Jev screening the injected tool response, and compares the two case by case.
 - `agentdojo-requirements.txt`: what the AgentDojo virtualenv installs.
 - `test_*.py`: tests for the files above. They need `WORKBENCH_PATH` and `SERVER_PYTHON` set (see below).
 - `requirements.txt`: what the bench virtualenv installs.
@@ -126,6 +128,29 @@ HF_HUB_OFFLINE=1 PYTHONPATH=src:bench ~/.venvs/dojo/bin/python bench/screen_outp
 ```
 
 The report gives, per screen at threshold 0.5, the flagged share of outputs that carry the `<INFORMATION>` marker and of outputs that do not, with a 95% Wilson interval on each share and the ROC AUC, then two rules that combine Prompt Guard 2 and Jev: both flag, or either flags.
+
+## Measure the screens on LLMail-Inject
+
+This needs the AgentDojo run with no defense from the section above, and the Prompt Guard 2 and DeBERTa models in the local Hugging Face cache. Download `labelled_unique_submissions_phase2.json`, `emails_for_fp_tests.json` and `scenarios.json` from the `data` folder of the Hugging Face dataset microsoft/llmail-inject-challenge into `llmail-inject/data/`. Then, in the AgentDojo virtualenv:
+
+```
+HF_HUB_OFFLINE=1 PYTHONPATH=src:bench ~/.venvs/dojo/bin/python bench/llmail_inject.py \
+  llmail-inject runs/dojo/claude-haiku-5-5-none runs/llmail --jev-budget-usd 3
+```
+
+It takes the 5,000 attacks with the lowest sha256 of their email text, uses the challenge's clean emails and the clean AgentDojo outputs as negatives, and writes `scores.jsonl` and `report.md`. A rerun skips scored texts.
+
+## Run InjecAgent with and without the screen
+
+Clone InjecAgent at the commit the run used. Its own requirements are not needed. Run it in the bench virtualenv:
+
+```
+git clone https://github.com/uiuc-kang-lab/InjecAgent.git
+git -C InjecAgent checkout f19c9f2
+PYTHONPATH=src ~/.venvs/bench/bin/python bench/run_injecagent.py --vendor InjecAgent --out runs/injecagent
+```
+
+It reads `ANTHROPIC_API_KEY` and `TYPESAFE_API_KEY`. `--per-setting 20` runs a pilot of 20 cases per setting.
 
 ## Run the bench tests
 
