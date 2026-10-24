@@ -1,0 +1,8 @@
+[[server]]
+name = "tasks"
+url = "http://localhost:8100/mcp"
+auth = "none"
+
+# [[server]]
+# name = "linear"
+# url = "https://mcp.linear.app/mcp"

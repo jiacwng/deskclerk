@@ -25,6 +25,24 @@ services:
       timeout: 5s
       retries: 60
 
+  # A small task list server on http://localhost:8100/mcp with no sign-in, for trying deskclerk
+  # without an account. It starts empty and keeps its tasks in memory.
+  demo:
+    build: .
+    network_mode: host
+    command: ["python", "/app/demo/tasks_server.py"]
+    volumes:
+      - ./demo/tasks_server.py:/app/demo/tasks_server.py:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import socket; socket.create_connection(('127.0.0.1', 8100), 2).close()
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
   # The web app on http://localhost:8000. It shares the host's network, so the issuer, the
   # sign-in redirect and MCP servers on localhost keep the addresses the browser uses.
   deskclerk:
@@ -41,6 +59,8 @@ services:
       - deskclerk-data:/app/data
     depends_on:
       keycloak:
+        condition: service_healthy
+      demo:
         condition: service_healthy
 
 volumes:
