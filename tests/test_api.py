@@ -219,6 +219,13 @@ def session_cookie(user: str) -> str:
     return cookies.sign(SESSION_KEY.encode(), "session", payload, 3600)
 
 
+def tampered_signature(value: str) -> str:
+    body, _, tag = value.partition(".")
+    raw = bytearray(base64.urlsafe_b64decode(tag + "=" * (-len(tag) % 4)))
+    raw[0] ^= 0x01
+    return f"{body}.{base64.urlsafe_b64encode(bytes(raw)).decode().rstrip('=')}"
+
+
 def test_the_app_needs_a_session_key(
     token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
 ) -> None:
@@ -684,7 +691,7 @@ def test_a_forged_expired_or_misplaced_cookie_is_not_a_session(
     key = SESSION_KEY.encode()
     payload = {"user": "ada", "client": "c"}
     refused = [
-        session_cookie("ada")[:-2] + "xx",
+        tampered_signature(session_cookie("ada")),
         cookies.sign(b"another key", "session", payload, 3600),
         cookies.sign(key, "session", payload, -10),
         cookies.sign(key, "login", payload, 3600),
