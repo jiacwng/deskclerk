@@ -10,6 +10,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 MIN_SESSION_KEY_CHARS = 32
 MAX_PORT = 65535
+DEFAULT_ASK_SECONDS = 180
+DEFAULT_TOOL_OUTPUT_CHARS = 20000
+DEFAULT_HISTORY_TOKENS = 40000
 
 
 class Settings(BaseSettings):
@@ -31,6 +34,9 @@ class Settings(BaseSettings):
     token_file: Path = Path("data/tokens.sqlite")
     token_key: SecretStr | None = None
     step_limit: int = 8
+    ask_seconds: int = Field(default=DEFAULT_ASK_SECONDS, gt=0)
+    tool_output_chars: int = Field(default=DEFAULT_TOOL_OUTPUT_CHARS, gt=0)
+    history_tokens: int = Field(default=DEFAULT_HISTORY_TOKENS, gt=0)
     tool_selection: bool = False
     public_url: str = "http://localhost:8000"
     session_key: SecretStr | None = None

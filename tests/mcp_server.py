@@ -1,9 +1,11 @@
 # A real MCP server with OAuth for the tests: the SDK's server side on a free localhost port,
 # an authorization server that approves every request, a read tool, a write tool and a tool
-# that fails, plus a delete tool on request. With oauth=False it has no sign-in at all. With
-# issuer_in_response it advertises and sends the RFC 9207 iss parameter on the redirect. A test can
-# change the read tool's description or add a tool while the server runs.
+# that fails, plus a delete tool, a tool that pauses and a tool with a long result on request.
+# With oauth=False it has no sign-in at all. With issuer_in_response it advertises and sends the
+# RFC 9207 iss parameter on the redirect. A test can change the read tool's description or add a
+# tool while the server runs.
 
+import asyncio
 import secrets
 import socket
 import threading
@@ -169,6 +171,7 @@ def running_mcp_server(
     delete_tool: bool = False,
     issuer_in_response: bool = False,
     image_tool: bool = False,
+    heavy_tools: bool = False,
 ) -> Iterator[RunningServer]:
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
@@ -210,6 +213,17 @@ def running_mcp_server(
                 TextContent(text="sales are up"),
                 ImageContent(data="aGk=", mime_type="image/png"),
             ]
+
+    if heavy_tools:
+
+        @mcp.tool(annotations=READ_ONLY)
+        async def pause(seconds: float) -> str:
+            await asyncio.sleep(seconds)
+            return "rested"
+
+        @mcp.tool(annotations=READ_ONLY)
+        def long_note(characters: int) -> str:
+            return "x" * characters
 
     if delete_tool:
 
