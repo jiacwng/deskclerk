@@ -32,7 +32,7 @@ from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.messages.ai import UsageMetadata
 from pydantic import SecretStr
 
-from deskclerk import cookies
+from deskclerk import cookies, sessions
 from deskclerk.api import (
     BROWSER_AUTH_REFUSED,
     CSRF_HEADER,
@@ -42,13 +42,14 @@ from deskclerk.api import (
     MissingSessionKey,
     create_app,
 )
-from deskclerk.auth import SigningKeyLookup, discover_jwks_url, jwks_signing_key
+from deskclerk.auth import Identity, SigningKeyLookup, discover_jwks_url, jwks_signing_key
 from deskclerk.config import Settings
 from deskclerk.connections import OAuthConnections
 from deskclerk.instructions import system_prompt
 from deskclerk.jev import PRICE_PER_INPUT_TOKEN, Jev
 from deskclerk.screen import WITHHELD
 from deskclerk.servers import McpServer
+from deskclerk.sessions import SessionStore
 from deskclerk.spending import SpendingStore
 from deskclerk.tokens import TokenStore
 from deskclerk.tracing import AskTrace, Tracing
@@ -67,6 +68,7 @@ Sign = Callable[[dict[str, object]], str]
 class Web:
     client: TestClient
     tokens: TokenStore
+    sessions: SessionStore
 
 
 @pytest.fixture
@@ -104,6 +106,7 @@ def web(
     tracing: Tracing | None = None,
 ) -> Iterator[Web]:
     tokens = TokenStore(path / "tokens.sqlite", key or Fernet.generate_key().decode())
+    sessions = SessionStore(path / "tokens.sqlite")
     connections = OAuthConnections(tokens, REDIRECT, "deskclerk test", 600)
     app = create_app(
         settings,
@@ -111,6 +114,7 @@ def web(
         connections,
         tokens,
         SpendingStore(path / "spending.sqlite"),
+        sessions,
         model,
         write_check(),
         jev,
@@ -119,7 +123,7 @@ def web(
         idp_transport=idp_transport,
     )
     with TestClient(app) as client:
-        yield Web(client, tokens)
+        yield Web(client, tokens, sessions)
 
 
 class FakeIdp:
@@ -212,20 +216,8 @@ def audit_lines(caplog: pytest.LogCaptureFixture) -> list[dict[str, object]]:
     return [json.loads(r.getMessage()) for r in caplog.records if r.name == "deskclerk.audit"]
 
 
-def session_cookie(user: str) -> str:
-    payload = {
-        "user": user,
-        "client": "deskclerk-api",
-        "name": user,
-    }
-    return cookies.sign(SESSION_KEY.encode(), "session", payload, 3600)
-
-
-def tampered_signature(value: str) -> str:
-    body, _, tag = value.partition(".")
-    raw = bytearray(base64.urlsafe_b64decode(tag + "=" * (-len(tag) % 4)))
-    raw[0] ^= 0x01
-    return f"{body}.{base64.urlsafe_b64encode(bytes(raw)).decode().rstrip('=')}"
+def session_cookie(site: Web, user: str, sid: str | None = None, seconds: int = 3600) -> str:
+    return site.sessions.create(Identity(user, "deskclerk-api", user, sid, user), seconds)
 
 
 def test_the_app_needs_a_session_key(
@@ -679,7 +671,7 @@ def test_a_cookie_post_needs_the_custom_header_and_a_bearer_post_does_not(
     settings = make_settings(token_settings)
     model = ScriptedModel(messages=itertools.repeat(answer("ok")))
     with web(settings, [], model, token_signing_key, tmp_path) as site:
-        site.client.cookies.set(SESSION_COOKIE, session_cookie("ada"))
+        site.client.cookies.set(SESSION_COOKIE, session_cookie(site, "ada"))
         assert site.client.get("/me").json() == {"user": "ada", "name": "ada"}
         assert ask(site, {}).status_code == 403
         assert ask(site, {CSRF_HEADER: "something else"}).status_code == 403
@@ -690,24 +682,113 @@ def test_a_cookie_post_needs_the_custom_header_and_a_bearer_post_does_not(
         assert ask(site, as_user(sign_token, "ada")).status_code == 200
 
 
-def test_a_forged_expired_or_misplaced_cookie_is_not_a_session(
+def test_an_unknown_or_expired_session_id_is_not_a_session(
     token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
 ) -> None:
     settings = make_settings(token_settings)
-    key = SESSION_KEY.encode()
-    payload = {"user": "ada", "client": "c", "name": "ada"}
-    refused = [
-        tampered_signature(session_cookie("ada")),
-        cookies.sign(b"another key", "session", payload, 3600),
-        cookies.sign(key, "session", payload, -10),
-        cookies.sign(key, "login", payload, 3600),
-        "",
-    ]
     with web(settings, [], script(), token_signing_key, tmp_path) as site:
+        refused = ["", "made-up", session_cookie(site, "ada", seconds=-10)]
         for value in refused:
             site.client.cookies.set(SESSION_COOKIE, value)
             assert site.client.get("/me").status_code == 401
             site.client.cookies.clear()
+        assert site.sessions.lookup(refused[2]) is None
+
+
+def test_a_copied_cookie_stops_working_after_logout(
+    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings)
+    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+        copied = session_cookie(site, "ada")
+        site.client.cookies.set(SESSION_COOKIE, copied)
+        assert site.client.post("/logout", headers={CSRF_HEADER: CSRF_VALUE}).status_code == 204
+        site.client.cookies.clear()
+        site.client.cookies.set(SESSION_COOKIE, copied)
+        assert site.client.get("/me").status_code == 401
+
+
+def logout_token(sign_token: Sign, **claims: object) -> str:
+    events: dict[str, object] = {"http://schemas.openid.net/event/backchannel-logout": {}}
+    return sign_token({"jti": "j1", "events": events, "typ": None} | claims)
+
+
+def test_a_logout_token_ends_a_browser_sign_in_by_the_sid_of_its_id_token(
+    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings)
+    idp = FakeIdp(settings.issuer)
+    with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
+        state, _, _ = begin_sign_in(site)
+        finish_sign_in(site, idp, sign_token, state, {"sid": "from-keycloak"})
+        assert site.client.get("/me").status_code == 200
+        form = {"logout_token": logout_token(sign_token, sid="from-keycloak")}
+        assert site.client.post("/logout/backchannel", data=form).status_code == 200
+        assert site.client.get("/me").status_code == 401
+
+
+def test_a_sub_only_logout_token_ends_a_session_when_users_are_named_by_another_claim(
+    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings, user_claim="preferred_username")
+    idp = FakeIdp(settings.issuer)
+    with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
+        state, _, _ = begin_sign_in(site)
+        claims: dict[str, object] = {"sub": "uuid-1", "preferred_username": "ada"}
+        finish_sign_in(site, idp, sign_token, state, claims)
+        assert site.client.get("/me").json()["user"] == "ada"
+        form = {"logout_token": logout_token(sign_token, sub="uuid-1")}
+        assert site.client.post("/logout/backchannel", data=form).status_code == 200
+        assert site.client.get("/me").status_code == 401
+
+
+def test_a_logout_token_ends_the_sessions_it_names(
+    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings)
+    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+        by_sid = session_cookie(site, "ada", sid="s1")
+        other_sid = session_cookie(site, "ada", sid="s2")
+        by_user = session_cookie(site, "bob", sid="s3")
+        bystander = session_cookie(site, "cy", sid="s4")
+        form = {"logout_token": logout_token(sign_token, sid="s1", sub=None)}
+        assert site.client.post("/logout/backchannel", data=form).status_code == 200
+        form = {"logout_token": logout_token(sign_token, sub="bob")}
+        assert site.client.post("/logout/backchannel", data=form).status_code == 200
+        alive = {value: site.sessions.lookup(value) is not None for value in
+                 (by_sid, other_sid, by_user, bystander)}  # fmt: skip
+        assert alive == {by_sid: False, other_sid: True, by_user: False, bystander: True}
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        {"sid": "s1", "aud": "another-client"},
+        {"sid": "s1", "events": {"something-else": {}}},
+        {"sid": "s1", "events": None},
+        {"sid": "s1", "nonce": "n"},
+        {"sid": None, "sub": None},
+        {"sid": "s1", "jti": None},
+        {"sid": "s1", "iss": "http://elsewhere.test"},
+    ],
+)
+def test_a_bad_logout_token_is_refused_and_ends_nothing(
+    claims: dict[str, object],
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(token_settings)
+    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+        value = session_cookie(site, "ada", sid="s1")
+        form = {"logout_token": logout_token(sign_token, **claims)}
+        assert site.client.post("/logout/backchannel", data=form).status_code == 400
+        assert (
+            site.client.post("/logout/backchannel", data={"logout_token": "junk"}).status_code
+            == 400
+        )
+        assert site.sessions.lookup(value) is not None
 
 
 def test_the_page_is_served_with_a_policy_that_allows_only_its_own_script(
@@ -810,10 +891,10 @@ def test_the_session_lasts_the_session_hours_after_the_id_token_expires(
         finish_sign_in(site, idp, sign_token, state, {"exp": int(time.time()) + 5})
         assert site.client.get("/me").json() == {"user": "district-1", "name": "district-1"}
         now = time.time()
-        monkeypatch.setattr(cookies, "time", SimpleNamespace(time=lambda: now + 10))
+        monkeypatch.setattr(sessions, "time", SimpleNamespace(time=lambda: now + 10))
         assert site.client.get("/me").json() == {"user": "district-1", "name": "district-1"}
         later = now + 8 * 3600 + 10
-        monkeypatch.setattr(cookies, "time", SimpleNamespace(time=lambda: later))
+        monkeypatch.setattr(sessions, "time", SimpleNamespace(time=lambda: later))
         assert site.client.get("/me").status_code == 401
 
 
@@ -1101,7 +1182,7 @@ def test_a_cookie_caller_needs_the_custom_header_to_connect_or_disconnect(
 ) -> None:
     settings = make_settings(token_settings)
     with web(settings, [], script(), token_signing_key, tmp_path) as site:
-        site.client.cookies.set(SESSION_COOKIE, session_cookie("ada"))
+        site.client.cookies.set(SESSION_COOKIE, session_cookie(site, "ada"))
         assert site.client.post(path).status_code == 403
         assert site.client.post(path, headers={CSRF_HEADER: "something else"}).status_code == 403
         assert site.client.post(path, headers={CSRF_HEADER: CSRF_VALUE}).status_code == 404
@@ -1112,7 +1193,7 @@ def test_logging_out_clears_the_session_cookie(
 ) -> None:
     settings = make_settings(token_settings)
     with web(settings, [], script(), token_signing_key, tmp_path) as site:
-        site.client.cookies.set(SESSION_COOKIE, session_cookie("ada"))
+        site.client.cookies.set(SESSION_COOKIE, session_cookie(site, "ada"))
         assert site.client.get("/me").json() == {"user": "ada", "name": "ada"}
         loggedout = site.client.post("/logout", headers={CSRF_HEADER: CSRF_VALUE})
         assert loggedout.status_code == 204

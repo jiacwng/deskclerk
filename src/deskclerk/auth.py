@@ -1,5 +1,6 @@
 # Names the employee an OpenID Connect token was issued to: authenticate checks the access token a
-# bearer caller sends, identify checks the ID token that browser sign-in receives.
+# bearer caller sends, identify checks the ID token that browser sign-in receives, and
+# logout_target checks the logout token the login server sends when it ends a session.
 
 import hmac
 import threading
@@ -18,6 +19,7 @@ SigningKeyLookup = Callable[[str], jwt.PyJWK]
 JWKS_TIMEOUT_SECONDS = 5
 JWKS_REFETCH_SECONDS = 60
 CLOCK_SKEW_SECONDS = 30
+BACKCHANNEL_LOGOUT_EVENT = "http://schemas.openid.net/event/backchannel-logout"
 
 
 class AuthError(Exception):
@@ -33,6 +35,14 @@ class Identity:
     user_id: str
     client_id: str
     display_name: str
+    sid: str | None = None
+    subject: str | None = None
+
+
+@dataclass(frozen=True)
+class LogoutTarget:
+    sid: str | None
+    sub: str | None
 
 
 def _display_name(claims: dict[str, Any], user_id: str) -> str:
@@ -145,11 +155,45 @@ def identify(
     if not isinstance(username, str) or not username:
         raise AuthError(f"{settings.user_claim} must be a non-empty string")
 
+    sid, subject = claims.get("sid"), claims.get("sub")
     return Identity(
         user_id=username,
         client_id=settings.client_id,
         display_name=_display_name(claims, username),
+        sid=sid if isinstance(sid, str) and sid else None,
+        subject=subject if isinstance(subject, str) and subject else None,
     )
+
+
+def logout_target(
+    logout_token: str, settings: Settings, signing_key: SigningKeyLookup
+) -> LogoutTarget:
+    try:
+        claims = jwt.decode(
+            logout_token,
+            signing_key(logout_token),
+            algorithms=["RS256", "ES256"],
+            audience=settings.client_id,
+            issuer=settings.issuer,
+            leeway=CLOCK_SKEW_SECONDS,
+            options={"require": ["exp", "iat", "iss", "aud", "jti"]},
+        )
+    except jwt.PyJWKClientConnectionError as error:
+        raise AuthUnavailable(f"cannot fetch the signing keys: {error}") from error
+    except jwt.PyJWTError as error:
+        raise AuthError(f"invalid token: {error}") from error
+
+    events = claims.get("events")
+    if not isinstance(events, dict) or BACKCHANNEL_LOGOUT_EVENT not in events:
+        raise AuthError("not a logout token: the back-channel logout event is missing")
+    if "nonce" in claims:
+        raise AuthError("not a logout token: it carries a nonce")
+    sid, sub = claims.get("sid"), claims.get("sub")
+    sid = sid if isinstance(sid, str) and sid else None
+    sub = sub if isinstance(sub, str) and sub else None
+    if sid is None and sub is None:
+        raise AuthError("a logout token must name a sid or a sub")
+    return LogoutTarget(sid, sub)
 
 
 # An ID token is signed by the same keys and can name the API as its audience. Only access tokens

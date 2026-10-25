@@ -21,8 +21,7 @@ flowchart LR
 
 You need Docker with Compose and an Anthropic API key. The steps run deskclerk, a development
 Keycloak and a demo task server on this machine, on the ports 8000, 8080 and 8100. deskclerk and
-the demo server use the host's network, which Docker Engine on Linux and WSL supports. Docker
-Desktop for Mac is not tested.
+the demo server share Keycloak's network. Docker Desktop for Mac is not tested.
 
 1. Copy `.env.example` to `.env`. Fill in `ANTHROPIC_API_KEY`, and make `DESKCLERK_TOKEN_KEY` and
    `DESKCLERK_SESSION_KEY` with the two `python3` commands in the file. Without a TypeSafe key,
@@ -89,6 +88,9 @@ demo server from `servers.toml`, and start the app alone with
 `docker compose up -d --no-deps deskclerk`. Register its `/login/callback` address with your
 provider. If the provider gives the app a client secret, set `DESKCLERK_CLIENT_SECRET`.
 deskclerk names each employee by the `sub` claim, which a provider never gives to another person.
+Signing out ends the session on the server. Set the client's back-channel logout URL to
+`https://<your deskclerk>/logout/backchannel`, so that disabling an employee at the provider also
+signs them out of deskclerk.
 On Entra ID, set `DESKCLERK_USER_CLAIM=oid`, the id that stays the same across all apps of the
 tenant.
 

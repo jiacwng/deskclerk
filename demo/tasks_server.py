@@ -1,5 +1,5 @@
 # A demo MCP server for deskclerk: a task list held in memory, empty at start, over Streamable HTTP
-# on 127.0.0.1:8100 at /mcp with no sign-in.
+# on port 8100 at /mcp with no sign-in.
 
 import secrets
 from typing import Literal
@@ -57,4 +57,4 @@ def build_server() -> MCPServer:
 
 
 if __name__ == "__main__":
-    build_server().run("streamable-http", host="127.0.0.1", port=8100)
+    build_server().run("streamable-http", host="0.0.0.0", port=8100)  # noqa: S104

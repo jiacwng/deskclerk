@@ -19,6 +19,7 @@ from deskclerk.conversations import delete_user_threads
 from deskclerk.jev import jev_from_environment
 from deskclerk.providers import MissingApiKey, ProviderNotInstalled, chat_model
 from deskclerk.servers import ServersError, load_servers
+from deskclerk.sessions import SessionStore
 from deskclerk.spending import SpendingStore
 from deskclerk.tokens import TokenKeyError, TokenStore
 from deskclerk.tracing import TracingNotInstalled, tracing_from_environment
@@ -100,6 +101,7 @@ def main(argv: Sequence[str] = ()) -> None:
             connections,
             tokens,
             spending_store,
+            SessionStore(settings.token_file),
             chat_model(settings),
             write_check(),
             jev,

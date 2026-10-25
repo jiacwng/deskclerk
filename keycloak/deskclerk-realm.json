@@ -113,7 +113,9 @@
         "http://127.0.0.1:8000/login/callback"
       ],
       "attributes": {
-        "pkce.code.challenge.method": "S256"
+        "pkce.code.challenge.method": "S256",
+        "backchannel.logout.url": "http://localhost:8000/logout/backchannel",
+        "backchannel.logout.session.required": "true"
       },
       "webOrigins": [
         "http://localhost:8000",
@@ -267,20 +269,7 @@
         "include.in.token.scope": "true",
         "display.on.consent.screen": "true",
         "consent.screen.text": "Work on your connected accounts"
-      },
-      "protocolMappers": [
-        {
-          "name": "audience",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-audience-mapper",
-          "config": {
-            "included.custom.audience": "http://127.0.0.1:8001/mcp",
-            "access.token.claim": "true",
-            "id.token.claim": "false",
-            "introspection.token.claim": "true"
-          }
-        }
-      ]
+      }
     }
   ],
   "defaultDefaultClientScopes": [
