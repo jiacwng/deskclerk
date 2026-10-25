@@ -109,6 +109,12 @@ tokens, sessions, conversations and spending, and writes one audit line with the
 `DESKCLERK_RETENTION_DAYS` deletes conversations unused for that many days. The default, 0,
 keeps them.
 
+Each secret can come from a file, as in the official Postgres image: set
+`DESKCLERK_TOKEN_KEY_FILE=/run/secrets/token_key` instead of `DESKCLERK_TOKEN_KEY`. This works
+for the model and TypeSafe keys and for every variable a server entry names. `/livez` answers
+while the process runs. `/readyz` answers once the stores open and the login server has
+answered, and the image's health check uses it.
+
 ## Serving it over HTTPS
 
 deskclerk listens on 127.0.0.1:8000 by default, so put a reverse proxy on the same machine in
