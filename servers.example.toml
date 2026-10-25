@@ -1,8 +1,30 @@
+# Copy to servers.toml. Each [[server]] is one MCP server the agent may use. A name uses letters,
+# digits, hyphens and single underscores. DESKCLERK_SERVERS_FILE can name a .json file in the
+# mcpServers format instead.
 [[server]]
 name = "tasks"
 url = "http://localhost:8100/mcp"
+# No sign-in. Without it, each employee signs in to the server with OAuth.
 auth = "none"
 
 # [[server]]
 # name = "linear"
 # url = "https://mcp.linear.app/mcp"
+# A client registered with the server's login, and the variable in .env that holds its secret.
+# Without them, and with an https DESKCLERK_PUBLIC_URL, deskclerk signs in as the client document
+# it serves at /oauth/client.json, or registers a client per employee when the login does not
+# support that.
+# client_id = "..."
+# client_secret_env = "LINEAR_CLIENT_SECRET"
+# The only tools the agent may use from this server.
+# tools = ["list_issues", "get_issue"]
+# Only employees in one of these groups see this server. A browser session keeps the groups it
+# had at sign-in. On Entra ID, emit only the groups assigned to the application.
+# groups = ["engineering"]
+# Headers sent with every request. ${env:NAME} is replaced by that variable.
+# headers = { "X-Team" = "${env:LINEAR_TEAM}" }
+# Mutual TLS. Mount these files into the container.
+# client_cert = "/run/certs/client.pem"
+# client_key = "/run/certs/client.key"
+# Allow an http:// address, for a server on a private network.
+# plain_http = true
