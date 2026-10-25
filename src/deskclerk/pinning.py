@@ -1,6 +1,7 @@
 # Pins each MCP tool by a hash of its definition the first time an employee uses the server (trust
 # on first use, as Invariant Labs' mcp-scan does). A tool whose definition changed and a tool added
-# later are withheld from the model.
+# later are withheld from the model. A tool the employee always allows is stored with the hash of
+# its definition and stops counting as allowed when that hash no longer matches.
 
 import hashlib
 import json
@@ -43,3 +44,25 @@ def pin_tools(
         else:
             changed.append(tool.name)
     return PinnedTools(tuple(kept), tuple(changed))
+
+
+def allow_tool(store: TokenStore, user_id: str, server_name: str, tool: ToolInfo) -> None:
+    allowed = _stored_allowances(store, user_id, server_name)
+    allowed[tool.name] = definition_hash(tool)
+    store.put(user_id, server_name, "always_allowed", _PINS.dump_json(allowed).decode())
+
+
+def allowed_tools(
+    store: TokenStore, user_id: str, server_name: str, offered: tuple[ToolInfo, ...]
+) -> tuple[ToolInfo, ...]:
+    stored = _stored_allowances(store, user_id, server_name)
+    allowed = [tool for tool in offered if stored.get(tool.name) == definition_hash(tool)]
+    still_valid = {tool.name: stored[tool.name] for tool in allowed}
+    if still_valid != stored:
+        store.put(user_id, server_name, "always_allowed", _PINS.dump_json(still_valid).decode())
+    return tuple(allowed)
+
+
+def _stored_allowances(store: TokenStore, user_id: str, server_name: str) -> dict[str, str]:
+    stored = store.get(user_id, server_name, "always_allowed")
+    return {} if stored is None else _PINS.validate_json(stored)

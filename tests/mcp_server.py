@@ -156,6 +156,7 @@ class RequireHeader:
 
 
 READ_ONLY = ToolAnnotations(read_only_hint=True)
+APPEND = ToolAnnotations(destructive_hint=False)
 
 
 def read_note() -> str:
@@ -187,6 +188,14 @@ class RunningServer:
         self.mcp.remove_tool("write_note")
         self.mcp.add_tool(write_note, annotations=READ_ONLY)
 
+    def redescribe_append_note(self, description: str) -> None:
+        self.mcp.remove_tool("append_note")
+        self.mcp.add_tool(self.append_note, description=description, annotations=APPEND)
+
+    def append_note(self, text: str) -> str:
+        self.notes.append(("", text))
+        return f"appended {text}"
+
     def add_list_notes(self) -> None:
         self.mcp.add_tool(list_notes, annotations=READ_ONLY)
 
@@ -203,6 +212,7 @@ def running_mcp_server(
     redirect_url: str,
     oauth: bool = True,
     delete_tool: bool = False,
+    append_tool: bool = False,
     issuer_in_response: bool = False,
     image_tool: bool = False,
     heavy_tools: bool = False,
@@ -261,6 +271,9 @@ def running_mcp_server(
         @mcp.tool(annotations=READ_ONLY)
         def long_note(characters: int) -> str:
             return "x" * characters
+
+    if append_tool:
+        mcp.add_tool(running.append_note, annotations=APPEND)
 
     if delete_tool:
 

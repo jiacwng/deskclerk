@@ -188,8 +188,10 @@ pre {
 .pending-actions { display: flex; align-items: center; flex-wrap: wrap; }
 .pending-actions button.choice { min-height: 2rem; }
 .pending-actions button.choice.approve { border-radius: 4px 0 0 4px; margin-right: -1px; }
+.pending-actions button.choice.always { border-radius: 0; margin-right: -1px; }
 .pending-actions button.choice.reject { border-radius: 0 4px 4px 0; margin-right: 0.75rem; }
 button.choice[aria-pressed="true"].approve { background: var(--ok); border-color: var(--ok); color: var(--surface); }
+button.choice[aria-pressed="true"].always { background: var(--ok); border-color: var(--ok); color: var(--surface); }
 button.choice[aria-pressed="true"].reject { background: var(--bad); border-color: var(--bad); color: var(--surface); }
 .confirm-foot { display: flex; align-items: center; gap: 0.75rem; padding: 0.625rem 0.75rem; border-top: 1px solid var(--line); }
 
@@ -479,17 +481,20 @@ function showPending(pending) {
     const reject = button("Reject", () => decide("reject"), "choice reject");
     approve.setAttribute("aria-pressed", "false");
     reject.setAttribute("aria-pressed", "false");
+    const always = call.destructive ? null : button("Always allow", () => decide("approve_always"), "choice always");
+    if (always) always.setAttribute("aria-pressed", "false");
     const verdict = make("span", "badge info", "Not decided");
     const decide = (choice) => {
       decisions[call.id] = choice;
       card.dataset.choice = choice;
       approve.setAttribute("aria-pressed", String(choice === "approve"));
       reject.setAttribute("aria-pressed", String(choice === "reject"));
-      verdict.textContent = choice === "approve" ? "Approved" : "Rejected";
-      verdict.className = choice === "approve" ? "badge ok" : "badge bad";
+      if (always) always.setAttribute("aria-pressed", String(choice === "approve_always"));
+      verdict.textContent = { approve: "Approved", approve_always: "Always allowed", reject: "Rejected" }[choice];
+      verdict.className = choice === "reject" ? "badge bad" : "badge ok";
       updateDecided(pending.length);
     };
-    group.append(approve, reject, verdict);
+    group.append(approve, ...(always ? [always] : []), reject, verdict);
     card.append(title, part("Arguments", JSON.stringify(call.arguments, null, 2)), group);
     list.append(card);
   }

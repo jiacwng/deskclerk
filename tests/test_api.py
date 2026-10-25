@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -1562,3 +1562,57 @@ def test_a_pause_and_its_confirmation_are_audited(
     assert confirmed["executed"] == [{"server": "notes", "tool": "write_note", "is_error": False}]
     assert confirmed["conversation"] == asked["conversation"]
     assert "secret-text" not in caplog.text
+
+
+@pytest.fixture
+def append_server() -> Iterator[RunningServer]:
+    with running_mcp_server(REDIRECT, append_tool=True, delete_tool=True) as running:
+        yield running
+
+
+def test_a_destructive_call_cannot_be_always_allowed_and_a_non_destructive_one_can(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    append_server: RunningServer,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="deskclerk.audit")
+    model = script(
+        calls(("notes__delete_note", {"note_id": "n-1"})),
+        answer("deleted"),
+        calls(("notes__append_note", {"text": "one"})),
+        answer("appended"),
+        calls(("notes__append_note", {"text": "two"})),
+        answer("appended again"),
+    )
+    ada = as_user(sign_token, "ada")
+    with web(
+        make_settings(token_settings), [notes(append_server)], model, token_signing_key, tmp_path
+    ) as site:
+        connect(site, ada)
+        paused = ask(site, ada, "delete note n-1").json()
+        [waiting] = paused["pending"]
+        assert waiting["destructive"] is True
+        refused = confirm(site, ada, paused["conversation"], {waiting["id"]: "approve_always"})
+        assert refused.status_code == 422
+        approved = confirm(site, ada, paused["conversation"], {waiting["id"]: "approve"})
+        assert approved.json()["answer"] == "deleted"
+        paused = ask(site, ada, "append one").json()
+        [waiting] = paused["pending"]
+        assert waiting["destructive"] is False
+        always = confirm(site, ada, paused["conversation"], {waiting["id"]: "approve_always"})
+        assert always.json()["answer"] == "appended"
+        automatic = ask(site, ada, "append two").json()
+        assert automatic["pending"] == []
+        assert automatic["answer"] == "appended again"
+    assert [note[1] for note in append_server.notes] == ["one", "two"]
+    lines = [line for line in audit_lines(caplog) if line["entry"] in ("ask", "confirm")]
+    assert [
+        call["decision"] for line in lines for call in cast(list[dict[str, str]], line["decided"])
+    ] == [
+        "approve",
+        "approve_always",
+        "always",
+    ]
