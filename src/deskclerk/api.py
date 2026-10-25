@@ -1,7 +1,7 @@
 # The web front of the agent. An employee signs in with the company's OpenID Connect provider,
 # connects their MCP servers and asks the agent, which waits for the employee's confirmation before
-# a call that changes something. Browsers hold a signed session cookie; other clients send a
-# bearer token. Every dependency is passed to create_app.
+# a call that changes something. Browsers hold a session cookie that names a row in the session
+# table; other clients send a bearer token. Every dependency is passed to create_app.
 
 import asyncio
 import base64
@@ -19,7 +19,7 @@ from uuid import UUID, uuid4
 
 import anthropic
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -45,6 +45,7 @@ from deskclerk.auth import (
     SigningKeyLookup,
     authenticate,
     identify,
+    logout_target,
 )
 from deskclerk.config import Settings
 from deskclerk.connections import (
@@ -70,6 +71,7 @@ from deskclerk.quota import Quota
 from deskclerk.scope import jev_tool_selection
 from deskclerk.screen import jev_screen
 from deskclerk.servers import McpServer
+from deskclerk.sessions import SessionStore
 from deskclerk.spending import Spending, SpendingStore, month_of
 from deskclerk.tokens import TokenStore
 from deskclerk.tracing import Tracing
@@ -179,25 +181,6 @@ class Caller:
     by_cookie: bool
 
 
-def _session_payload(identity: Identity) -> dict[str, Any]:
-    return {
-        "user": identity.user_id,
-        "client": identity.client_id,
-        "name": identity.display_name,
-    }
-
-
-def _identity_from(payload: dict[str, Any]) -> Identity | None:
-    try:
-        return Identity(
-            user_id=str(payload["user"]),
-            client_id=str(payload["client"]),
-            display_name=str(payload["name"]),
-        )
-    except (KeyError, TypeError):
-        return None
-
-
 # The page is one file with one script and one style block, so the policy allows exactly those
 # two blocks by hash and nothing else.
 def _content_security_policy(page: str) -> str:
@@ -219,6 +202,7 @@ def create_app(
     connections: OAuthConnections,
     tokens: TokenStore,
     spending_store: SpendingStore,
+    sessions: SessionStore,
     model: BaseChatModel,
     gate: Gate,
     jev: Jev | None,
@@ -276,8 +260,9 @@ def create_app(
             except AuthUnavailable:
                 raise HTTPException(503, "the login server cannot be reached") from None
             return Caller(identity, by_cookie=False)
-        payload = cookies.unsign(session_key, "session", request.cookies.get(SESSION_COOKIE, ""))
-        session_identity = None if payload is None else _identity_from(payload)
+        session_identity = await run_in_threadpool(
+            sessions.lookup, request.cookies.get(SESSION_COOKIE, "")
+        )
         if session_identity is None:
             raise HTTPException(401, "sign in at /login", BEARER)
         return Caller(session_identity, by_cookie=True)
@@ -354,7 +339,7 @@ def create_app(
             raise HTTPException(401, BROWSER_AUTH_REFUSED) from None
         except AuthUnavailable:
             raise HTTPException(503, "the login server cannot be reached") from None
-        session = cookies.sign(session_key, "session", _session_payload(identity), session_seconds)
+        session = await run_in_threadpool(sessions.create, identity, session_seconds)
         response = RedirectResponse("/", status_code=303)
         response.delete_cookie(LOGIN_COOKIE, path="/login")
         response.set_cookie(
@@ -369,10 +354,25 @@ def create_app(
         return response
 
     @app.post("/logout", status_code=204)
-    async def logout(_: Caller = Depends(posting_caller)) -> Response:
+    async def logout(request: Request, _: Caller = Depends(posting_caller)) -> Response:
+        await run_in_threadpool(sessions.end, request.cookies.get(SESSION_COOKIE, ""))
         response = Response(status_code=204)
         response.delete_cookie(SESSION_COOKIE, path="/")
         return response
+
+    @app.post("/logout/backchannel")
+    async def backchannel_logout(logout_token: str = Form()) -> Response:
+        try:
+            target = await run_in_threadpool(logout_target, logout_token, settings, signing_key)
+        except AuthError:
+            raise HTTPException(400, "the logout token was refused") from None
+        except AuthUnavailable:
+            raise HTTPException(503, "the login server cannot be reached") from None
+        if target.sid is not None:
+            await run_in_threadpool(sessions.end_by_sid, target.sid)
+        elif target.sub is not None:
+            await run_in_threadpool(sessions.end_by_subject, target.sub)
+        return Response(status_code=200, headers={"Cache-Control": "no-store"})
 
     @app.get("/me")
     async def me(who: Caller = Depends(caller)) -> dict[str, str]:
