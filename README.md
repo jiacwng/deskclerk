@@ -21,8 +21,7 @@ flowchart LR
 
 You need Docker with Compose and an Anthropic API key. The steps run deskclerk, a development
 Keycloak and a demo task server on this machine, on the ports 8000, 8080 and 8100. deskclerk and
-the demo server use the host's network, which Docker Engine on Linux and WSL supports. Docker
-Desktop for Mac is not tested.
+the demo server share Keycloak's network. Docker Desktop for Mac is not tested.
 
 1. Copy `.env.example` to `.env`. Fill in `ANTHROPIC_API_KEY`, and make `DESKCLERK_TOKEN_KEY` and
    `DESKCLERK_SESSION_KEY` with the two `python3` commands in the file. Without a TypeSafe key,
