@@ -28,6 +28,7 @@ from starlette.concurrency import run_in_threadpool
 
 from deskclerk import cookies, oidc
 from deskclerk.agent import (
+    AlwaysAllowRefused,
     ConversationWaiting,
     Decision,
     Gate,
@@ -159,6 +160,7 @@ class PendingOut(BaseModel):
     server: str
     tool: str
     arguments: dict[str, Any]
+    destructive: bool
 
 
 class AskOut(BaseModel):
@@ -530,6 +532,12 @@ def create_app(
                 refuse(409, "this conversation has nothing to confirm", "nothing_pending")
             except WrongDecisions:
                 refuse(422, "decide every pending call exactly once", "wrong_decisions")
+            except AlwaysAllowRefused:
+                refuse(
+                    422,
+                    "only a call that does not delete or overwrite can be always allowed",
+                    "wrong_decisions",
+                )
             except TimeoutError:
                 cost = spending.cost_usd - spent_before
                 detail = (

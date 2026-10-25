@@ -64,6 +64,10 @@ later, is withheld until the employee reconnects. A server that does not answer 
 that request, and the agent says so. A tool whose full name is longer than 64 characters is not
 offered, and the log names it.
 
+Approve a call that does not delete or overwrite with Always allow, and deskclerk stops asking
+for that tool. It asks again after you disconnect the server, after the tool's definition
+changes, and after a tool result was withheld in the same request.
+
 ## Model, screen and tracing
 
 deskclerk runs on Anthropic, OpenAI, Azure OpenAI or Amazon Bedrock. Set `DESKCLERK_MODEL` to

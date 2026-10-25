@@ -50,7 +50,7 @@ from deskclerk.connections import (
 )
 from deskclerk.conversations import close_unanswered_calls, earlier_texts
 from deskclerk.instructions import unavailable_note
-from deskclerk.pinning import pin_tools
+from deskclerk.pinning import allow_tool, allowed_tools, pin_tools
 from deskclerk.providers import Usage, usage_from
 from deskclerk.screen import Screen, is_flagged
 from deskclerk.servers import McpServer
@@ -96,7 +96,7 @@ class BlockedCall:
     reason: str
 
 
-Decision = Literal["approve", "reject"]
+Decision = Literal["approve", "approve_always", "reject"]
 
 
 @dataclass(frozen=True)
@@ -105,13 +105,14 @@ class PendingCall:
     server: str
     tool: str
     arguments: dict[str, Any]
+    destructive: bool
 
 
 @dataclass(frozen=True)
 class DecidedCall:
     server: str
     tool: str
-    decision: Decision
+    decision: Decision | Literal["always"]
 
 
 @dataclass(frozen=True)
@@ -158,6 +159,10 @@ class NothingToConfirm(Exception):
 
 
 class WrongDecisions(Exception):
+    pass
+
+
+class AlwaysAllowRefused(Exception):
     pass
 
 
@@ -243,6 +248,8 @@ class _Shared:
     flagged: int = 0
     flag_raised: bool = False
     shown: set[str] = field(default_factory=set)
+    automatic: list[DecidedCall] = field(default_factory=list)
+    automatic_ids: set[str] = field(default_factory=set)
 
 
 class _Guard(AgentMiddleware[AgentState[Any], None, Any]):
@@ -409,6 +416,7 @@ async def run_agent(
     tools: dict[str, _Tool] = {}
     not_connected: list[str] = []
     unavailable: list[McpServerFailed] = []
+    always: set[str] = set()
     changed_tools: list[str] = []
     listings = await asyncio.gather(
         *(_list_tools(user_id, server, connections) for server in servers)
@@ -429,6 +437,9 @@ async def run_agent(
         changed_tools += [f"{server.name}__{name}" for name in pinned.changed]
         for info in pinned.kept:
             tools[f"{server.name}__{info.name}"] = _Tool(server, info)
+        for info in allowed_tools(tokens, user_id, server.name, pinned.kept):
+            if not info.destructive:
+                always.add(f"{server.name}__{info.name}")
     listed_any = len(listings) > len(not_connected) + len(unavailable)
     if unavailable and not listed_any:
         names = ", ".join(failure.server_name for failure in unavailable)
@@ -446,7 +457,7 @@ async def run_agent(
         tool_output_chars,
         history_tokens,
     )
-    confirmation = _confirmation(tools, shared)
+    confirmation = _confirmation(tools, frozenset(always), shared)
     read_only_names: list[BaseTool | str] = [
         name for name, tool in tools.items() if tool.info.read_only
     ]
@@ -482,12 +493,23 @@ async def run_agent(
             raise NothingToConfirm
         if set(decisions) != set(waiting):
             raise WrongDecisions
+        for interrupt_id, choice in decisions.items():
+            waiting_tool = tools.get(waiting[interrupt_id].value["name"])
+            if choice == "approve_always" and (
+                waiting_tool is None or waiting_tool.info.destructive
+            ):
+                raise AlwaysAllowRefused
         shared.shown = set(tools)
-        shared.flag_raised = _flag_before_pause(saved.values["messages"], waiting, tools)
+        shared.flag_raised = _flag_before_pause(
+            saved.values["messages"], waiting, tools, frozenset(always)
+        )
         for interrupt in waiting.values():
-            confirmation.interrupt_on.setdefault(interrupt.value["name"], _REVIEW)
+            confirmation.interrupt_on[interrupt.value["name"]] = _REVIEW
         start = Command(
-            resume={interrupt_id: {"type": choice} for interrupt_id, choice in decisions.items()}
+            resume={
+                interrupt_id: {"type": "reject" if choice == "reject" else "approve"}
+                for interrupt_id, choice in decisions.items()
+            }
         )
     try:
         output = await agent.ainvoke(start, config=config, version="v2")
@@ -496,12 +518,14 @@ async def run_agent(
         raise
     pending = tuple(_pending_call(interrupt, tools) for interrupt in output.interrupts)
     before = len(saved.values.get("messages", []))
-    decided = _decided_calls(output.value["messages"][before:], waiting, tools)
+    decided = _decided_calls(output.value["messages"][before:], waiting, tools, decisions or {})
     for call, choice in decided:
         if choice == "reject":
             shared.blocked.append(
                 BlockedCall(call.server, call.tool, call.arguments, "the employee declined")
             )
+        if choice == "approve_always":
+            allow_tool(tokens, user_id, call.server, tools[f"{call.server}__{call.tool}"].info)
 
     last = shared.last_response
     return AgentResult(
@@ -516,7 +540,10 @@ async def run_agent(
         shared.flagged,
         tuple(changed_tools),
         pending,
-        tuple(DecidedCall(call.server, call.tool, choice) for call, choice in decided),
+        (
+            *shared.automatic,
+            *(DecidedCall(call.server, call.tool, choice) for call, choice in decided),
+        ),
     )
 
 
@@ -524,16 +551,38 @@ _REVIEW: InterruptOnConfig = {"allowed_decisions": ["approve", "reject"]}
 _REJECTION = "User rejected the tool call"
 
 
-def _confirmation(tools: dict[str, _Tool], shared: _Shared) -> HumanInTheLoopMiddleware:
-    after_a_flag: InterruptOnConfig = {**_REVIEW, "when": lambda request: shared.flag_raised}
-    interrupt_on: dict[str, bool | InterruptOnConfig] = {
-        name: after_a_flag if tool.info.read_only else _REVIEW for name, tool in tools.items()
-    }
+def _confirmation(
+    tools: dict[str, _Tool], always: frozenset[str], shared: _Shared
+) -> HumanInTheLoopMiddleware:
+    def after_a_flag(request: ToolCallRequest) -> bool:
+        return shared.flag_raised
+
+    def always_allowed(request: ToolCallRequest) -> bool:
+        if shared.flag_raised:
+            return True
+        call_id = request.tool_call["id"] or ""
+        if call_id not in shared.automatic_ids:
+            shared.automatic_ids.add(call_id)
+            tool = tools[request.tool_call["name"]]
+            shared.automatic.append(DecidedCall(tool.server.name, tool.info.name, "always"))
+        return False
+
+    interrupt_on: dict[str, bool | InterruptOnConfig] = {}
+    for name, tool in tools.items():
+        if tool.info.read_only:
+            interrupt_on[name] = {**_REVIEW, "when": after_a_flag}
+        elif name in always:
+            interrupt_on[name] = {**_REVIEW, "when": always_allowed}
+        else:
+            interrupt_on[name] = _REVIEW
     return HumanInTheLoopMiddleware(interrupt_on=interrupt_on, interrupt_mode="per_call")
 
 
 def _flag_before_pause(
-    messages: list[AnyMessage], waiting: dict[str, Interrupt], tools: dict[str, _Tool]
+    messages: list[AnyMessage],
+    waiting: dict[str, Interrupt],
+    tools: dict[str, _Tool],
+    always: frozenset[str],
 ) -> bool:
     asked = max(
         index for index, message in enumerate(messages) if isinstance(message, HumanMessage)
@@ -544,9 +593,8 @@ def _flag_before_pause(
     ):
         return True
     return any(
-        tools[interrupt.value["name"]].info.read_only
-        for interrupt in waiting.values()
-        if interrupt.value["name"] in tools
+        name in tools and (tools[name].info.read_only or name in always)
+        for name in (interrupt.value["name"] for interrupt in waiting.values())
     )
 
 
@@ -556,11 +604,15 @@ def _pending_call(interrupt: Interrupt, tools: dict[str, _Tool]) -> PendingCall:
     server, tool = (
         ("", name) if waiting_tool is None else (waiting_tool.server.name, waiting_tool.info.name)
     )
-    return PendingCall(interrupt.id, server, tool, interrupt.value["args"])
+    destructive = waiting_tool is None or waiting_tool.info.destructive
+    return PendingCall(interrupt.id, server, tool, interrupt.value["args"], destructive)
 
 
 def _decided_calls(
-    new_messages: list[AnyMessage], waiting: dict[str, Interrupt], tools: dict[str, _Tool]
+    new_messages: list[AnyMessage],
+    waiting: dict[str, Interrupt],
+    tools: dict[str, _Tool],
+    chosen: dict[str, Decision],
 ) -> list[tuple[PendingCall, Decision]]:
     waiting_by_call = {interrupt.value["tool_call_id"]: interrupt for interrupt in waiting.values()}
     decided: list[tuple[PendingCall, Decision]] = []
@@ -570,7 +622,7 @@ def _decided_calls(
         if isinstance(message, ToolMessage) and message.tool_call_id in waiting_by_call:
             call = _pending_call(waiting_by_call[message.tool_call_id], tools)
             declined = message.status == "error" and str(message.content).startswith(_REJECTION)
-            decided.append((call, "reject" if declined else "approve"))
+            decided.append((call, "reject" if declined else chosen[call.id]))
     return decided
 
 
