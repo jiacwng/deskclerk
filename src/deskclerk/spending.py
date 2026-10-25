@@ -50,6 +50,10 @@ class SpendingStore:
             ).fetchone()
         return float(row[0])
 
+    def delete_user(self, user_id: str) -> int:
+        with self._database() as database:
+            return database.execute("DELETE FROM costs WHERE user_id = ?", (user_id,)).rowcount
+
     def add(self, user_id: str, month: str, source: str, usage: Usage, usd: float) -> None:
         with self._database() as database:
             database.execute(
