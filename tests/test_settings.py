@@ -73,3 +73,8 @@ def test_the_old_sign_in_redirect_setting_has_no_effect(monkeypatch: pytest.Monk
 def test_the_deadline_and_the_caps_must_be_positive(name: str) -> None:
     with pytest.raises(ValidationError):
         Settings.model_validate({name: 0})
+
+
+def test_the_client_metadata_url_hangs_off_the_public_url() -> None:
+    settings = Settings(public_url="https://deskclerk.example.com/")
+    assert settings.client_metadata_url == "https://deskclerk.example.com/oauth/client.json"

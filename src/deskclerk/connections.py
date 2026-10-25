@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx2
 from mcp.client import Client
 from mcp.client.auth import OAuthClientProvider, OAuthFlowError
+from mcp.client.auth.utils import is_valid_client_metadata_url
 from mcp.client.streamable_http import StreamableHTTPError, streamable_http_client
 from mcp.shared.auth import AuthorizationCodeResult, OAuthClientMetadata
 from mcp.shared.exceptions import MCPError
@@ -95,24 +96,37 @@ class OAuthConnections:
         redirect_url: str,
         client_name: str,
         flow_timeout_seconds: float,
+        client_metadata_url: str | None = None,
     ) -> None:
         self.tokens = tokens
+        self._client_metadata_url = (
+            client_metadata_url if is_valid_client_metadata_url(client_metadata_url) else None
+        )
         self._redirect_url = redirect_url
         self._client_name = client_name
         self._flow_timeout_seconds = flow_timeout_seconds
         self._pending: dict[str, _PendingFlow] = {}
 
-    def _provider(
-        self, storage: ServerTokenStorage, server: McpServer, redirect_handler: Any, callback: Any
-    ) -> OAuthClientProvider:
-        metadata = OAuthClientMetadata(
+    def client_metadata(self) -> OAuthClientMetadata:
+        return OAuthClientMetadata(
             redirect_uris=[self._redirect_url],
             client_name=self._client_name,
             grant_types=["authorization_code", "refresh_token"],
             token_endpoint_auth_method=PUBLIC_CLIENT,
             application_type="web",
         )
-        provider = OAuthClientProvider(server.url, metadata, storage, redirect_handler, callback)
+
+    def _provider(
+        self, storage: ServerTokenStorage, server: McpServer, redirect_handler: Any, callback: Any
+    ) -> OAuthClientProvider:
+        provider = OAuthClientProvider(
+            server.url,
+            self.client_metadata(),
+            storage,
+            redirect_handler,
+            callback,
+            client_metadata_url=self._client_metadata_url,
+        )
         provider.context.token_expiry_time = storage.token_expiry()
         return provider
 

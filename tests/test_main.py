@@ -60,3 +60,28 @@ def test_a_screen_key_starts_the_server_without_the_allowance(
     monkeypatch.setattr(entry, "jev_from_environment", lambda: object())
     entry.main()
     assert served == ["the app"]
+
+
+def test_a_secret_file_reaches_the_settings_before_they_load(
+    monkeypatch: pytest.MonkeyPatch, served: list[Any], tmp_path: Path
+) -> None:
+    key_file = tmp_path / "key"
+    key_file.write_text(Fernet.generate_key().decode() + "\n")
+    monkeypatch.setenv("DESKCLERK_TOKEN_FILE", str(tmp_path / "tokens.sqlite"))
+    monkeypatch.setenv("DESKCLERK_ALLOW_UNSCREENED", "true")
+    monkeypatch.setenv("DESKCLERK_TOKEN_KEY", "placeholder")
+    monkeypatch.delenv("DESKCLERK_TOKEN_KEY")
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.setenv("DESKCLERK_TOKEN_KEY_FILE", str(key_file))
+    entry.main()
+    assert served == ["the app"]
+
+
+def test_a_missing_secret_file_exits_with_the_reason(
+    monkeypatch: pytest.MonkeyPatch, served: list[Any], tmp_path: Path
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY_FILE", str(tmp_path / "absent"))
+    with pytest.raises(SystemExit) as stopped:
+        entry.main()
+    assert "absent" in str(stopped.value.code)
+    assert served == []
