@@ -351,3 +351,45 @@ async def test_a_client_certificate_lets_a_call_through_mutual_tls(
             await connections.tools("ada", without_cert)
     assert isinstance(first_leaf(refused.value), UPSTREAM_ERRORS)
     assert result.text == "the note"
+
+
+CLIENT_URL = "https://deskclerk.example.com/oauth/client.json"
+
+
+def url_connections(path: Path, key: str) -> OAuthConnections:
+    return OAuthConnections(TokenStore(path, key), REDIRECT, "deskclerk test", 600, CLIENT_URL)
+
+
+@pytest.mark.anyio
+async def test_a_server_that_supports_client_id_metadata_documents_gets_the_url_and_no_registration(
+    token_path: Path, key: str
+) -> None:
+    with running_mcp_server(REDIRECT, client_id_metadata=True) as running:
+        connections = url_connections(token_path, key)
+        server = server_record(running)
+        authorization_url = await connections.begin("ada", server)
+        assert parse_qs(urlparse(authorization_url).query)["client_id"] == [CLIENT_URL]
+        state, code = await approve(authorization_url)
+        await connections.complete("ada", state, code)
+        assert {tool.name for tool in await connections.tools("ada", server)}
+        assert running.provider.registrations == 0
+
+
+@pytest.mark.anyio
+async def test_a_server_without_support_still_registers_dynamically(
+    mcp_server: RunningServer, token_path: Path, key: str
+) -> None:
+    connections = url_connections(token_path, key)
+    authorization_url = await connections.begin("ada", server_record(mcp_server))
+    assert parse_qs(urlparse(authorization_url).query)["client_id"] != [CLIENT_URL]
+    assert mcp_server.provider.registrations == 1
+
+
+@pytest.mark.anyio
+async def test_a_registered_client_wins_over_the_metadata_url(token_path: Path, key: str) -> None:
+    with running_mcp_server(REDIRECT, client_id_metadata=True) as running:
+        connections = url_connections(token_path, key)
+        authorization_url = await connections.begin(
+            "ada", server_record(running, preregistered=True)
+        )
+        assert parse_qs(urlparse(authorization_url).query)["client_id"] == [PRESET_CLIENT_ID]

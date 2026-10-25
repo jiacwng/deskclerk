@@ -86,7 +86,11 @@ def main(argv: Sequence[str] = ()) -> None:
         tokens = TokenStore(settings.token_file, settings.token_key.get_secret_value())
         spending_store = SpendingStore(settings.token_file.parent / SPENDING_FILE)
         connections = OAuthConnections(
-            tokens, settings.redirect_url, MCP_CLIENT_NAME, FLOW_TIMEOUT_SECONDS
+            tokens,
+            settings.redirect_url,
+            MCP_CLIENT_NAME,
+            FLOW_TIMEOUT_SECONDS,
+            settings.client_metadata_url,
         )
         with httpx.Client() as client:
             jwks_url = discover_jwks_url(settings, client)

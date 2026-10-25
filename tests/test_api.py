@@ -229,6 +229,26 @@ def test_the_app_needs_a_session_key(
             pass
 
 
+def test_the_client_metadata_document_is_served_without_sign_in(
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(token_settings, public_url="https://deskclerk.example.com")
+    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+        response = site.client.get("/oauth/client.json")
+    assert response.status_code == 200
+    assert response.json() == {
+        "client_id": "https://deskclerk.example.com/oauth/client.json",
+        "client_name": "deskclerk test",
+        "redirect_uris": [REDIRECT],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+        "token_endpoint_auth_method": "none",
+        "application_type": "web",
+    }
+
+
 @pytest.mark.parametrize(
     ("method", "path"),
     [

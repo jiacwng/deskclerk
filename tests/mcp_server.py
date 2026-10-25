@@ -5,7 +5,8 @@
 # RFC 9207 iss parameter on the redirect. A test can change the read tool's description, add a
 # tool or make the write tool read-only while the server runs. With required_header=(name, value)
 # it answers 401 to a request without that header. With tls it serves https and demands a client
-# certificate.
+# certificate. With client_id_metadata it advertises Client ID Metadata Document support and
+# accepts any https client_id as a public client that redirects to redirect_url.
 
 import asyncio
 import secrets
@@ -46,8 +47,12 @@ PRESET_CLIENT_SECRET = "admin-secret"  # noqa: S105
 
 
 class ApprovingProvider:
-    def __init__(self, redirect_url: str, issuer: str | None = None) -> None:
+    def __init__(
+        self, redirect_url: str, issuer: str | None = None, url_clients: bool = False
+    ) -> None:
         self.issuer = issuer
+        self.redirect_url = redirect_url
+        self.url_clients = url_clients
         self.preset = OAuthClientInformationFull(
             client_id=PRESET_CLIENT_ID,
             client_secret=PRESET_CLIENT_SECRET,
@@ -63,6 +68,12 @@ class ApprovingProvider:
         self.resources: list[str] = []
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
+        if self.url_clients and client_id.startswith("https://"):
+            return OAuthClientInformationFull(
+                client_id=client_id,
+                redirect_uris=[self.redirect_url],
+                token_endpoint_auth_method="none",
+            )
         return self.clients.get(client_id)
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
@@ -214,6 +225,7 @@ def running_mcp_server(
     delete_tool: bool = False,
     append_tool: bool = False,
     issuer_in_response: bool = False,
+    client_id_metadata: bool = False,
     image_tool: bool = False,
     heavy_tools: bool = False,
     required_header: tuple[str, str] | None = None,
@@ -223,7 +235,9 @@ def running_mcp_server(
     sock.bind(("127.0.0.1", 0))
     scheme = "http" if tls is None else "https"
     base = f"{scheme}://127.0.0.1:{sock.getsockname()[1]}"
-    provider = ApprovingProvider(redirect_url, base if issuer_in_response else None)
+    provider = ApprovingProvider(
+        redirect_url, base if issuer_in_response else None, client_id_metadata
+    )
 
     if oauth:
         mcp = MCPServer(
@@ -283,11 +297,12 @@ def running_mcp_server(
             return f"deleted {note_id}"
 
     app = mcp.streamable_http_app()
-    if issuer_in_response:
+    if issuer_in_response or client_id_metadata:
         metadata = build_metadata(
             AnyHttpUrl(base), None, ClientRegistrationOptions(enabled=True), RevocationOptions()
         )
-        metadata.authorization_response_iss_parameter_supported = True
+        metadata.authorization_response_iss_parameter_supported = issuer_in_response
+        metadata.client_id_metadata_document_supported = client_id_metadata
         document = metadata.model_dump(mode="json", exclude_none=True) | {"issuer": base}
 
         async def serve_metadata(request: Request) -> Response:
