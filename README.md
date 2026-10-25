@@ -54,6 +54,12 @@ secret. A server's `tools` lists the only tools the agent may use from it. deskc
 read-only marks of the servers you list. It is tested against Linear's hosted MCP server:
 sign-in, reads, writes and the injection screen.
 
+A server's `groups`, such as `groups = ["finance"]`, limits it to employees in one of those
+groups. The others never see it, and its tools are never offered for them. deskclerk reads the
+groups from the `groups` claim of the employee's token, or the claim named in
+`DESKCLERK_GROUPS_CLAIM`. A browser session keeps the groups it had at sign-in. On Entra ID,
+emit only the groups assigned to the application: a token with too many groups gives none.
+
 A server can also take `headers`, where `${env:NAME}` is replaced by that environment variable.
 It can take `client_cert` and `client_key` for mutual TLS; mount those files into the container.
 It can take `plain_http = true` to allow an `http://` address, for a server on a private network.

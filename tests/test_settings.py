@@ -73,3 +73,11 @@ def test_the_old_sign_in_redirect_setting_has_no_effect(monkeypatch: pytest.Monk
 def test_the_deadline_and_the_caps_must_be_positive(name: str) -> None:
     with pytest.raises(ValidationError):
         Settings.model_validate({name: 0})
+
+
+def test_the_groups_claim_defaults_to_groups_and_is_set_by_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert Settings().groups_claim == "groups"
+    monkeypatch.setenv("DESKCLERK_GROUPS_CLAIM", "roles")
+    assert Settings().groups_claim == "roles"

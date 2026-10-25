@@ -2,6 +2,7 @@
 # holds only its SHA-256, and deleting a row ends the session at once.
 
 import hashlib
+import json
 import secrets
 import sqlite3
 import time
@@ -24,7 +25,8 @@ class SessionStore:
             database.execute(
                 "CREATE TABLE IF NOT EXISTS sessions ("
                 "id_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, client_id TEXT NOT NULL, "
-                "name TEXT NOT NULL, sid TEXT, subject TEXT, expires_at REAL NOT NULL)"
+                "name TEXT NOT NULL, sid TEXT, subject TEXT, groups TEXT NOT NULL, "
+                "expires_at REAL NOT NULL)"
             )
 
     @contextmanager
@@ -41,8 +43,8 @@ class SessionStore:
         with self._database() as database:
             database.execute(
                 "INSERT INTO sessions "
-                "(id_hash, user_id, client_id, name, sid, subject, expires_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "(id_hash, user_id, client_id, name, sid, subject, groups, expires_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     _digest(session_id),
                     identity.user_id,
@@ -50,6 +52,7 @@ class SessionStore:
                     identity.display_name,
                     identity.sid,
                     identity.subject,
+                    json.dumps(sorted(identity.groups)),
                     time.time() + lifetime_seconds,
                 ),
             )
@@ -58,15 +61,21 @@ class SessionStore:
     def lookup(self, session_id: str) -> Identity | None:
         with self._database() as database:
             row = database.execute(
-                "SELECT user_id, client_id, name, expires_at FROM sessions WHERE id_hash = ?",
+                "SELECT user_id, client_id, name, groups, expires_at "
+                "FROM sessions WHERE id_hash = ?",
                 (_digest(session_id),),
             ).fetchone()
             if row is None:
                 return None
-            if row[3] < time.time():
+            if row[4] < time.time():
                 database.execute("DELETE FROM sessions WHERE id_hash = ?", (_digest(session_id),))
                 return None
-        return Identity(user_id=row[0], client_id=row[1], display_name=row[2])
+        return Identity(
+            user_id=row[0],
+            client_id=row[1],
+            display_name=row[2],
+            groups=frozenset(json.loads(row[3])),
+        )
 
     def end(self, session_id: str) -> None:
         with self._database() as database:
