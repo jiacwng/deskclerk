@@ -253,8 +253,8 @@ textarea::placeholder { color: var(--muted); }
 
     <section id="confirm" class="confirm" aria-labelledby="confirm-title" hidden>
       <div class="confirm-head">
-        <h2 id="confirm-title" class="confirm-title">Confirm changes</h2>
-        <p class="small">Each call below changes data. Approve or reject each one, then press Send.</p>
+        <h2 id="confirm-title" class="confirm-title">Confirm calls</h2>
+        <p class="small">Each call below needs your approval before it runs. Approve or reject each one, then press Send.</p>
       </div>
       <div id="pending" class="pending"></div>
       <div class="confirm-foot">
@@ -429,9 +429,9 @@ function buildCalls(result) {
   if (result.step_limit_hit) {
     rows.push(noteRow("warn", "Step limit", "The step limit was reached, so the answer may be incomplete"));
   }
-  if (result.withheld > 0) {
-    const noun = result.withheld === 1 ? "tool result was" : "tool results were";
-    rows.push(noteRow("info", "Held back", result.withheld + " " + noun + " held back from the model"));
+  if (result.flagged > 0) {
+    const noun = result.flagged === 1 ? "tool result was" : "tool results were";
+    rows.push(noteRow("warn", "Flagged", result.flagged + " " + noun + " flagged by the injection screen, so later calls waited for your approval"));
   }
   return rows;
 }

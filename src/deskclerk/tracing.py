@@ -42,8 +42,8 @@ class AskTrace:
     _span: Any
     _client: Any
 
-    def finish(self, withheld: int) -> None:
-        self._span.update(metadata={"withheld": withheld})
+    def finish(self, flagged: int) -> None:
+        self._span.update(metadata={"flagged": flagged})
 
     @contextmanager
     def tool_span(

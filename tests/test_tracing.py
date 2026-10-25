@@ -146,4 +146,4 @@ def test_the_employee_is_plain_hashed_or_absent_on_the_trace(
     (span,) = exporter.get_finished_spans()
     assert span.attributes is not None
     assert span.attributes.get("user.id") == expected
-    assert updates == [{"metadata": {"withheld": 2}}]
+    assert updates == [{"metadata": {"flagged": 2}}]

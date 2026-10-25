@@ -42,7 +42,7 @@ from deskclerk.agent import (
 )
 from deskclerk.connections import OAuthConnections, ToolInfo, ToolResult
 from deskclerk.conversations import FernetCipher, open_checkpointer, saved_messages
-from deskclerk.screen import UNCHECKED, WITHHELD, Screen, pass_through
+from deskclerk.screen import NOTICE, Screen, pass_through
 from deskclerk.servers import McpServer
 from deskclerk.tokens import TokenStore
 from deskclerk.tracing import AskTrace
@@ -51,6 +51,7 @@ from test_connections import REDIRECT, connect, make_connections, server_record
 from test_tracing import MaskingClient
 
 SYSTEM = "Be careful."
+FLAGGED = f"{NOTICE}\nthe injected text"
 
 
 class ScriptedModel(GenericFakeChatModel):
@@ -434,11 +435,10 @@ class RecordingScreen:
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    ("tool", "replace_with", "shown", "status", "withheld"),
+    ("tool", "replace_with", "shown", "status", "flagged"),
     [
-        pytest.param("read_note", WITHHELD, WITHHELD, "success", 1, id="a-withheld-result"),
-        pytest.param("read_note", UNCHECKED, UNCHECKED, "success", 1, id="an-unchecked-result"),
-        pytest.param("break_note", WITHHELD, WITHHELD, "error", 1, id="a-tool-error-is-screened"),
+        pytest.param("read_note", FLAGGED, FLAGGED, "success", 1, id="a-flagged-result"),
+        pytest.param("break_note", FLAGGED, FLAGGED, "error", 1, id="a-tool-error-is-screened"),
         pytest.param("read_note", None, "the note", "success", 0, id="a-result-that-passes"),
     ],
 )
@@ -447,7 +447,7 @@ async def test_a_tool_result_is_screened_before_the_model_and_the_record_see_it(
     replace_with: str | None,
     shown: str,
     status: str,
-    withheld: int,
+    flagged: int,
     mcp_server: RunningServer,
     connections: OAuthConnections,
 ) -> None:
@@ -459,7 +459,7 @@ async def test_a_tool_result_is_screened_before_the_model_and_the_record_see_it(
     assert isinstance(reply, ToolMessage)
     assert (reply.content, reply.status) == (shown, status)
     assert result.executed[0].result == shown
-    assert result.withheld == withheld
+    assert result.flagged == flagged
 
 
 class ModelCallCounter(BaseCallbackHandler):
@@ -754,21 +754,21 @@ async def test_the_step_limit_counts_each_ask_and_not_the_whole_conversation(
 
 
 @pytest.mark.anyio
-async def test_a_withheld_result_stays_withheld_in_the_next_turn(
+async def test_a_flagged_result_keeps_its_notice_in_the_next_turn(
     mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
 ) -> None:
     servers = [server_record(mcp_server)]
     await run(
         connections,
         servers,
-        script(calls(("notes__read_note", {})), answer("withheld")),
-        screen=RecordingScreen(WITHHELD),
+        script(calls(("notes__read_note", {})), answer("flagged")),
+        screen=RecordingScreen(FLAGGED),
         checkpointer=saver,
     )
     model = script(answer("ok"))
     await run(connections, servers, model, checkpointer=saver)
     shown = [str(message.content) for message in model.seen[0]]
-    assert WITHHELD in shown
+    assert FLAGGED in shown
     assert "the note" not in shown
 
 
@@ -1184,6 +1184,136 @@ async def test_a_rejected_call_stays_rejected_when_its_tool_became_read_only(
     assert [call.reason for call in resumed.blocked] == ["the employee declined"]
 
 
+class FlagTheFirstResult:
+    def __init__(self) -> None:
+        self.seen = 0
+
+    async def __call__(self, request: str, output: str) -> str:
+        self.seen += 1
+        return FLAGGED if self.seen == 1 else output
+
+
+@pytest.mark.anyio
+async def test_a_flagged_result_reaches_the_model_behind_the_notice(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    model = script(calls(("notes__read_note", {})), answer("done"))
+    result = await run(
+        connections,
+        [server_record(mcp_server)],
+        model,
+        screen=FlagTheFirstResult(),
+        confirm_writes=True,
+    )
+    reply = model.seen[1][-1]
+    assert isinstance(reply, ToolMessage)
+    assert str(reply.content).startswith(f"{NOTICE}\n")
+    assert (result.flagged, result.pending) == (1, ())
+
+
+@pytest.mark.anyio
+async def test_a_read_after_a_flagged_result_waits_for_the_employee(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    model = script(calls(("notes__read_note", {})), calls(("notes__read_note", {})), answer("x"))
+    paused = await run(
+        connections,
+        [server_record(mcp_server)],
+        model,
+        screen=FlagTheFirstResult(),
+        confirm_writes=True,
+    )
+    assert [(call.server, call.tool) for call in paused.pending] == [("notes", "read_note")]
+    assert len(paused.executed) == 1
+
+
+@pytest.mark.anyio
+async def test_a_read_before_any_flag_runs_without_asking(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    model = script(calls(("notes__read_note", {})), calls(("notes__read_note", {})), answer("x"))
+    result = await run(
+        connections, [server_record(mcp_server)], model, screen=pass_through, confirm_writes=True
+    )
+    assert (result.pending, len(result.executed), result.flagged) == ((), 2, 0)
+
+
+@pytest.mark.anyio
+async def test_a_flag_from_an_earlier_turn_does_not_gate_the_next_request(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
+) -> None:
+    servers = [server_record(mcp_server)]
+    await run(
+        connections,
+        servers,
+        script(calls(("notes__read_note", {})), answer("seen")),
+        screen=RecordingScreen(FLAGGED),
+        checkpointer=saver,
+        confirm_writes=True,
+    )
+    model = script(calls(("notes__read_note", {})), answer("again"))
+    second = await run(connections, servers, model, checkpointer=saver, confirm_writes=True)
+    assert (second.pending, second.answer) == ((), "again")
+
+
+@pytest.mark.anyio
+async def test_the_flag_survives_a_pause_and_a_restart_of_the_server(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    servers = [server_record(mcp_server)]
+    tokens = connections.tokens
+    async with open_checkpointer(tokens.path, tokens.fernet) as before:
+        model = script(calls(("notes__read_note", {})), calls(("notes__write_note", {"text": "a"})))
+        paused = await run(
+            connections,
+            servers,
+            model,
+            screen=FlagTheFirstResult(),
+            checkpointer=before,
+            confirm_writes=True,
+        )
+    assert [call.tool for call in paused.pending] == ["write_note"]
+    async with open_checkpointer(tokens.path, tokens.fernet) as after:
+        resumed = await run(
+            connections,
+            servers,
+            script(calls(("notes__read_note", {})), answer("x")),
+            checkpointer=after,
+            confirm_writes=True,
+            decisions={paused.pending[0].id: "approve"},
+        )
+    assert [call.tool for call in resumed.pending] == ["read_note"]
+
+
+@pytest.mark.anyio
+async def test_a_read_that_was_waiting_when_the_flag_was_raised_stays_gated_after_a_restart(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    servers = [server_record(mcp_server)]
+    tokens = connections.tokens
+    async with open_checkpointer(tokens.path, tokens.fernet) as before:
+        model = script(calls(("notes__read_note", {}), ("notes__read_note", {})))
+        paused = await run(
+            connections,
+            servers,
+            model,
+            screen=FlagTheFirstResult(),
+            checkpointer=before,
+            confirm_writes=True,
+        )
+    assert [call.tool for call in paused.pending] == ["read_note"]
+    async with open_checkpointer(tokens.path, tokens.fernet) as after:
+        resumed = await run(
+            connections,
+            servers,
+            script(calls(("notes__read_note", {})), answer("x")),
+            checkpointer=after,
+            confirm_writes=True,
+            decisions={paused.pending[0].id: "approve"},
+        )
+    assert [call.tool for call in resumed.pending] == ["read_note"]
+
+
 @pytest.fixture
 def append_server() -> Iterator[RunningServer]:
     with running_mcp_server(REDIRECT, append_tool=True, delete_tool=True) as running:
@@ -1204,8 +1334,8 @@ async def append_saver(append_connections: OAuthConnections) -> AsyncIterator[As
         yield opened
 
 
-async def withhold_everything(request: str, output: str) -> str:
-    return WITHHELD
+async def flag_everything(request: str, output: str) -> str:
+    return FLAGGED
 
 
 async def always_allow_append(
@@ -1333,7 +1463,7 @@ async def test_a_changed_tool_definition_clears_the_always_allowed_tool(
 
 
 @pytest.mark.anyio
-async def test_an_always_allowed_tool_pauses_again_after_a_withheld_result_in_the_request(
+async def test_an_always_allowed_tool_pauses_again_after_a_flagged_result_in_the_request(
     append_server: RunningServer,
     append_connections: OAuthConnections,
     append_saver: AsyncSqliteSaver,
@@ -1349,7 +1479,7 @@ async def test_an_always_allowed_tool_pauses_again_after_a_withheld_result_in_th
         append_connections,
         servers,
         model,
-        screen=withhold_everything,
+        screen=flag_everything,
         checkpointer=append_saver,
         confirm_writes=True,
         request="again",
@@ -1360,7 +1490,7 @@ async def test_an_always_allowed_tool_pauses_again_after_a_withheld_result_in_th
         append_connections,
         servers,
         model,
-        screen=withhold_everything,
+        screen=flag_everything,
         checkpointer=append_saver,
         confirm_writes=True,
         decisions={paused.pending[0].id: "reject"},

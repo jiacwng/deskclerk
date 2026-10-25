@@ -2,6 +2,11 @@
   "realm": "deskclerk",
   "displayName": "deskclerk (development only, every user's password is deskclerk)",
   "enabled": true,
+  "groups": [
+    {
+      "name": "analyst"
+    }
+  ],
   "users": [
     {
       "id": "3ae22b84-4942-4923-b71f-750b1a81d026",
@@ -91,6 +96,9 @@
       "emailVerified": true,
       "firstName": "Data",
       "lastName": "Analyst",
+      "groups": [
+        "/analyst"
+      ],
       "credentials": [
         {
           "type": "password",
@@ -262,6 +270,29 @@
       ]
     },
     {
+      "name": "groups",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "config": {
+            "claim.name": "groups",
+            "full.path": "false",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
       "name": "deskclerk-mcp",
       "description": "Access to the deskclerk MCP server",
       "protocol": "openid-connect",
@@ -276,7 +307,8 @@
     "basic",
     "profile",
     "email",
-    "web-origins"
+    "web-origins",
+    "groups"
   ],
   "defaultOptionalClientScopes": [
     "deskclerk-mcp"

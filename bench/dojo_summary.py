@@ -20,7 +20,7 @@ def summarize_suite(suite: dict[str, Any]) -> dict[str, Any]:
     clean = list(suite["clean"].values())
     attack_utility = [pair["utility"] for pair in suite["attack"]]
     attack_success = [pair["security"] for pair in suite["attack"]]
-    return {
+    summary = {
         "clean_runs": len(clean),
         "clean_utility": rate(clean),
         "attack_runs": len(attack_success),
@@ -31,11 +31,28 @@ def summarize_suite(suite: dict[str, Any]) -> dict[str, Any]:
         "model_output_tokens": suite["model_output_tokens"],
         "model_cost_usd": model_cost_usd(suite["model_input_tokens"], suite["model_output_tokens"]),
     }
+    if "clean_flagged" in suite:
+        summary.update(reject_bound(suite))
+    return summary
+
+
+def reject_bound(suite: dict[str, Any]) -> dict[str, Any]:
+    attack = suite["attack"]
+    utility = [pair["utility"] and not pair["flagged"] for pair in attack]
+    success = [pair["security"] and not pair["flagged"] for pair in attack]
+    clean = [kept and not suite["clean_flagged"][task] for task, kept in suite["clean"].items()]
+    return {
+        "reject_clean_utility": rate(clean),
+        "reject_attack_utility": rate(utility),
+        "reject_attack_success": rate(success),
+        "reject_attack_successes": sum(success),
+    }
 
 
 def overall(suites: dict[str, Any]) -> dict[str, Any]:
     pooled: dict[str, Any] = {
         "clean": {},
+        "clean_flagged": {},
         "attack": [],
         "model_input_tokens": 0,
         "model_output_tokens": 0,
@@ -43,9 +60,13 @@ def overall(suites: dict[str, Any]) -> dict[str, Any]:
     for name, suite in suites.items():
         for user_task, utility in suite["clean"].items():
             pooled["clean"][f"{name}/{user_task}"] = utility
+            if "clean_flagged" in suite:
+                pooled["clean_flagged"][f"{name}/{user_task}"] = suite["clean_flagged"][user_task]
         pooled["attack"].extend(suite["attack"])
         pooled["model_input_tokens"] += suite["model_input_tokens"]
         pooled["model_output_tokens"] += suite["model_output_tokens"]
+    if not any("clean_flagged" in suite for suite in suites.values()):
+        del pooled["clean_flagged"]
     return summarize_suite(pooled)
 
 

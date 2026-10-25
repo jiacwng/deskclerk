@@ -52,7 +52,7 @@ from deskclerk.conversations import close_unanswered_calls, earlier_texts
 from deskclerk.instructions import unavailable_note
 from deskclerk.pinning import allow_tool, allowed_tools, pin_tools
 from deskclerk.providers import Usage, usage_from
-from deskclerk.screen import UNCHECKED, WITHHELD, Screen
+from deskclerk.screen import Screen, is_flagged
 from deskclerk.servers import McpServer
 from deskclerk.tokens import TokenStore
 
@@ -125,7 +125,7 @@ class AgentResult:
     usage: tuple[Usage, ...]
     step_limit_hit: bool
     cut_off: bool
-    withheld: int
+    flagged: int
     changed_tools: tuple[str, ...]
     pending: tuple[PendingCall, ...]
     decided: tuple[DecidedCall, ...]
@@ -245,7 +245,8 @@ class _Shared:
     blocked: list[BlockedCall] = field(default_factory=list)
     usage: list[Usage] = field(default_factory=list)
     last_response: AIMessage | None = None
-    withheld: int = 0
+    flagged: int = 0
+    flag_raised: bool = False
     shown: set[str] = field(default_factory=set)
     automatic: list[DecidedCall] = field(default_factory=list)
     automatic_ids: set[str] = field(default_factory=set)
@@ -361,8 +362,9 @@ class _Run(AgentMiddleware[AgentState[Any], None, Any]):
                 )
                 record_output(result_text)
             is_error = bool(reply.artifact)
-            if result_text in (WITHHELD, UNCHECKED):
-                shared.withheld += 1
+            if is_flagged(result_text):
+                shared.flagged += 1
+                shared.flag_raised = True
         except NotConnected as error:
             result_text, is_error = str(error), True
         shared.executed.append(
@@ -498,6 +500,9 @@ async def run_agent(
             ):
                 raise AlwaysAllowRefused
         shared.shown = set(tools)
+        shared.flag_raised = _flag_before_pause(
+            saved.values["messages"], waiting, tools, frozenset(always)
+        )
         for interrupt in waiting.values():
             confirmation.interrupt_on[interrupt.value["name"]] = _REVIEW
         start = Command(
@@ -532,7 +537,7 @@ async def run_agent(
         tuple(shared.usage),
         not pending and (last is None or bool(last.tool_calls)),
         last is not None and not last.tool_calls and _hit_output_limit(last.response_metadata),
-        shared.withheld,
+        shared.flagged,
         tuple(changed_tools),
         pending,
         (
@@ -549,8 +554,11 @@ _REJECTION = "User rejected the tool call"
 def _confirmation(
     tools: dict[str, _Tool], always: frozenset[str], shared: _Shared
 ) -> HumanInTheLoopMiddleware:
-    def needs_confirmation(request: ToolCallRequest) -> bool:
-        if _screen_held_back_a_result(request.state["messages"]):
+    def after_a_flag(request: ToolCallRequest) -> bool:
+        return shared.flag_raised
+
+    def always_allowed(request: ToolCallRequest) -> bool:
+        if shared.flag_raised:
             return True
         call_id = request.tool_call["id"] or ""
         if call_id not in shared.automatic_ids:
@@ -559,21 +567,34 @@ def _confirmation(
             shared.automatic.append(DecidedCall(tool.server.name, tool.info.name, "always"))
         return False
 
-    always_allowed: InterruptOnConfig = {**_REVIEW, "when": needs_confirmation}
     interrupt_on: dict[str, bool | InterruptOnConfig] = {}
     for name, tool in tools.items():
-        if not tool.info.read_only:
-            interrupt_on[name] = always_allowed if name in always else _REVIEW
+        if tool.info.read_only:
+            interrupt_on[name] = {**_REVIEW, "when": after_a_flag}
+        elif name in always:
+            interrupt_on[name] = {**_REVIEW, "when": always_allowed}
+        else:
+            interrupt_on[name] = _REVIEW
     return HumanInTheLoopMiddleware(interrupt_on=interrupt_on, interrupt_mode="per_call")
 
 
-def _screen_held_back_a_result(messages: list[AnyMessage]) -> bool:
-    current = max(
+def _flag_before_pause(
+    messages: list[AnyMessage],
+    waiting: dict[str, Interrupt],
+    tools: dict[str, _Tool],
+    always: frozenset[str],
+) -> bool:
+    asked = max(
         index for index, message in enumerate(messages) if isinstance(message, HumanMessage)
     )
+    if any(
+        isinstance(message, ToolMessage) and is_flagged(str(message.content))
+        for message in messages[asked:]
+    ):
+        return True
     return any(
-        isinstance(message, ToolMessage) and message.content in (WITHHELD, UNCHECKED)
-        for message in messages[current:]
+        name in tools and (tools[name].info.read_only or name in always)
+        for name in (interrupt.value["name"] for interrupt in waiting.values())
     )
 
 

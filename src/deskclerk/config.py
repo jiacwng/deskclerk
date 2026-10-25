@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     # The claim that names the employee. It must never change or be reused for someone else: sub,
     # or oid on Entra ID. Changing it later orphans every stored token and conversation.
     user_claim: str = "sub"
+    groups_claim: str = "groups"
     model: str = "anthropic:claude-haiku-5-5"
     price_model: str = ""
     budget_usd: float = 2.0

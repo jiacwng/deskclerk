@@ -3,6 +3,7 @@
 # logout_target checks the logout token the login server sends when it ends a session.
 
 import hmac
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -13,6 +14,8 @@ import httpx
 import jwt
 
 from deskclerk.config import Settings
+
+logger = logging.getLogger(__name__)
 
 SigningKeyLookup = Callable[[str], jwt.PyJWK]
 
@@ -37,6 +40,7 @@ class Identity:
     display_name: str
     sid: str | None = None
     subject: str | None = None
+    groups: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -51,6 +55,20 @@ def _display_name(claims: dict[str, Any], user_id: str) -> str:
         if isinstance(value, str) and value:
             return value
     return user_id
+
+
+def _groups(claims: dict[str, Any], settings: Settings) -> frozenset[str]:
+    value = claims.get(settings.groups_claim)
+    if isinstance(value, list):
+        return frozenset(group for group in value if isinstance(group, str) and group)
+    overage = claims.get("_claim_names")
+    if isinstance(overage, dict) and settings.groups_claim in overage:
+        logger.warning(
+            "the token has too many groups to list (group overage), so %s is treated as in no "
+            "group; emit only the groups assigned to the application",
+            claims.get(settings.user_claim),
+        )
+    return frozenset()
 
 
 def discover_jwks_url(settings: Settings, client: httpx.Client) -> str:
@@ -118,7 +136,10 @@ def authenticate(
         raise AuthError("azp must be a string")
 
     return Identity(
-        user_id=username, client_id=client, display_name=_display_name(claims, username)
+        user_id=username,
+        client_id=client,
+        display_name=_display_name(claims, username),
+        groups=_groups(claims, settings),
     )
 
 
@@ -162,6 +183,7 @@ def identify(
         display_name=_display_name(claims, username),
         sid=sid if isinstance(sid, str) and sid else None,
         subject=subject if isinstance(subject, str) and subject else None,
+        groups=_groups(claims, settings),
     )
 
 

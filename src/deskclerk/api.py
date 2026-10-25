@@ -174,7 +174,7 @@ class AskOut(BaseModel):
     unavailable: list[str]
     step_limit_hit: bool
     cut_off: bool
-    withheld: int
+    flagged: int
     changed_tools: list[str]
     cost_usd: float
 
@@ -284,9 +284,9 @@ def create_app(
             raise HTTPException(403, f"send the header {CSRF_HEADER}: {CSRF_VALUE}")
         return who
 
-    def known_server(name: str) -> McpServer:
+    def known_server(name: str, identity: Identity) -> McpServer:
         server = server_by_name.get(name)
-        if server is None:
+        if server is None or not server.open_to(identity.groups):
             raise HTTPException(404, f"no server named {name}")
         return server
 
@@ -422,11 +422,12 @@ def create_app(
                 or await run_in_threadpool(tokens.get, user, server.name, "tokens") is not None,
             )
             for server in servers
+            if server.open_to(who.identity.groups)
         ]
 
     @app.post("/servers/{name}/connect")
     async def connect(name: str, who: Caller = Depends(posting_caller)) -> ConnectOut:
-        server = known_server(name)
+        server = known_server(name, who.identity)
         try:
             url = await connections.begin(who.identity.user_id, server)
         except tuple(CONNECT_ERRORS) as error:
@@ -468,7 +469,7 @@ def create_app(
 
     @app.post("/servers/{name}/disconnect", status_code=204)
     async def disconnect(name: str, who: Caller = Depends(posting_caller)) -> Response:
-        server = known_server(name)
+        server = known_server(name, who.identity)
         connections.cancel_for(who.identity.user_id, server.name)
         await run_in_threadpool(tokens.delete_connection, who.identity.user_id, server.name)
         audit.connection(who.identity, "disconnect", server.name)
@@ -535,7 +536,7 @@ def create_app(
                             identity.user_id,
                             text,
                             system_prompt(datetime.now(UTC).date()),
-                            servers,
+                            [s for s in servers if s.open_to(identity.groups)],
                             connections,
                             tokens,
                             checkpointer,
@@ -555,7 +556,7 @@ def create_app(
                             decisions=decisions,
                         )
                     if trace:
-                        trace.finish(result.withheld)
+                        trace.finish(result.flagged)
             except ConversationWaiting:
                 refuse(409, "this conversation waits for a confirmation", "conversation_waiting")
             except NothingToConfirm:
@@ -604,7 +605,7 @@ def create_app(
             unavailable=list(result.unavailable),
             step_limit_hit=result.step_limit_hit,
             cut_off=result.cut_off,
-            withheld=result.withheld,
+            flagged=result.flagged,
             changed_tools=list(result.changed_tools),
             cost_usd=cost,
         )
