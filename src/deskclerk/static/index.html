@@ -6,54 +6,276 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>deskclerk</title>
 <style>
-body { font: 16px/1.5 system-ui, sans-serif; max-width: 48rem; margin: 2rem auto; padding: 0 1rem; }
-h1, h2 { margin: 1.5rem 0 0.5rem; }
-li { margin: 0.25rem 0; }
-textarea { width: 100%; box-sizing: border-box; min-height: 6rem; }
-pre { white-space: pre-wrap; background: #f3f3f3; padding: 0.5rem; }
-.error { color: #b00020; }
-.muted { color: #666; }
-.verdict { margin-left: 0.5rem; font-weight: bold; }
+:root {
+  --bg: #f4f3ef;
+  --rail: #eceae4;
+  --surface: #fbfaf8;
+  --sunk: #e7e5de;
+  --line: #d6d3ca;
+  --line-soft: #e2dfd7;
+  --fg: #1d1f1c;
+  --muted: #5d6159;
+  --accent: #1f5a55;
+  --accent-fg: #f6faf9;
+  --ok: #2b7345;
+  --warn: #8a5600;
+  --warn-soft: #f1e6cc;
+  --bad: #ae2a22;
+  --bad-soft: #f4dfdb;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  color-scheme: light;
+}
 @media (prefers-color-scheme: dark) {
-  body { background: #161616; color: #eee; }
-  pre { background: #2a2a2a; }
-  a { color: #8ab4f8; }
-  .muted { color: #aaa; }
-  .error { color: #ff8a80; }
+  :root:not([data-theme="light"]) {
+    --bg: #161815;
+    --rail: #1b1d1a;
+    --surface: #1f221e;
+    --sunk: #292c27;
+    --line: #373a34;
+    --line-soft: #2d302b;
+    --fg: #e5e6e0;
+    --muted: #9fa399;
+    --accent: #7fc3b8;
+    --accent-fg: #0f1a18;
+    --ok: #7cc795;
+    --warn: #e0b454;
+    --warn-soft: #302a18;
+    --bad: #ee9d93;
+    --bad-soft: #3a2220;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #161815;
+  --rail: #1b1d1a;
+  --surface: #1f221e;
+  --sunk: #292c27;
+  --line: #373a34;
+  --line-soft: #2d302b;
+  --fg: #e5e6e0;
+  --muted: #9fa399;
+  --accent: #7fc3b8;
+  --accent-fg: #0f1a18;
+  --ok: #7cc795;
+  --warn: #e0b454;
+  --warn-soft: #302a18;
+  --bad: #ee9d93;
+  --bad-soft: #3a2220;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { accent-color: var(--accent); scrollbar-color: var(--line) transparent; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 0.9375rem/1.5 var(--sans);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+h1, h2, p, ul { margin: 0; padding: 0; }
+ul { list-style: none; }
+[hidden] { display: none !important; }
+::selection { background: var(--accent); color: var(--accent-fg); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+textarea { caret-color: var(--accent); }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.muted { color: var(--muted); }
+.small { font-size: 0.8125rem; }
+
+.bar { border-bottom: 1px solid var(--line); }
+.bar-inner, .shell {
+  max-width: 72rem;
+  margin: 0 auto;
+  padding-inline: max(16px, env(safe-area-inset-left, 0px)) max(16px, env(safe-area-inset-right, 0px));
+}
+.bar-inner { display: flex; align-items: center; gap: 0.75rem; min-height: 2.75rem; }
+.brand { font-size: 0.9375rem; font-weight: 700; letter-spacing: -0.01em; margin-right: auto; }
+.who { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+
+.shell { display: grid; align-items: start; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 52rem) {
+  .shell { grid-template-columns: 15rem minmax(0, 1fr); column-gap: 2rem; }
+  .rail { border-right: 1px solid var(--line-soft); min-height: calc(100vh - 2.75rem); padding-right: 1rem; }
+}
+@media (max-width: 51.99rem) {
+  .rail { border-bottom: 1px solid var(--line-soft); }
+}
+.rail { padding-block: 1rem; }
+.heading { font-size: 0.8125rem; font-weight: 600; color: var(--muted); margin-bottom: 0.5rem; }
+
+button, .link-button {
+  font: inherit; font-size: 0.875rem; font-weight: 600; line-height: 1.2;
+  min-height: 2.25rem; padding: 0.4rem 0.8rem;
+  border-radius: 4px; border: 1px solid var(--line);
+  background: var(--surface); color: var(--fg);
+  cursor: pointer; text-decoration: none;
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.375rem;
+}
+button:hover:not(:disabled), .link-button:hover { background: var(--sunk); }
+button:active:not(:disabled) { background: var(--line); }
+button:disabled { color: var(--muted); background: transparent; border-style: dashed; cursor: not-allowed; }
+button.primary, .link-button.primary { background: var(--fg); border-color: var(--fg); color: var(--bg); }
+button.primary:hover:not(:disabled), .link-button.primary:hover { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+button.primary:disabled { background: transparent; border-color: var(--line); color: var(--muted); }
+button.quiet { background: transparent; border-color: transparent; color: var(--muted); }
+button.quiet:hover:not(:disabled) { color: var(--fg); }
+button.small { min-height: 1.875rem; padding: 0.2rem 0.6rem; font-size: 0.8125rem; }
+
+.servers { display: grid; }
+.server { padding-block: 0.625rem; border-top: 1px solid var(--line-soft); display: grid; gap: 0.25rem; }
+.server:first-child { border-top: 0; padding-top: 0; }
+.server-name { font-weight: 600; }
+.server-url { font-family: var(--mono); font-size: 0.75rem; color: var(--muted); }
+.server-foot { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-top: 0.25rem; }
+.state { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.8125rem; color: var(--muted); }
+.state::before { content: ""; width: 0.5rem; height: 0.5rem; border-radius: 50%; border: 1.5px solid var(--muted); }
+.state.on { color: var(--ok); }
+.state.on::before { background: var(--ok); border-color: var(--ok); }
+
+.main { display: flex; flex-direction: column; min-width: 0; padding-top: 1rem; min-height: calc(100vh - 2.75rem); }
+.empty { color: var(--muted); max-width: 40ch; padding-block: 0.5rem 1.5rem; }
+.turns { display: grid; gap: 1.75rem; padding-bottom: 1.5rem; }
+.turn { display: grid; gap: 0.625rem; min-width: 0; }
+.request { background: var(--sunk); border-radius: 4px; padding: 0.5rem 0.75rem; white-space: pre-wrap; font-weight: 500; }
+.who-label { font-size: 0.75rem; font-weight: 600; color: var(--muted); margin-bottom: 0.125rem; }
+.answer { white-space: pre-wrap; max-width: 68ch; line-height: 1.6; text-wrap: pretty; }
+
+.calls { display: grid; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
+.calls:empty { display: none; }
+.call, .note { min-width: 0; border-top: 1px solid var(--line-soft); }
+.calls > :first-child { border-top: 0; }
+.call summary, .note {
+  display: grid; grid-template-columns: 7rem minmax(0, 1fr); align-items: baseline; column-gap: 0.75rem;
+  padding: 0.4rem 0.75rem; font-size: 0.8125rem;
+}
+.call summary { cursor: pointer; list-style: none; grid-template-columns: 7rem auto minmax(0, 1fr) auto; }
+.call summary::-webkit-details-marker { display: none; }
+.call summary:hover { background: var(--sunk); }
+.call summary::after { content: "Show"; font-size: 0.75rem; color: var(--muted); }
+.call[open] summary::after { content: "Hide"; }
+.call-body { padding: 0.25rem 0.75rem 0.75rem; display: grid; gap: 0.5rem; }
+.call-server { color: var(--muted); }
+.call-tool { font-family: var(--mono); font-weight: 600; }
+.part-title { font-size: 0.75rem; font-weight: 600; color: var(--muted); margin-bottom: 0.2rem; }
+pre {
+  margin: 0; background: var(--sunk); border-radius: 3px; padding: 0.5rem 0.625rem;
+  font: 0.75rem/1.5 var(--mono); white-space: pre-wrap; max-height: 16rem; overflow: auto;
+}
+
+.badge { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.75rem; font-weight: 600; white-space: nowrap; color: var(--muted); }
+.badge::before { content: ""; width: 0.5rem; height: 0.5rem; background: currentColor; border-radius: 1px; flex: none; }
+.badge.ok { color: var(--ok); }
+.badge.warn { color: var(--warn); }
+.badge.bad { color: var(--bad); }
+.badge.info { color: var(--muted); }
+.badge.info::before { background: transparent; border: 1.5px solid currentColor; }
+.cost { font-size: 0.75rem; color: var(--muted); }
+.cost:empty { display: none; }
+
+.confirm { background: var(--surface); border: 1px solid var(--warn); border-radius: 4px; margin-bottom: 1rem; }
+.confirm-head { padding: 0.75rem; display: grid; gap: 0.125rem; background: var(--warn-soft); border-radius: 3px 3px 0 0; }
+.confirm-title { font-size: 0.9375rem; font-weight: 700; }
+.pending { display: grid; }
+.pending-card { padding: 0.75rem; border-top: 1px solid var(--line); display: grid; gap: 0.5rem; }
+.pending-card[data-choice="approve"] { box-shadow: inset 3px 0 0 var(--ok); }
+.pending-card[data-choice="reject"] { box-shadow: inset 3px 0 0 var(--bad); }
+.pending-actions { display: flex; align-items: center; flex-wrap: wrap; }
+.pending-actions button.choice { min-height: 2rem; }
+.pending-actions button.choice.approve { border-radius: 4px 0 0 4px; margin-right: -1px; }
+.pending-actions button.choice.always { border-radius: 0; margin-right: -1px; }
+.pending-actions button.choice.reject { border-radius: 0 4px 4px 0; margin-right: 0.75rem; }
+button.choice[aria-pressed="true"].approve { background: var(--ok); border-color: var(--ok); color: var(--surface); }
+button.choice[aria-pressed="true"].always { background: var(--ok); border-color: var(--ok); color: var(--surface); }
+button.choice[aria-pressed="true"].reject { background: var(--bad); border-color: var(--bad); color: var(--surface); }
+.confirm-foot { display: flex; align-items: center; gap: 0.75rem; padding: 0.625rem 0.75rem; border-top: 1px solid var(--line); }
+
+.composer {
+  position: sticky; bottom: 0; background: var(--bg); margin-top: auto;
+  padding-block: 0.75rem max(0.75rem, env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--line); display: grid; gap: 0.5rem;
+}
+.main:has(.confirm:not([hidden])) .composer { position: static; }
+textarea {
+  width: 100%; min-height: 4rem; resize: vertical; font: inherit;
+  padding: 0.5rem 0.625rem; border-radius: 4px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--fg);
+}
+textarea:focus-visible { outline-offset: 0; border-color: var(--accent); }
+textarea::placeholder { color: var(--muted); }
+.composer-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.composer-row .hint { margin-left: auto; }
+@media (max-width: 30rem) { .composer-row .hint { display: none; } }
+.error { color: var(--bad); background: var(--bad-soft); border-radius: 4px; padding: 0.4rem 0.625rem; font-size: 0.875rem; }
+.working { color: var(--muted); font-size: 0.8125rem; }
+.working:empty { display: none; }
+
+.signin { max-width: 24rem; margin: 4rem auto; padding-inline: 16px; display: grid; gap: 0.75rem; justify-items: start; }
+.signin-title { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.01em; }
+
+@media (prefers-reduced-motion: no-preference) {
+  button, .link-button { transition: background-color 0.15s, border-color 0.15s, color 0.15s; }
 }
 </style>
 </head>
 <body>
-<h1>deskclerk</h1>
-<p id="status" class="muted"></p>
-<p id="signin" hidden><a href="/login">Sign in</a></p>
-
-<section id="app" hidden>
-  <h2>Servers</h2>
-  <ul id="servers"></ul>
-
-  <h2>Ask</h2>
-  <div id="turns"></div>
-  <textarea id="request" maxlength="4000"></textarea>
-  <p>
-    <button id="ask" type="button">Ask</button>
-    <button id="new-conversation" type="button">New conversation</button>
-  </p>
-  <p id="error" class="error"></p>
-  <div id="confirm" hidden>
-    <h2>Confirm changes</h2>
-    <p class="muted">Each call below changes data. Approve or reject each one, then press Send.</p>
-    <ul id="pending"></ul>
-    <p><button id="send" type="button" disabled>Send</button></p>
+<header class="bar">
+  <div class="bar-inner">
+    <h1 class="brand">deskclerk</h1>
+    <div id="who" class="who" hidden>
+      <span id="status" class="muted small"></span>
+      <button id="logout" class="small quiet" type="button">Sign out</button>
+    </div>
   </div>
-  <div id="result" hidden>
-    <h2>Answer</h2>
-    <pre id="answer"></pre>
-    <h2>Calls</h2>
-    <ul id="calls"></ul>
-    <p id="cost" class="muted"></p>
-  </div>
+</header>
+
+<section id="signin" class="signin" hidden>
+  <h2 class="signin-title">Sign in to continue</h2>
+  <p class="muted">deskclerk acts on your connected servers as you.</p>
+  <a class="link-button primary" href="/login">Sign in</a>
 </section>
+
+<div id="app" class="shell" hidden>
+  <aside class="rail">
+    <h2 class="heading">Servers</h2>
+    <div id="servers" class="servers"></div>
+  </aside>
+
+  <main class="main">
+    <h2 class="sr-only">Conversation</h2>
+    <p id="empty" class="empty">Ask for something to look up or change on your connected servers.</p>
+    <div id="turns" class="turns"></div>
+
+    <section id="confirm" class="confirm" aria-labelledby="confirm-title" hidden>
+      <div class="confirm-head">
+        <h2 id="confirm-title" class="confirm-title">Confirm changes</h2>
+        <p class="small">Each call below changes data. Approve or reject each one, then press Send.</p>
+      </div>
+      <div id="pending" class="pending"></div>
+      <div class="confirm-foot">
+        <button id="send" class="primary" type="button" disabled>Send</button>
+        <span id="decided" class="muted small"></span>
+      </div>
+    </section>
+
+    <form id="composer" class="composer">
+      <label for="request" class="sr-only">Your request</label>
+      <textarea id="request" maxlength="4000" placeholder="What do you need?"></textarea>
+      <p id="error" class="error" role="alert" hidden></p>
+      <p id="working" class="working" role="status"></p>
+      <div class="composer-row">
+        <button id="ask" class="primary" type="submit">Ask</button>
+        <button id="new-conversation" type="button">New conversation</button>
+        <span class="muted small hint">Ctrl+Enter or Cmd+Enter sends</span>
+      </div>
+    </form>
+  </main>
+</div>
 
 <script>
 async function api(path, options) {
@@ -71,6 +293,24 @@ const post = (path, body) => api(path, {
 const el = (id) => document.getElementById(id);
 
 let conversation = null;
+let currentTurn = null;
+let decisions = {};
+let waiting = 0;
+let busy = false;
+
+function make(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function button(label, onClick, className) {
+  const control = make("button", className, label);
+  control.type = "button";
+  control.addEventListener("click", onClick);
+  return control;
+}
 
 async function detail(response) {
   try {
@@ -83,20 +323,19 @@ async function detail(response) {
 
 function showError(text) {
   el("error").textContent = text;
+  el("error").hidden = text === "";
 }
 
-function line(text) {
-  const item = document.createElement("li");
-  item.textContent = text;
-  return item;
+function updateControls() {
+  el("ask").disabled = busy || waiting > 0;
+  el("new-conversation").disabled = busy;
+  el("request").disabled = busy;
 }
 
-function button(label, onClick) {
-  const control = document.createElement("button");
-  control.type = "button";
-  control.textContent = label;
-  control.addEventListener("click", onClick);
-  return control;
+function setBusy(on, text) {
+  busy = on;
+  el("working").textContent = on ? text : "";
+  updateControls();
 }
 
 async function connect(name) {
@@ -113,120 +352,206 @@ async function disconnect(name) {
   loadServers();
 }
 
+async function logout() {
+  const response = await post("/logout");
+  if (!response.ok) return showError(await detail(response));
+  window.location.reload();
+}
+
 async function loadServers() {
   const response = await api("/servers");
   if (!response.ok) return showError(await detail(response));
   const list = el("servers");
   list.replaceChildren();
   for (const server of await response.json()) {
-    const item = line(server.name + (server.connected ? " (connected) " : " (not connected) "));
-    item.append(
+    const card = make("div", "server");
+    card.append(make("div", "server-name", server.name), make("div", "server-url", server.url));
+    const foot = make("div", "server-foot");
+    foot.append(make("span", server.connected ? "state on" : "state", server.connected ? "Connected" : "Not connected"));
+    foot.append(
       server.connected
-        ? button("Disconnect", () => disconnect(server.name))
-        : button("Connect", () => connect(server.name)),
+        ? button("Disconnect", () => disconnect(server.name), "small")
+        : button("Connect", () => connect(server.name), "small primary"),
     );
-    list.append(item);
+    card.append(foot);
+    list.append(card);
   }
 }
 
-function showCalls(result) {
-  const calls = el("calls");
-  calls.replaceChildren();
+function part(title, content) {
+  const box = make("div");
+  box.append(make("div", "part-title", title), make("pre", "", content));
+  return box;
+}
+
+function callRow(call, badgeClass, badgeText, parts) {
+  const row = make("details", "call");
+  const head = make("summary");
+  head.append(
+    make("span", "badge " + badgeClass, badgeText),
+    make("span", "call-server", call.server),
+    make("span", "call-tool", call.tool),
+  );
+  const body = make("div", "call-body");
+  body.append(...parts);
+  row.append(head, body);
+  return row;
+}
+
+function noteRow(badgeClass, badgeText, text) {
+  const row = make("div", "note");
+  row.append(make("span", "badge " + badgeClass, badgeText), make("span", "", text));
+  return row;
+}
+
+function buildCalls(result) {
+  const rows = [];
   for (const call of result.executed) {
-    const args = JSON.stringify(call.arguments);
-    calls.append(line(call.server + "." + call.tool + " " + args + " -> " + call.result));
+    const parts = [part("Arguments", JSON.stringify(call.arguments, null, 2)), part("Result", call.result)];
+    rows.push(callRow(call, call.is_error ? "bad" : "ok", call.is_error ? "Failed" : "Done", parts));
   }
   for (const call of result.blocked) {
-    calls.append(line("blocked " + call.server + "." + call.tool + ": " + call.reason));
+    const parts = [part("Reason", call.reason), part("Arguments", JSON.stringify(call.arguments, null, 2))];
+    rows.push(callRow(call, "bad", "Blocked", parts));
   }
   for (const name of result.not_connected) {
-    calls.append(line(name + " is not connected, so its tools were not offered"));
+    rows.push(noteRow("warn", "Not connected", name + " is not connected, so its tools were not offered"));
   }
   for (const name of result.unavailable) {
-    calls.append(line(name + " did not answer, so its tools were not offered"));
+    rows.push(noteRow("warn", "No answer", name + " did not answer, so its tools were not offered"));
   }
   for (const name of result.changed_tools) {
-    calls.append(line(name + " was changed since you first used its server, so it was not offered. Disconnect and connect the server to accept the change"));
+    rows.push(noteRow("warn", "Changed", name + " was changed since you first used its server, so it was not offered. Disconnect and connect the server to accept the change"));
   }
   if (result.cut_off) {
-    calls.append(line("The reply was cut off at the output limit, so the answer above is incomplete"));
+    rows.push(noteRow("warn", "Cut off", "The reply was cut off at the output limit, so the answer above is incomplete"));
   }
+  if (result.step_limit_hit) {
+    rows.push(noteRow("warn", "Step limit", "The step limit was reached, so the answer may be incomplete"));
+  }
+  if (result.withheld > 0) {
+    const noun = result.withheld === 1 ? "tool result was" : "tool results were";
+    rows.push(noteRow("info", "Held back", result.withheld + " " + noun + " held back from the model"));
+  }
+  return rows;
 }
 
-function showAsked(request) {
-  const asked = document.createElement("p");
-  asked.className = "muted";
-  asked.textContent = "You: " + request;
-  el("turns").append(asked);
-}
-
-function showReply(answer) {
-  const replied = document.createElement("pre");
-  replied.textContent = answer;
-  el("turns").append(replied);
+function newTurn(request) {
+  const turn = make("article", "turn");
+  const asked = make("div", "request", request);
+  const reply = make("div");
+  reply.hidden = true;
+  reply.append(make("div", "who-label", "deskclerk"), make("div", "answer"));
+  const calls = make("div", "calls");
+  const cost = make("p", "cost");
+  turn.append(asked, reply, calls, cost);
+  el("turns").append(turn);
+  el("empty").hidden = true;
+  return { node: turn, reply, answer: reply.lastChild, calls, cost };
 }
 
 function newConversation() {
   conversation = null;
+  currentTurn = null;
   el("turns").replaceChildren();
-  el("result").hidden = true;
+  el("empty").hidden = false;
   showPending([]);
   showError("");
+  el("request").focus();
 }
 
-let decisions = {};
+function updateDecided(total) {
+  const count = Object.keys(decisions).length;
+  el("send").disabled = count < total;
+  el("decided").textContent = total === 0 ? "" : count + " of " + total + " decided";
+}
 
 function showPending(pending) {
   decisions = {};
   const list = el("pending");
   list.replaceChildren();
   for (const call of pending) {
-    const verdict = document.createElement("span");
-    verdict.className = "verdict";
+    const card = make("div", "pending-card");
+    const title = make("div");
+    title.append(make("span", "call-server", call.server + " "), make("span", "call-tool", call.tool));
+    const group = make("div", "pending-actions");
+    group.setAttribute("role", "group");
+    group.setAttribute("aria-label", "Decision for " + call.server + " " + call.tool);
+    const approve = button("Approve", () => decide("approve"), "choice approve");
+    const reject = button("Reject", () => decide("reject"), "choice reject");
+    approve.setAttribute("aria-pressed", "false");
+    reject.setAttribute("aria-pressed", "false");
+    const always = call.destructive ? null : button("Always allow", () => decide("approve_always"), "choice always");
+    if (always) always.setAttribute("aria-pressed", "false");
+    const verdict = make("span", "badge info", "Not decided");
     const decide = (choice) => {
       decisions[call.id] = choice;
+      card.dataset.choice = choice;
+      approve.setAttribute("aria-pressed", String(choice === "approve"));
+      reject.setAttribute("aria-pressed", String(choice === "reject"));
+      if (always) always.setAttribute("aria-pressed", String(choice === "approve_always"));
       verdict.textContent = { approve: "Approved", approve_always: "Always allowed", reject: "Rejected" }[choice];
-      el("send").disabled = Object.keys(decisions).length < pending.length;
+      verdict.className = choice === "reject" ? "badge bad" : "badge ok";
+      updateDecided(pending.length);
     };
-    const item = line(call.server + "." + call.tool + " " + JSON.stringify(call.arguments) + " ");
-    item.append(button("Approve", () => decide("approve")));
-    if (!call.destructive) item.append(button("Always allow", () => decide("approve_always")));
-    item.append(button("Reject", () => decide("reject")), verdict);
-    list.append(item);
+    group.append(approve, ...(always ? [always] : []), reject, verdict);
+    card.append(title, part("Arguments", JSON.stringify(call.arguments, null, 2)), group);
+    list.append(card);
   }
-  el("send").disabled = true;
+  waiting = pending.length;
+  updateDecided(pending.length);
   el("confirm").hidden = pending.length === 0;
-  el("ask").disabled = pending.length > 0;
+  updateControls();
 }
 
 function showResult(result) {
   conversation = result.conversation;
-  if (result.pending.length === 0) showReply(result.answer);
-  el("answer").textContent = result.answer;
-  showCalls(result);
+  const turn = currentTurn;
+  turn.answer.textContent = result.answer;
+  turn.reply.hidden = result.answer === "";
+  turn.calls.replaceChildren(...buildCalls(result));
+  turn.cost.textContent = "Cost: " + result.cost_usd.toFixed(4) + " USD";
   showPending(result.pending);
-  el("cost").textContent = "Cost: " + result.cost_usd.toFixed(4) + " USD";
-  el("result").hidden = false;
+  (result.pending.length > 0 ? el("confirm") : turn.node).scrollIntoView({ block: "nearest" });
 }
 
 async function ask() {
   showError("");
   const request = el("request").value;
-  const response = await post("/ask", { request, conversation });
-  if (!response.ok) return showError(await detail(response));
-  showAsked(request);
-  el("request").value = "";
-  showResult(await response.json());
+  if (request.trim() === "") return el("request").focus();
+  setBusy(true, "Working on it…");
+  try {
+    const response = await post("/ask", { request, conversation });
+    if (!response.ok) return showError(await detail(response));
+    currentTurn = newTurn(request);
+    el("request").value = "";
+    showResult(await response.json());
+  } catch (error) {
+    showError("Could not reach the server");
+  } finally {
+    setBusy(false);
+    if (waiting === 0) el("request").focus();
+  }
 }
 
 async function send() {
   showError("");
-  const response = await post("/ask/confirm", { conversation, decisions });
-  if (!response.ok) {
-    if (response.status >= 500) showPending([]);
-    return showError(await detail(response));
+  el("send").disabled = true;
+  setBusy(true, "Sending your decisions…");
+  try {
+    const response = await post("/ask/confirm", { conversation, decisions });
+    if (!response.ok) {
+      if (response.status >= 500) showPending([]);
+      else updateDecided(waiting);
+      return showError(await detail(response));
+    }
+    showResult(await response.json());
+  } catch (error) {
+    updateDecided(waiting);
+    showError("Could not reach the server");
+  } finally {
+    setBusy(false);
   }
-  showResult(await response.json());
 }
 
 async function start() {
@@ -236,10 +561,21 @@ async function start() {
     return;
   }
   el("status").textContent = "Signed in as " + (await response.json()).name;
+  el("who").hidden = false;
   el("app").hidden = false;
-  el("ask").addEventListener("click", ask);
+  el("composer").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!el("ask").disabled) ask();
+  });
+  el("request").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      el("composer").requestSubmit();
+    }
+  });
   el("send").addEventListener("click", send);
   el("new-conversation").addEventListener("click", newConversation);
+  el("logout").addEventListener("click", logout);
   loadServers();
 }
 
