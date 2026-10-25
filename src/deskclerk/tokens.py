@@ -61,6 +61,10 @@ class TokenStore:
         finally:
             database.close()
 
+    def check(self) -> None:
+        with self._database() as database:
+            database.execute("SELECT value FROM key_check").fetchone()
+
     def _decrypt(self, value: bytes) -> str:
         try:
             return self.fernet.decrypt(value).decode()
