@@ -54,6 +54,11 @@ secret. A server's `tools` lists the only tools the agent may use from it. deskc
 read-only marks of the servers you list. It is tested against Linear's hosted MCP server:
 sign-in, reads, writes and the injection screen.
 
+Without a `client_id`, deskclerk signs in as one client for every employee: its client ID is
+the address of the document it serves at `/oauth/client.json`, as the MCP authorization spec
+allows. A server whose login does not support that gets a client registered per employee. The
+document is used only when `DESKCLERK_PUBLIC_URL` is https.
+
 A server can also take `headers`, where `${env:NAME}` is replaced by that environment variable.
 It can take `client_cert` and `client_key` for mutual TLS; mount those files into the container.
 It can take `plain_http = true` to allow an `http://` address, for a server on a private network.
