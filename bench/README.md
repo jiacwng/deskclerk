@@ -1,5 +1,20 @@
 bench/ measures deskclerk's agent on WorkBench (olly-styles/WorkBench), a set of workplace tasks with ground-truth outcomes, against WorkBench's own agent loop, and measures prompt injection screens on AgentDojo, LLMail-Inject and InjecAgent.
 
+## Results
+
+Claude Haiku 5.5 is the agent in every run. The sections below give the commands to rerun each row.
+
+| What | Result | Limit |
+|---|---|---|
+| WorkBench, 459 held-out workplace tasks over five MCP servers, graded by WorkBench's own scorer | deskclerk: 441 correct, 7 harmful. WorkBench's own agent loop: 447 correct, 7 harmful. | No measurable difference (exact McNemar p = 0.18 correct, p = 1.0 harmful). One test run per loop, with deskclerk's write check off. The reference run is from an earlier date with the same model. It is near the ceiling at 447 of 459. |
+| The same tasks and servers, with Jev picking the servers a task needs | 442 correct, 9 harmful, at 57% of the cost per task of offering every tool, Jev included. | No measurable difference from offering every tool (p = 1.00 correct, p = 0.69 harmful). The threshold was fitted on the 231 dev tasks. Single-turn tasks only. |
+| AgentDojo v1.2.2, 949 attacked runs over four suites | Attack success with no defense: 2.0% (19 of 949), with 84.5% of tasks completed with no attack and 81.9% under attack. With spotlighting: 1.9%. With a DeBERTa screen: 0.0%, with 45.4% and 38.7% of tasks completed. With Prompt Guard 2 as the screen: 0.4% (4 of 949), with 84.5% and 67.7%. With Jev withholding the results it flags: 0.0%, with 84.5% and 20.7%. | One agent model, one attack, one run per task. The baseline has 19 successes. Jev's question was rewritten once after a first run that completed 82.5% and 21.0%. |
+| The same 949 attacked runs, with a result Jev flags passed to the agent behind a warning, as deskclerk does | If the employee approves every call: 1.9% (18 of 949), with 84.5% of tasks completed with no attack and 81.7% under attack. If the employee rejects every call after a flag: 0.0%, with 84.5% and 0.1%. Jev flagged none of the 97 runs with no attack. | AgentDojo has no human, so these are the two bounds. An employee who rejects only the injected call lands between them. One run per task. |
+| Three injection screens on 1,786 distinct tool outputs that the undefended agent read in AgentDojo | Outputs with the attack's marker flagged (1,174): Jev 100.0%, Prompt Guard 2 31.7%, DeBERTa 64.3%. Outputs without it flagged (612): Jev 0.0%, Prompt Guard 2 0.0%, DeBERTa 30.6%. | One attack with a fixed text, labelled by its marker. Outputs repeat across runs. |
+| LLMail-Inject: 5,000 of the 37,303 prompt injections people wrote in Microsoft's phase 2 challenge, against 160 of the challenge's clean emails | Injections flagged: Jev 75.2%, Prompt Guard 2 16.1%, DeBERTa 34.1%. Clean emails flagged: none by any screen. ROC AUC: 0.995, 0.986, 0.986. With the 612 clean AgentDojo outputs added, DeBERTa flags 187 of them and the AUC is 0.990, 0.805, 0.631. | Every submission counts as an injection, including broken ones. One request for every email. Submissions from one team are alike, so the intervals in the report are too narrow. None of 160 clean emails flagged still allows a rate up to about 2.3%. |
+| InjecAgent, 2,108 cases in its base and enhanced settings | With no defense, 0 attacks succeed and 171 outputs are invalid, so the screen has nothing to stop. Jev flagged 88.2% of the injected tool results, and invalid outputs rose to 404, mostly the agent calling the user tool again. | One model, one run. None of 2,108 still allows a rate up to about 0.14%. The cases are templated and single-step. The runner calls the model through Anthropic's Messages API. |
+| TypeSafe's Jev scoring 1,742 write calls from the WorkBench runs | ROC AUC 0.47 on test and 0.55 on dev | An AUC of 0.5 is chance. Haiku 5.5 as the judge scored 0.63 on test. |
+
 ## Files
 
 - `workbench.py`: the task files, the dev/test split, the date line WorkBench puts before every task, and the columns of a results file.
@@ -9,7 +24,7 @@ bench/ measures deskclerk's agent on WorkBench (olly-styles/WorkBench), a set of
 - `compare.py`: scores results files with WorkBench's own scorer and compares runs pairwise with an exact McNemar test.
 - `jev_calls.py`: replays the calls logged in results files and lists every write call with its request, arguments, earlier results and whether the ground truth contains it.
 - `jev_score.py`: scores those write calls with Jev and with Claude Haiku 5.5 and reports how well each score separates wanted from unwanted calls.
-- `run_agentdojo.py`: runs the agent through AgentDojo v1.2.2 with one defense (none, spotlighting, deberta, promptguard or jev) and writes a JSON summary. The jev defense asks Jev through `src/deskclerk/screen.py`, the file the product screens tool outputs with.
+- `run_agentdojo.py`: runs the agent through AgentDojo v1.2.2 with one defense (none, spotlighting, deberta, promptguard, jev or jev-flag) and writes a JSON summary. The jev defense withholds an output Jev flags, and jev-flag passes it behind a warning and reports the two bounds of an employee who approves or rejects every later call. Both ask Jev through `src/deskclerk/screen.py`, the file the product screens tool outputs with.
 - `compare_agentdojo.py`: prints one table of the summaries and an exact McNemar test of each defense against no defense.
 - `dojo_summary.py`: the summary arithmetic and the model cost used by the two files above.
 - `llmail_inject.py`: scores the phase 2 attacks of Microsoft's LLMail-Inject challenge and clean texts with Jev, Prompt Guard 2 and DeBERTa.
@@ -103,7 +118,7 @@ python3 -m venv ~/.venvs/dojo
 Run one defense on all four suites. Each run reads `ANTHROPIC_API_KEY`, and `--defense jev` also reads `TYPESAFE_API_KEY`. The deberta and promptguard defenses download their models from Hugging Face on first use, and promptguard needs a Hugging Face login that has accepted Meta's licence for Llama Prompt Guard 2. Run the defenses one at a time, because a second run in parallel reaches the model's input token rate limit:
 
 ```
-for defense in none spotlighting deberta promptguard jev; do
+for defense in none spotlighting deberta promptguard jev jev-flag; do
   ~/.venvs/dojo/bin/python bench/run_agentdojo.py --suite all --defense $defense \
     --logdir runs/dojo --out runs/dojo-$defense.json
 done
