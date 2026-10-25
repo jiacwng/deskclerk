@@ -429,9 +429,9 @@ function buildCalls(result) {
   if (result.step_limit_hit) {
     rows.push(noteRow("warn", "Step limit", "The step limit was reached, so the answer may be incomplete"));
   }
-  if (result.withheld > 0) {
-    const noun = result.withheld === 1 ? "tool result was" : "tool results were";
-    rows.push(noteRow("info", "Held back", result.withheld + " " + noun + " held back from the model"));
+  if (result.flagged > 0) {
+    const noun = result.flagged === 1 ? "tool result was" : "tool results were";
+    rows.push(noteRow("warn", "Flagged", result.flagged + " " + noun + " flagged by the injection screen, so later calls waited for your approval"));
   }
   return rows;
 }

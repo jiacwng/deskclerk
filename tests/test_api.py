@@ -432,7 +432,7 @@ class RecordingTracing(Tracing):
         self.flagged.append(metadata["flagged"])
 
 
-def test_an_ask_is_traced_under_the_employee_with_the_withheld_count(
+def test_an_ask_is_traced_under_the_employee_with_the_flagged_count(
     sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
 ) -> None:
     settings = make_settings(token_settings)
@@ -456,6 +456,15 @@ def test_an_employee_is_told_when_the_reply_was_cut_off_at_the_output_limit(
         page = site.client.get("/").text
     assert (body["answer"], body["cut_off"]) == ("The meeting is at", True)
     assert "cut off at the output limit" in page
+
+
+def test_the_page_tells_an_employee_when_a_tool_result_was_flagged(
+    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings)
+    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+        page = site.client.get("/").text
+    assert "flagged by the injection screen" in page
 
 
 def test_asks_beyond_the_per_minute_quota_get_429_for_that_employee_only(
