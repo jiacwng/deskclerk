@@ -10,6 +10,8 @@ services:
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
     ports:
       - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:8100:8100"
     volumes:
       - ./keycloak:/opt/keycloak/data/import:ro
     healthcheck:
@@ -29,7 +31,7 @@ services:
   # without an account. It starts empty and keeps its tasks in memory.
   demo:
     build: .
-    network_mode: host
+    network_mode: "service:keycloak"
     command: ["python", "/app/demo/tasks_server.py"]
     volumes:
       - ./demo/tasks_server.py:/app/demo/tasks_server.py:ro
@@ -43,12 +45,15 @@ services:
       timeout: 5s
       retries: 30
 
-  # The web app on http://localhost:8000. It shares the host's network, so the issuer, the
-  # sign-in redirect and MCP servers on localhost keep the addresses the browser uses.
+  # The web app on http://localhost:8000. It shares keycloak's network, so the issuer, the
+  # sign-in redirect and MCP servers on localhost keep the addresses the browser uses. keycloak
+  # publishes ports 8000 and 8100 for it and for demo.
   deskclerk:
     build: .
-    network_mode: host
+    network_mode: "service:keycloak"
     env_file: .env
+    environment:
+      DESKCLERK_HOST: 0.0.0.0
     volumes:
       - type: bind
         source: ./servers.toml
