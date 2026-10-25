@@ -8,6 +8,7 @@ import base64
 import hashlib
 import hmac
 import re
+import sqlite3
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, nullcontext
@@ -20,7 +21,7 @@ from uuid import UUID, uuid4
 import anthropic
 import httpx
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from pydantic import BaseModel, ConfigDict, Field
@@ -301,6 +302,27 @@ def create_app(
                     raise HTTPException(503, "the login server cannot be reached") from None
         return discovered["endpoints"]
 
+    @app.get("/livez")
+    async def livez() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.get("/readyz")
+    async def readyz() -> JSONResponse:
+        failed = []
+        try:
+            await run_in_threadpool(tokens.check)
+        except sqlite3.Error:
+            failed.append("token store")
+        if not hasattr(app.state, "checkpointer"):
+            failed.append("checkpointer")
+        try:
+            await endpoints()
+        except HTTPException:
+            failed.append("login server discovery")
+        if failed:
+            return JSONResponse({"not_ready": failed}, status_code=503)
+        return JSONResponse({"status": "ready"})
+
     @app.get("/", response_class=HTMLResponse)
     async def index() -> HTMLResponse:
         return HTMLResponse(page, headers=page_headers)
@@ -413,6 +435,14 @@ def create_app(
         except UPSTREAM_ERRORS:
             raise HTTPException(502, f"cannot start the sign-in to {name}") from None
         return ConnectOut(authorization_url=url)
+
+    @app.get("/oauth/client.json")
+    async def oauth_client_document() -> JSONResponse:
+        document = connections.client_metadata().model_dump(mode="json", exclude_none=True)
+        return JSONResponse(
+            document | {"client_id": settings.client_metadata_url},
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
 
     @app.get("/oauth/callback")
     async def oauth_callback(

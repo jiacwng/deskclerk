@@ -73,6 +73,10 @@ class Settings(BaseSettings):
         return self.public_url + "/login/callback"
 
     @property
+    def client_metadata_url(self) -> str:
+        return self.public_url + "/oauth/client.json"
+
+    @property
     def redirect_url(self) -> str:
         return self.public_url + "/oauth/callback"
 

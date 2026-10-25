@@ -187,16 +187,29 @@ def _read_mcp_json(path: Path) -> dict[str, Any]:
     return {"server": servers}
 
 
-def load_servers(path: Path, environ: Mapping[str, str] = os.environ) -> list[McpServer]:
+def _parse(path: Path) -> _ServersFile:
     if path.suffix == ".json":
         raw = _read_mcp_json(path)
     else:
         raw = _read_toml(path)
     try:
-        parsed = _ServersFile.model_validate(raw)
+        return _ServersFile.model_validate(raw)
     except ValidationError as error:
         raise ServersError(f"{path} is not a valid server list: {error}") from None
 
+
+def secret_variables(path: Path) -> list[str]:
+    names = []
+    for entry in _parse(path).server:
+        if entry.client_secret_env is not None:
+            names.append(entry.client_secret_env)
+        for value in entry.headers.values():
+            names.extend(ENV_REFERENCE.findall(value))
+    return names
+
+
+def load_servers(path: Path, environ: Mapping[str, str] = os.environ) -> list[McpServer]:
+    parsed = _parse(path)
     servers = []
     for entry in parsed.server:
         secret = None

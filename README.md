@@ -54,6 +54,11 @@ secret. A server's `tools` lists the only tools the agent may use from it. deskc
 read-only marks of the servers you list. It is tested against Linear's hosted MCP server:
 sign-in, reads, writes and the injection screen.
 
+Without a `client_id`, deskclerk signs in as one client for every employee: its client ID is
+the address of the document it serves at `/oauth/client.json`, as the MCP authorization spec
+allows. A server whose login does not support that gets a client registered per employee. The
+document is used only when `DESKCLERK_PUBLIC_URL` is https.
+
 A server's `groups`, such as `groups = ["finance"]`, limits it to employees in one of those
 groups. The others never see it, and its tools are never offered for them. deskclerk reads the
 groups from the `groups` claim of the employee's token, or the claim named in
@@ -114,6 +119,12 @@ default), are listed in `src/deskclerk/config.py`.
 tokens, sessions, conversations and spending, and writes one audit line with the counts.
 `DESKCLERK_RETENTION_DAYS` deletes conversations unused for that many days. The default, 0,
 keeps them.
+
+Each secret can come from a file, as in the official Postgres image: set
+`DESKCLERK_TOKEN_KEY_FILE=/run/secrets/token_key` instead of `DESKCLERK_TOKEN_KEY`. This works
+for the model and TypeSafe keys and for every variable a server entry names. `/livez` answers
+while the process runs. `/readyz` answers once the stores open and the login server has
+answered, and the image's health check uses it.
 
 ## Serving it over HTTPS
 

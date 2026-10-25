@@ -18,6 +18,7 @@ from deskclerk.connections import OAuthConnections
 from deskclerk.conversations import delete_user_threads
 from deskclerk.jev import jev_from_environment
 from deskclerk.providers import MissingApiKey, ProviderNotInstalled, chat_model
+from deskclerk.secret_files import SecretFileError, read_secret_files
 from deskclerk.servers import ServersError, load_servers
 from deskclerk.sessions import SessionStore
 from deskclerk.spending import SpendingStore
@@ -62,6 +63,10 @@ def main(argv: Sequence[str] = ()) -> None:
     commands = parser.add_subparsers(dest="command")
     commands.add_parser("erase", help="delete one employee's data").add_argument("user_id")
     arguments = parser.parse_args(argv)
+    try:
+        read_secret_files()
+    except (SecretFileError, ServersError) as error:
+        sys.exit(f"deskclerk: {error}")
     if arguments.command == "erase":
         erase(arguments.user_id)
         return
@@ -86,7 +91,11 @@ def main(argv: Sequence[str] = ()) -> None:
         tokens = TokenStore(settings.token_file, settings.token_key.get_secret_value())
         spending_store = SpendingStore(settings.token_file.parent / SPENDING_FILE)
         connections = OAuthConnections(
-            tokens, settings.redirect_url, MCP_CLIENT_NAME, FLOW_TIMEOUT_SECONDS
+            tokens,
+            settings.redirect_url,
+            MCP_CLIENT_NAME,
+            FLOW_TIMEOUT_SECONDS,
+            settings.client_metadata_url,
         )
         with httpx.Client() as client:
             jwks_url = discover_jwks_url(settings, client)

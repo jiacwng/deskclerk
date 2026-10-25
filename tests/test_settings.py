@@ -75,6 +75,11 @@ def test_the_deadline_and_the_caps_must_be_positive(name: str) -> None:
         Settings.model_validate({name: 0})
 
 
+def test_the_client_metadata_url_hangs_off_the_public_url() -> None:
+    settings = Settings(public_url="https://deskclerk.example.com/")
+    assert settings.client_metadata_url == "https://deskclerk.example.com/oauth/client.json"
+
+
 def test_the_groups_claim_defaults_to_groups_and_is_set_by_the_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

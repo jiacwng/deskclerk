@@ -229,6 +229,26 @@ def test_the_app_needs_a_session_key(
             pass
 
 
+def test_the_client_metadata_document_is_served_without_sign_in(
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(token_settings, public_url="https://deskclerk.example.com")
+    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+        response = site.client.get("/oauth/client.json")
+    assert response.status_code == 200
+    assert response.json() == {
+        "client_id": "https://deskclerk.example.com/oauth/client.json",
+        "client_name": "deskclerk test",
+        "redirect_uris": [REDIRECT],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+        "token_endpoint_auth_method": "none",
+        "application_type": "web",
+    }
+
+
 @pytest.mark.parametrize(
     ("method", "path"),
     [
@@ -1616,3 +1636,49 @@ def test_a_destructive_call_cannot_be_always_allowed_and_a_non_destructive_one_c
         "approve_always",
         "always",
     ]
+
+
+def test_livez_answers_without_a_sign_in(
+    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings)
+    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+        response = site.client.get("/livez")
+    assert response.status_code == 200
+
+
+def test_readyz_is_503_until_the_login_server_has_been_read_and_then_200(
+    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings)
+    idp = FakeIdp(settings.issuer)
+    reachable = False
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if not reachable:
+            raise httpx.ConnectError("down")
+        return idp.handle(request)
+
+    transport = httpx.MockTransport(handle)
+    with web(settings, [], script(), token_signing_key, tmp_path, idp_transport=transport) as site:
+        before = site.client.get("/readyz")
+        reachable = True
+        after = site.client.get("/readyz")
+    assert before.status_code == 503
+    assert before.json() == {"not_ready": ["login server discovery"]}
+    assert after.status_code == 200
+
+
+def test_readyz_names_the_token_store_when_it_cannot_be_read(
+    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings)
+    idp = FakeIdp(settings.issuer)
+    with web(
+        settings, [], script(), token_signing_key, tmp_path, idp_transport=idp.transport
+    ) as site:
+        assert site.client.get("/readyz").status_code == 200
+        site.tokens.path.write_bytes(b"this is not a database" * 100)
+        response = site.client.get("/readyz")
+    assert response.status_code == 503
+    assert "token store" in response.json()["not_ready"]
