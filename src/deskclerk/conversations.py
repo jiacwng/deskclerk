@@ -1,7 +1,8 @@
 # Conversation memory: each conversation is a LangGraph thread whose checkpoints live in the
 # token file, encrypted with the token key. A thread id starts with the employee's id, so one
-# employee can never load another's.
+# employee can never load another's. Erasing an employee deletes every thread with their prefix.
 
+import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -39,6 +40,27 @@ async def open_checkpointer(path: Path, fernet: Fernet) -> AsyncIterator[AsyncSq
 
 def thread_id(user_id: str, conversation: UUID) -> str:
     return f"{user_id}/{conversation}"
+
+
+def delete_user_threads(path: Path, user_id: str) -> int:
+    prefix = f"{user_id}/"
+    database = sqlite3.connect(path)
+    try:
+        with database:
+            tables = {row[0] for row in database.execute("SELECT name FROM sqlite_master")}
+            if "checkpoints" not in tables:
+                return 0
+            arguments = (len(prefix), prefix)
+            threads = database.execute(
+                "SELECT COUNT(DISTINCT thread_id) FROM checkpoints "
+                "WHERE substr(thread_id, 1, ?) = ?",
+                arguments,
+            ).fetchone()[0]
+            database.execute("DELETE FROM checkpoints WHERE substr(thread_id, 1, ?) = ?", arguments)
+            database.execute("DELETE FROM writes WHERE substr(thread_id, 1, ?) = ?", arguments)
+    finally:
+        database.close()
+    return int(threads)
 
 
 def _config(thread: str) -> Any:

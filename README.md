@@ -98,6 +98,11 @@ deskclerk container on a local disk: the request quota, the spending check and p
 live in its memory. The `DESKCLERK_` settings, such as `DESKCLERK_BUDGET_USD` (2 USD a month by
 default), are listed in `src/deskclerk/config.py`.
 
+`docker compose exec deskclerk python -m deskclerk erase <user_id>` deletes one employee's
+tokens, conversations and spending, and writes one audit line with the counts.
+`DESKCLERK_RETENTION_DAYS` deletes conversations unused for that many days. The default, 0,
+keeps them.
+
 ## Serving it over HTTPS
 
 deskclerk listens on 127.0.0.1:8000 by default, so put a reverse proxy on the same machine in

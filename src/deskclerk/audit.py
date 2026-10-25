@@ -1,5 +1,6 @@
 # The audit log: one JSON line per ask or confirmation and one per connect or disconnect, naming
 # who did it, which tools the agent called, which calls wait for the employee and what was decided.
+# An erase of an employee is one line with the row counts removed and no content.
 # The request, each call's arguments and results, and a gate's reason are logged only when
 # DESKCLERK_AUDIT_TEXT is set; otherwise only the request's length and, when DESKCLERK_AUDIT_KEY is
 # set, its HMAC-SHA256. Tokens are never logged.
@@ -75,6 +76,17 @@ class Audit:
     def connection(self, identity: Identity, action: str, server_name: str) -> None:
         line = self._line(identity, action)
         line["server"] = server_name
+        _log.info(json.dumps(line))
+
+    def erased(self, user_id: str, secrets: int, threads: int, costs: int) -> None:
+        line = {
+            "time": datetime.now(UTC).isoformat(timespec="milliseconds"),
+            "user": user_id,
+            "entry": "erase",
+            "secrets": secrets,
+            "threads": threads,
+            "costs": costs,
+        }
         _log.info(json.dumps(line))
 
     def _line(self, identity: Identity, entry: str) -> dict[str, Any]:

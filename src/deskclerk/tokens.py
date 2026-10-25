@@ -1,5 +1,5 @@
-# An SQLite file holding each employee's OAuth tokens and pinned tool definitions for each MCP
-# server, encrypted with Fernet.
+# An SQLite file holding each employee's OAuth tokens, client registrations and pinned tool
+# definitions for each MCP server, encrypted with Fernet.
 
 import sqlite3
 from collections.abc import Iterator
@@ -92,6 +92,10 @@ class TokenStore:
                 "AND kind IN ('tokens', 'tool_pins')",
                 (user_id, server_name),
             )
+
+    def delete_user(self, user_id: str) -> int:
+        with self._database() as database:
+            return database.execute("DELETE FROM secrets WHERE user_id = ?", (user_id,)).rowcount
 
     def storage_for(
         self, user_id: str, server: McpServer, redirect_url: str

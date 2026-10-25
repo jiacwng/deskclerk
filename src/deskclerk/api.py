@@ -67,6 +67,7 @@ from deskclerk.instructions import system_prompt
 from deskclerk.jev import Jev
 from deskclerk.providers import BudgetExceeded, Usage, cost_of
 from deskclerk.quota import Quota
+from deskclerk.retention import delete_old_threads, delete_old_threads_daily
 from deskclerk.scope import jev_tool_selection
 from deskclerk.screen import jev_screen
 from deskclerk.servers import McpServer
@@ -255,7 +256,15 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         async with open_checkpointer(tokens.path, tokens.fernet) as checkpointer:
             app.state.checkpointer = checkpointer
+            sweep = None
+            if settings.retention_days > 0:
+                await delete_old_threads(checkpointer, settings.retention_days)
+                sweep = asyncio.create_task(
+                    delete_old_threads_daily(checkpointer, settings.retention_days)
+                )
             yield
+            if sweep is not None:
+                sweep.cancel()
 
     app = FastAPI(
         title="deskclerk", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan
