@@ -47,7 +47,7 @@ from deskclerk.config import Settings
 from deskclerk.connections import OAuthConnections
 from deskclerk.instructions import system_prompt
 from deskclerk.jev import PRICE_PER_INPUT_TOKEN, Jev
-from deskclerk.screen import WITHHELD
+from deskclerk.screen import NOTICE
 from deskclerk.servers import McpServer
 from deskclerk.sessions import SessionStore
 from deskclerk.spending import SpendingStore
@@ -400,7 +400,7 @@ class RecordingTracing(Tracing):
     def __init__(self) -> None:
         super().__init__(None, "test", True, None)
         self.users: list[str] = []
-        self.withheld: list[int] = []
+        self.flagged: list[int] = []
 
     @contextmanager
     def ask(self, user_id: str) -> Iterator[AskTrace]:
@@ -409,7 +409,7 @@ class RecordingTracing(Tracing):
         yield trace
 
     def _record(self, metadata: dict[str, int]) -> None:
-        self.withheld.append(metadata["withheld"])
+        self.flagged.append(metadata["flagged"])
 
 
 def test_an_ask_is_traced_under_the_employee_with_the_withheld_count(
@@ -422,7 +422,7 @@ def test_an_ask_is_traced_under_the_employee_with_the_withheld_count(
         settings, [], script(answer("ok")), token_signing_key, tmp_path, tracing=tracing
     ) as site:
         assert ask(site, ada).status_code == 200
-    assert (tracing.users, tracing.withheld) == (["ada"], [0])
+    assert (tracing.users, tracing.flagged) == (["ada"], [0])
 
 
 def test_an_employee_is_told_when_the_reply_was_cut_off_at_the_output_limit(
@@ -498,7 +498,7 @@ def test_tokens_billed_before_a_provider_failure_count_against_the_cap(
     assert [line["cost_usd"] for line in asks] == [pytest.approx(0.009), 0.0]
 
 
-def test_a_withheld_result_is_reported_and_jev_tokens_count_against_the_cap(
+def test_a_flagged_result_is_reported_and_jev_tokens_count_against_the_cap(
     sign_token: Sign,
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
@@ -520,12 +520,12 @@ def test_a_withheld_result_is_reported_and_jev_tokens_count_against_the_cap(
         first = ask(site, ada)
         stopped = ask(site, ada)
     body = first.json()
-    assert body["executed"][0]["result"] == WITHHELD
-    assert body["withheld"] == 1
+    assert body["executed"][0]["result"].startswith(NOTICE)
+    assert body["flagged"] == 1
     assert body["cost_usd"] == pytest.approx(1_000_000 * PRICE_PER_INPUT_TOKEN)
     assert stopped.status_code == 402
     [line] = [line for line in audit_lines(caplog) if line.get("outcome") == "answered"]
-    assert line["withheld"] == 1
+    assert line["flagged"] == 1
 
 
 def test_a_changed_tool_is_withheld_reported_and_audited_until_the_server_is_reconnected(

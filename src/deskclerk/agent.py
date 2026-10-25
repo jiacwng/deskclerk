@@ -52,7 +52,7 @@ from deskclerk.conversations import close_unanswered_calls, earlier_texts
 from deskclerk.instructions import unavailable_note
 from deskclerk.pinning import pin_tools
 from deskclerk.providers import Usage, usage_from
-from deskclerk.screen import UNCHECKED, WITHHELD, Screen
+from deskclerk.screen import Screen, is_flagged
 from deskclerk.servers import McpServer
 from deskclerk.tokens import TokenStore
 
@@ -124,7 +124,7 @@ class AgentResult:
     usage: tuple[Usage, ...]
     step_limit_hit: bool
     cut_off: bool
-    withheld: int
+    flagged: int
     changed_tools: tuple[str, ...]
     pending: tuple[PendingCall, ...]
     decided: tuple[DecidedCall, ...]
@@ -240,7 +240,8 @@ class _Shared:
     blocked: list[BlockedCall] = field(default_factory=list)
     usage: list[Usage] = field(default_factory=list)
     last_response: AIMessage | None = None
-    withheld: int = 0
+    flagged: int = 0
+    flag_raised: bool = False
     shown: set[str] = field(default_factory=set)
 
 
@@ -354,8 +355,9 @@ class _Run(AgentMiddleware[AgentState[Any], None, Any]):
                 )
                 record_output(result_text)
             is_error = bool(reply.artifact)
-            if result_text in (WITHHELD, UNCHECKED):
-                shared.withheld += 1
+            if is_flagged(result_text):
+                shared.flagged += 1
+                shared.flag_raised = True
         except NotConnected as error:
             result_text, is_error = str(error), True
         shared.executed.append(
@@ -444,7 +446,7 @@ async def run_agent(
         tool_output_chars,
         history_tokens,
     )
-    confirmation = _confirmation(tools)
+    confirmation = _confirmation(tools, shared)
     read_only_names: list[BaseTool | str] = [
         name for name, tool in tools.items() if tool.info.read_only
     ]
@@ -481,6 +483,7 @@ async def run_agent(
         if set(decisions) != set(waiting):
             raise WrongDecisions
         shared.shown = set(tools)
+        shared.flag_raised = _flag_before_pause(saved.values["messages"], waiting, tools)
         for interrupt in waiting.values():
             confirmation.interrupt_on.setdefault(interrupt.value["name"], _REVIEW)
         start = Command(
@@ -510,7 +513,7 @@ async def run_agent(
         tuple(shared.usage),
         not pending and (last is None or bool(last.tool_calls)),
         last is not None and not last.tool_calls and _hit_output_limit(last.response_metadata),
-        shared.withheld,
+        shared.flagged,
         tuple(changed_tools),
         pending,
         tuple(DecidedCall(call.server, call.tool, choice) for call, choice in decided),
@@ -521,11 +524,30 @@ _REVIEW: InterruptOnConfig = {"allowed_decisions": ["approve", "reject"]}
 _REJECTION = "User rejected the tool call"
 
 
-def _confirmation(tools: dict[str, _Tool]) -> HumanInTheLoopMiddleware:
+def _confirmation(tools: dict[str, _Tool], shared: _Shared) -> HumanInTheLoopMiddleware:
+    after_a_flag: InterruptOnConfig = {**_REVIEW, "when": lambda request: shared.flag_raised}
     interrupt_on: dict[str, bool | InterruptOnConfig] = {
-        name: _REVIEW for name, tool in tools.items() if not tool.info.read_only
+        name: after_a_flag if tool.info.read_only else _REVIEW for name, tool in tools.items()
     }
     return HumanInTheLoopMiddleware(interrupt_on=interrupt_on, interrupt_mode="per_call")
+
+
+def _flag_before_pause(
+    messages: list[AnyMessage], waiting: dict[str, Interrupt], tools: dict[str, _Tool]
+) -> bool:
+    asked = max(
+        index for index, message in enumerate(messages) if isinstance(message, HumanMessage)
+    )
+    if any(
+        isinstance(message, ToolMessage) and is_flagged(str(message.content))
+        for message in messages[asked:]
+    ):
+        return True
+    return any(
+        tools[interrupt.value["name"]].info.read_only
+        for interrupt in waiting.values()
+        if interrupt.value["name"] in tools
+    )
 
 
 def _pending_call(interrupt: Interrupt, tools: dict[str, _Tool]) -> PendingCall:

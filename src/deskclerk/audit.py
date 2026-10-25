@@ -59,7 +59,7 @@ class Audit:
                 "unavailable": [] if result is None else list(result.unavailable),
                 "step_limit_hit": False if result is None else result.step_limit_hit,
                 "cut_off": False if result is None else result.cut_off,
-                "withheld": 0 if result is None else result.withheld,
+                "flagged": 0 if result is None else result.flagged,
                 "changed_tools": [] if result is None else list(result.changed_tools),
                 "input_tokens": 0 if result is None else result.total_usage.input_tokens,
                 "output_tokens": 0 if result is None else result.total_usage.output_tokens,

@@ -171,7 +171,7 @@ class AskOut(BaseModel):
     unavailable: list[str]
     step_limit_hit: bool
     cut_off: bool
-    withheld: int
+    flagged: int
     changed_tools: list[str]
     cost_usd: float
 
@@ -523,7 +523,7 @@ def create_app(
                             decisions=decisions,
                         )
                     if trace:
-                        trace.finish(result.withheld)
+                        trace.finish(result.flagged)
             except ConversationWaiting:
                 refuse(409, "this conversation waits for a confirmation", "conversation_waiting")
             except NothingToConfirm:
@@ -566,7 +566,7 @@ def create_app(
             unavailable=list(result.unavailable),
             step_limit_hit=result.step_limit_hit,
             cut_off=result.cut_off,
-            withheld=result.withheld,
+            flagged=result.flagged,
             changed_tools=list(result.changed_tools),
             cost_usd=cost,
         )
