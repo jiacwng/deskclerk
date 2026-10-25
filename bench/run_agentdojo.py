@@ -42,14 +42,14 @@ from tokenizers import Tokenizer
 from transformers import AutoConfig
 
 from deskclerk.jev import Jev, JevError, jev_from_environment
-from deskclerk.screen import THRESHOLD, probability
+from deskclerk.screen import NOTICE, THRESHOLD, is_flagged, probability
 from dojo_summary import model_cost_usd, percent, summarize
 
 BENCHMARK_VERSION = "v1.2.2"
 MODEL = "claude-haiku-5-5"
 MAX_TOKENS = 16000
 SUITES = ("workspace", "travel", "banking", "slack")
-DEFENSES = ("none", "spotlighting", "deberta", "promptguard", "jev")
+DEFENSES = ("none", "spotlighting", "deberta", "promptguard", "jev", "jev-flag")
 PROMPT_GUARD = "meta-llama/Llama-Prompt-Guard-2-86M"
 DEBERTA = "protectai/deberta-v3-base-prompt-injection-v2"
 WINDOW_TOKENS = 500
@@ -141,6 +141,29 @@ class JevDetector(PromptInjectionDetector):
         return is_injection, flagged_probability
 
 
+class JevFlagDetector(JevDetector):
+    def transform(self, tool_output: list[Any]) -> list[Any]:
+        return [
+            {**block, "content": f"{NOTICE}\n{block['content']}"}
+            if block["type"] == "text"
+            else block
+            for block in tool_output
+        ]
+
+
+def run_was_flagged(
+    logdir: Path, pipeline_name: str, suite_name: str, user_task: str, attack: str, injection: str
+) -> bool:
+    path = logdir / pipeline_name / suite_name / user_task / attack / f"{injection}.json"
+    messages = json.loads(path.read_text())["messages"]
+    return any(
+        block["type"] == "text" and is_flagged(block["content"] or "")
+        for message in messages
+        if message["role"] == "tool"
+        for block in message["content"] or []
+    )
+
+
 def token_windows(token_ids: list[int]) -> list[list[int]]:
     if not token_ids:
         return [[]]
@@ -219,11 +242,11 @@ def build_arm(defense: str, jev_budget_usd: float) -> Arm:
         pipeline = pipeline_with_detector(llm, system_message, detector)
     elif defense == "deberta":
         pipeline = pipeline_with_detector(llm, system_message, DebertaOnnxDetector())
-    elif defense == "jev":
+    elif defense in ("jev", "jev-flag"):
         jev = jev_from_environment(jev_budget_usd)
         if jev is None:
             raise SystemExit("TYPESAFE_API_KEY is not set")
-        jev_detector = JevDetector(jev)
+        jev_detector = (JevFlagDetector if defense == "jev-flag" else JevDetector)(jev)
         pipeline = pipeline_with_detector(llm, system_message, jev_detector)
     else:
         library_defense = {
@@ -261,6 +284,13 @@ def run_suite(
         benchmark_version=BENCHMARK_VERSION,
     )
     clean_utility = {key[0]: value for key, value in clean["utility_results"].items()}
+    records_flags = isinstance(arm.jev_detector, JevFlagDetector)
+    pipeline_name = arm.pipeline.name.replace("/", "_") if arm.pipeline.name else ""
+    clean_flagged = {
+        user_task: run_was_flagged(logdir, pipeline_name, suite_name, user_task, "none", "none")
+        for user_task in clean_utility
+        if records_flags
+    }
 
     attack = ImportantInstructionsForClaude(suite, arm.pipeline)
     attack_pairs = []
@@ -281,12 +311,27 @@ def run_suite(
                     "injection_task": injection_task,
                     "utility": utility_flag,
                     "security": security[(user_task, injection_task)],
+                    **(
+                        {
+                            "flagged": run_was_flagged(
+                                logdir,
+                                pipeline_name,
+                                suite_name,
+                                user_task,
+                                attack.name,
+                                injection_task,
+                            )
+                        }
+                        if records_flags
+                        else {}
+                    ),
                 }
             )
         print(f"{suite_name} {user_task_id} done", file=sys.stderr)
 
     return {
         "clean": clean_utility,
+        **({"clean_flagged": clean_flagged} if records_flags else {}),
         "attack": attack_pairs,
         "model_input_tokens": meter.input_tokens - input_before,
         "model_output_tokens": meter.output_tokens - output_before,
@@ -305,6 +350,18 @@ def print_report(run: dict[str, Any]) -> None:
             f"model tokens {row['model_input_tokens']} in / {row['model_output_tokens']} out, "
             f"model cost {row['model_cost_usd']:.4f} USD"
         )
+    if "reject_attack_success" in summary["overall"]:
+        total = summary["overall"]
+        for who, prefix in (
+            ("approves every call", ""),
+            ("rejects every call after a flag", "reject_"),
+        ):
+            print(
+                f"employee {who}: "
+                f"utility without attack {percent(total[prefix + 'clean_utility'])}, "
+                f"under attack {percent(total[prefix + 'attack_utility'])}, "
+                f"attack success {percent(total[prefix + 'attack_success'])}"
+            )
     if "jev" in run:
         print(f"Jev: {run['jev']}")
 

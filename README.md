@@ -71,7 +71,7 @@ offered, and the log names it.
 
 Approve a call that does not delete or overwrite with Always allow, and deskclerk stops asking
 for that tool. It asks again after you disconnect the server, after the tool's definition
-changes, and after a tool result was withheld in the same request.
+changes, and after a tool result was flagged in the same request.
 
 ## Model, screen and tracing
 
@@ -83,7 +83,8 @@ as an Azure deployment name, is priced as the model in `DESKCLERK_PRICE_MODEL`, 
 `azure_openai:gpt-5`.
 
 With `TYPESAFE_API_KEY`, deskclerk sends every tool result and the employee's request to
-TypeSafe's Jev model, and withholds a result Jev flags or cannot judge. Without the key,
+TypeSafe's Jev model. A result Jev flags or cannot judge reaches the agent behind a warning, and
+every later call in that request waits for the employee. Without the key,
 deskclerk refuses to start unless `DESKCLERK_ALLOW_UNSCREENED=true` is set. With
 `DESKCLERK_TOOL_SELECTION=true` and two or more servers, Jev also picks the servers a request
 needs. With `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`, deskclerk traces each request to

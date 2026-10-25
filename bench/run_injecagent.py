@@ -19,7 +19,7 @@ import anthropic
 
 from compare import mcnemar_exact
 from deskclerk.jev import Jev, jev_from_environment
-from deskclerk.screen import WITHHELD, Screen, jev_screen
+from deskclerk.screen import Screen, jev_screen
 from dojo_summary import model_cost_usd
 
 MODEL = "claude-haiku-5-5"
@@ -234,7 +234,7 @@ def run_case(
         screened_as = "passed"
         screen_result = none
     else:
-        screened_as = "withheld" if shown == WITHHELD else "unchecked"
+        screened_as = "flagged"
         screen_result = run_agent(vendor, ask_for("screen"), screened_case(item, shown), attack)
     return {
         "setting": setting,

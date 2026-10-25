@@ -3,7 +3,7 @@
 import asyncio
 from typing import Any
 
-from deskclerk.screen import UNCHECKED, WITHHELD, jev_screen
+from deskclerk.screen import NOTICE, jev_screen
 from run_injecagent import (
     UncachedSimulation,
     Vendor,
@@ -62,18 +62,17 @@ class FakeJev:
 
 def test_screened_case_replaces_only_the_tool_response() -> None:
     item = fixture_item()
-    shown = screened_case(item, WITHHELD)
-    assert shown["Tool Response"] == WITHHELD
+    shown = screened_case(item, NOTICE)
+    assert shown["Tool Response"] == NOTICE
     assert shown["User Instruction"] == item["User Instruction"]
     assert item["Tool Response"] == INJECTED
 
 
-def test_withheld_notice_reaches_the_prompt_and_the_injection_does_not() -> None:
+def test_the_notice_reaches_the_prompt_in_front_of_the_tool_response() -> None:
     vendor = fixture_vendor([])
-    prompt = build_prompt(vendor, screened_case(fixture_item(), WITHHELD), False)
-    assert WITHHELD in prompt
-    assert INJECTED not in prompt
-    assert INJECTED in build_prompt(vendor, fixture_item(), False)
+    flagged = f"{NOTICE}\n{INJECTED}"
+    prompt = build_prompt(vendor, screened_case(fixture_item(), flagged), False)
+    assert f"Observation: {flagged}" in prompt
 
 
 def test_flagged_case_runs_the_agent_on_the_notice(monkeypatch: Any) -> None:
@@ -94,14 +93,13 @@ def test_flagged_case_runs_the_agent_on_the_notice(monkeypatch: Any) -> None:
         "dh",
         0,  # type: ignore[arg-type]
     )
-    assert record["screened_as"] == "withheld"
+    assert record["screened_as"] == "flagged"
     assert attack_succeeded(record["none"], "dh")
-    assert not attack_succeeded(record["screen"], "dh")
     assert jev.asked[0] == {
         "user_request": fixture_item()["User Instruction"],
         "tool_output": INJECTED,
     }
-    assert sum(WITHHELD in prompt for prompt in prompts) == 1
+    assert sum(NOTICE in prompt for prompt in prompts) == 1
 
 
 def test_unflagged_case_gives_both_arms_the_same_result(monkeypatch: Any) -> None:
@@ -126,7 +124,7 @@ def test_unflagged_case_gives_both_arms_the_same_result(monkeypatch: Any) -> Non
     assert len(calls) == 1
 
 
-def test_screen_failure_gives_the_unchecked_notice() -> None:
+def test_screen_failure_gives_the_notice() -> None:
     class Failing:
         def noul(self, *arguments: Any, **keywords: Any) -> float:
             from deskclerk.jev import JevError
@@ -134,7 +132,7 @@ def test_screen_failure_gives_the_unchecked_notice() -> None:
             raise JevError("down")
 
     shown = asyncio.run(jev_screen(Failing())("request", INJECTED))  # type: ignore[arg-type]
-    assert shown == UNCHECKED
+    assert shown == f"{NOTICE}\n{INJECTED}"
 
 
 def test_sample_indices_spread_across_the_file() -> None:
