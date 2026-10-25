@@ -89,6 +89,9 @@ demo server from `servers.toml`, and start the app alone with
 `docker compose up -d --no-deps deskclerk`. Register its `/login/callback` address with your
 provider. If the provider gives the app a client secret, set `DESKCLERK_CLIENT_SECRET`.
 deskclerk names each employee by the `sub` claim, which a provider never gives to another person.
+Signing out ends the session on the server. Set the client's back-channel logout URL to
+`https://<your deskclerk>/logout/backchannel`, so that disabling an employee at the provider also
+signs them out of deskclerk.
 On Entra ID, set `DESKCLERK_USER_CLAIM=oid`, the id that stays the same across all apps of the
 tenant.
 

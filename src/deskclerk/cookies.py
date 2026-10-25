@@ -1,6 +1,6 @@
 # Signs and checks the values of the cookies the web front sets, with HMAC-SHA256 under a key the
 # operator holds. A value carries its own expiry, and each purpose has its own derived key, so a
-# sign-in cookie cannot be replayed as a session.
+# cookie signed for one purpose cannot be replayed for another.
 
 import base64
 import hashlib
