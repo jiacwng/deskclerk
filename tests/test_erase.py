@@ -15,8 +15,10 @@ from cryptography.fernet import Fernet
 from langgraph.checkpoint.base import empty_checkpoint
 
 from deskclerk import __main__ as entry
+from deskclerk.auth import Identity
 from deskclerk.conversations import open_checkpointer, thread_id
 from deskclerk.providers import Usage
+from deskclerk.sessions import SessionStore
 from deskclerk.spending import SpendingStore
 from deskclerk.tokens import TokenStore
 
@@ -39,9 +41,11 @@ def seed(directory: Path) -> Path:
     path = directory / "tokens.sqlite"
     tokens = TokenStore(path, KEY)
     spending = SpendingStore(directory / "spending.sqlite")
+    sessions = SessionStore(path)
     for user in ("ana", "anabel"):
         for kind in ("tokens", "client", "tool_pins"):
             tokens.put(user, "notes", kind, "secret")
+        sessions.create(Identity(user, "deskclerk-api", user), 3600)
         spending.add(user, "2026-10", "model", Usage(1, 1, 0, 0), 0.5)
         asyncio.run(save_thread(path, user))
         asyncio.run(save_thread(path, user))
@@ -72,6 +76,7 @@ def test_erase_removes_only_that_employee_in_all_three_places(
 
     spending = tmp_path / "spending.sqlite"
     assert rows(path, "SELECT DISTINCT user_id FROM secrets") == [("anabel",)]
+    assert rows(path, "SELECT DISTINCT user_id FROM sessions") == [("anabel",)]
     assert rows(spending, "SELECT DISTINCT user_id FROM costs") == [("anabel",)]
     assert rows(path, "SELECT DISTINCT substr(thread_id, 1, 7) FROM checkpoints") == [("anabel/",)]
     assert rows(path, "SELECT DISTINCT substr(thread_id, 1, 7) FROM writes") == [("anabel/",)]
@@ -89,8 +94,8 @@ def test_erase_logs_one_audit_line_with_the_counts_and_no_content(
     [record] = [r for r in caplog.records if r.name == "deskclerk.audit"]
     line = json.loads(record.getMessage())
     assert (line["entry"], line["user"]) == ("erase", "ana")
-    assert (line["secrets"], line["threads"], line["costs"]) == (3, 2, 1)
-    assert set(line) == {"time", "user", "entry", "secrets", "threads", "costs"}
+    assert (line["secrets"], line["sessions"], line["threads"], line["costs"]) == (3, 1, 2, 1)
+    assert set(line) == {"time", "user", "entry", "secrets", "sessions", "threads", "costs"}
 
 
 def test_erase_with_the_wrong_token_key_exits_with_an_error(

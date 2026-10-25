@@ -72,6 +72,10 @@ class SessionStore:
         with self._database() as database:
             database.execute("DELETE FROM sessions WHERE id_hash = ?", (_digest(session_id),))
 
+    def delete_user(self, user_id: str) -> int:
+        with self._database() as database:
+            return database.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,)).rowcount
+
     def end_by_sid(self, sid: str) -> None:
         with self._database() as database:
             database.execute("DELETE FROM sessions WHERE sid = ?", (sid,))

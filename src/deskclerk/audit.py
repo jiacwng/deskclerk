@@ -78,12 +78,13 @@ class Audit:
         line["server"] = server_name
         _log.info(json.dumps(line))
 
-    def erased(self, user_id: str, secrets: int, threads: int, costs: int) -> None:
+    def erased(self, user_id: str, secrets: int, sessions: int, threads: int, costs: int) -> None:
         line = {
             "time": datetime.now(UTC).isoformat(timespec="milliseconds"),
             "user": user_id,
             "entry": "erase",
             "secrets": secrets,
+            "sessions": sessions,
             "threads": threads,
             "costs": costs,
         }
