@@ -40,6 +40,10 @@ class McpServer:
     headers: tuple[tuple[str, str], ...] = ()
     client_cert: str | None = None
     client_key: str | None = None
+    groups: tuple[str, ...] | None = None
+
+    def open_to(self, groups: frozenset[str]) -> bool:
+        return self.groups is None or not groups.isdisjoint(self.groups)
 
 
 class _ServerEntry(BaseModel):
@@ -55,6 +59,7 @@ class _ServerEntry(BaseModel):
     headers: dict[str, str] = {}
     client_cert: str | None = None
     client_key: str | None = None
+    groups: list[str] | None = None
 
     @field_validator("name")
     @classmethod
@@ -76,6 +81,13 @@ class _ServerEntry(BaseModel):
             if name in seen:
                 raise ValueError(f"tool name {name!r} is listed twice")
             seen.add(name)
+        return names
+
+    @field_validator("groups")
+    @classmethod
+    def _groups_are_named(cls, names: list[str] | None) -> list[str] | None:
+        if names is not None and (not names or any(not name.strip() for name in names)):
+            raise ValueError("groups lists at least one group name, each with text")
         return names
 
     @field_validator("url")
@@ -227,6 +239,7 @@ def load_servers(path: Path, environ: Mapping[str, str] = os.environ) -> list[Mc
                 headers,
                 entry.client_cert,
                 entry.client_key,
+                None if entry.groups is None else tuple(entry.groups),
             )
         )
     return servers

@@ -288,3 +288,36 @@ def test_a_readable_certificate_pair_is_kept(tmp_path: Path) -> None:
     )
     server = load_servers(path, {})[0]
     assert (server.client_cert, server.client_key) == (cert.as_posix(), key.as_posix())
+
+
+def test_a_server_lists_the_groups_that_may_use_it_and_without_them_it_is_for_everyone(
+    tmp_path: Path,
+) -> None:
+    path = write(
+        tmp_path,
+        '[[server]]\nname = "ledger"\nurl = "https://a.test/mcp"\ngroups = ["finance", "ops"]\n'
+        '[[server]]\nname = "wiki"\nurl = "https://b.test/mcp"\n',
+    )
+    ledger, wiki = load_servers(path, {})
+    assert ledger.groups == ("finance", "ops")
+    assert (ledger.open_to(frozenset({"ops"})), ledger.open_to(frozenset({"hr"}))) == (True, False)
+    assert ledger.open_to(frozenset()) is False
+    assert wiki.groups is None
+    assert wiki.open_to(frozenset()) is True
+
+
+def test_groups_are_read_from_the_mcp_json_file(tmp_path: Path) -> None:
+    path = write_json(
+        tmp_path,
+        '{"mcpServers": {"ledger": {"url": "https://a.test/mcp", "groups": ["finance"]}}}',
+    )
+    assert load_servers(path, {})[0].groups == ("finance",)
+
+
+@pytest.mark.parametrize("groups", ["[]", '[" "]'])
+def test_a_server_with_an_empty_group_list_is_refused(tmp_path: Path, groups: str) -> None:
+    path = write(
+        tmp_path, f'[[server]]\nname = "a"\nurl = "https://a.test/mcp"\ngroups = {groups}\n'
+    )
+    with pytest.raises(ServersError, match="groups"):
+        load_servers(path, {})
