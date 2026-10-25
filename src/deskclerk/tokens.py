@@ -1,5 +1,5 @@
-# An SQLite file holding each employee's OAuth tokens, client registrations and pinned tool
-# definitions for each MCP server, encrypted with Fernet.
+# An SQLite file holding each employee's OAuth tokens, client registrations, pinned tool
+# definitions and always allowed tools for each MCP server, encrypted with Fernet.
 
 import sqlite3
 from collections.abc import Iterator
@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from deskclerk.servers import McpServer
 
-Kind = Literal["tokens", "client", "tool_pins"]
+Kind = Literal["tokens", "client", "tool_pins", "always_allowed"]
 
 KEY_CHECK_TEXT = b"deskclerk"
 
@@ -89,7 +89,7 @@ class TokenStore:
         with self._database() as database:
             database.execute(
                 "DELETE FROM secrets WHERE user_id = ? AND server_name = ? "
-                "AND kind IN ('tokens', 'tool_pins')",
+                "AND kind IN ('tokens', 'tool_pins', 'always_allowed')",
                 (user_id, server_name),
             )
 

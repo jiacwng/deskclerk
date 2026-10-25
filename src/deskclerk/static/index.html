@@ -185,11 +185,13 @@ function showPending(pending) {
     verdict.className = "verdict";
     const decide = (choice) => {
       decisions[call.id] = choice;
-      verdict.textContent = choice === "approve" ? "Approved" : "Rejected";
+      verdict.textContent = { approve: "Approved", approve_always: "Always allowed", reject: "Rejected" }[choice];
       el("send").disabled = Object.keys(decisions).length < pending.length;
     };
     const item = line(call.server + "." + call.tool + " " + JSON.stringify(call.arguments) + " ");
-    item.append(button("Approve", () => decide("approve")), button("Reject", () => decide("reject")), verdict);
+    item.append(button("Approve", () => decide("approve")));
+    if (!call.destructive) item.append(button("Always allow", () => decide("approve_always")));
+    item.append(button("Reject", () => decide("reject")), verdict);
     list.append(item);
   }
   el("send").disabled = true;
