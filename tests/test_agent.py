@@ -1274,7 +1274,7 @@ async def test_a_read_before_any_flag_runs_without_asking(
 
 
 @pytest.mark.anyio
-async def test_a_flag_from_an_earlier_turn_does_not_gate_the_next_request(
+async def test_a_flag_from_an_earlier_turn_gates_the_next_request_while_its_text_is_sent(
     mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
 ) -> None:
     servers = [server_record(mcp_server)]
@@ -1288,6 +1288,32 @@ async def test_a_flag_from_an_earlier_turn_does_not_gate_the_next_request(
     )
     model = script(calls(("notes__read_note", {})), answer("again"))
     second = await run(connections, servers, model, checkpointer=saver, confirm_writes=True)
+    assert [(call.server, call.tool) for call in second.pending] == [("notes", "read_note")]
+
+
+@pytest.mark.anyio
+async def test_a_flag_stops_gating_once_the_flagged_result_is_trimmed_from_the_history(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
+) -> None:
+    servers = [server_record(mcp_server)]
+    await run(
+        connections,
+        servers,
+        script(calls(("notes__read_note", {})), answer("seen")),
+        screen=RecordingScreen(FLAGGED),
+        checkpointer=saver,
+        confirm_writes=True,
+    )
+    model = script(calls(("notes__read_note", {})), answer("again"))
+    second = await run(
+        connections,
+        servers,
+        model,
+        request="b" * 1000,
+        checkpointer=saver,
+        confirm_writes=True,
+        history_tokens=100,
+    )
     assert (second.pending, second.answer) == ((), "again")
 
 
