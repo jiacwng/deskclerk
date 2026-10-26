@@ -15,6 +15,8 @@ flowchart LR
     servers -->|tool result| screen[Jev screen, with a TypeSafe key] --> agent
 ```
 
+![An employee asks deskclerk to create a task and approves the change](demo/deskclerk.gif)
+
 ## Try it
 
 You need Docker with Compose and an Anthropic API key. This runs deskclerk, a development
