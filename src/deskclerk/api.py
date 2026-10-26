@@ -51,6 +51,7 @@ from deskclerk.auth import (
     identify,
     logout_target,
 )
+from deskclerk.bodylimit import LimitRequestSize
 from deskclerk.config import Settings
 from deskclerk.connections import (
     UPSTREAM_ERRORS,
@@ -282,6 +283,8 @@ def create_app(
     app = FastAPI(
         title="deskclerk", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan
     )
+
+    app.add_middleware(LimitRequestSize)
 
     scim_users = ScimUsers(tokens.path) if settings.scim_token is not None else None
 
@@ -614,6 +617,7 @@ def create_app(
                             jev_tool_selection(jev, settings.tool_selection, spending.record_jev),
                             tool_output_chars=settings.tool_output_chars,
                             history_tokens=settings.history_tokens,
+                            listing_seconds=settings.listing_seconds,
                             confirm_writes=True,
                             decisions=decisions,
                             executed=executed,
