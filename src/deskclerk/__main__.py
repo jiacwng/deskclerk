@@ -168,7 +168,7 @@ def main(argv: Sequence[str] = ()) -> None:
     ) as error:
         sys.exit(f"deskclerk: {error}")
     log_to_stdout()
-    uvicorn.run(app, host=settings.host, port=settings.port)
+    uvicorn.run(app, host=settings.host, port=settings.port, access_log=False)
     if tracing is not None:
         tracing.flush()
 
