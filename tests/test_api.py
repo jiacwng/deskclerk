@@ -836,6 +836,16 @@ def test_the_page_is_served_with_a_policy_that_allows_only_its_own_script(
     assert "innerHTML" not in response.text
 
 
+def test_the_page_names_each_server_in_its_connect_and_disconnect_buttons(
+    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings)
+    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+        page = site.client.get("/").text
+    assert 'toggle.setAttribute("aria-label", toggle.textContent + " " + server.name)' in page
+    assert '<summary id="rail-summary"' in page
+
+
 @pytest.mark.keycloak
 def test_an_employee_signs_in_through_keycloak_and_asks(tmp_path: Path) -> None:
     settings = Settings(session_key=SecretStr(SESSION_KEY))
