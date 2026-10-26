@@ -7,7 +7,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal, cast
 
 from langchain.agents import create_agent
@@ -40,7 +40,11 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.runtime import Runtime
 from langgraph.types import Command, Interrupt
 
-from deskclerk.config import DEFAULT_HISTORY_TOKENS, DEFAULT_TOOL_OUTPUT_CHARS
+from deskclerk.config import (
+    DEFAULT_HISTORY_TOKENS,
+    DEFAULT_LISTING_SECONDS,
+    DEFAULT_TOOL_OUTPUT_CHARS,
+)
 from deskclerk.connections import (
     UPSTREAM_ERRORS,
     NotConnected,
@@ -220,11 +224,37 @@ def _names_the_model_accepts(server: str, listed: list[ToolInfo]) -> list[ToolIn
     return accepted
 
 
-async def _list_tools(user_id: str, server: McpServer, connections: OAuthConnections) -> _Listing:
+def _confirming(server: McpServer, kept: tuple[ToolInfo, ...]) -> list[ToolInfo]:
+    return [
+        replace(info, read_only=False, destructive=True)
+        if info.name in server.confirm_tools
+        else info
+        for info in kept
+    ]
+
+
+def _warn_of_unknown_confirm_tools(server: McpServer, listed: list[ToolInfo]) -> None:
+    listed_names = {info.name for info in listed}
+    for name in server.confirm_tools:
+        if name not in listed_names:
+            _log.warning(
+                "server %s lists %s in confirm_tools, but the server has no such tool",
+                server.name,
+                name,
+            )
+
+
+async def _list_tools(
+    user_id: str, server: McpServer, connections: OAuthConnections, listing_seconds: float
+) -> _Listing:
     try:
-        return _Listing(server, await connections.tools(user_id, server), True, None)
+        async with asyncio.timeout(listing_seconds):
+            tools = await connections.tools(user_id, server)
+        return _Listing(server, tools, True, None)
     except NotConnected:
         return _Listing(server, [], False, None)
+    except TimeoutError:
+        return _Listing(server, [], True, McpServerFailed(server.name, "TimeoutError"))
     except (*UPSTREAM_ERRORS, BaseExceptionGroup) as error:
         failure = _server_failure(server.name, error)
         if failure is None:
@@ -267,7 +297,10 @@ class _Guard(AgentMiddleware[AgentState[Any], None, Any]):
     ) -> ModelResponse[Any]:
         shared = self.shared
         shared.shown = {tool.name for tool in request.tools if isinstance(tool, BaseTool)}
-        response = await handler(request.override(messages=self._within_budget(request.messages)))
+        sent = self._within_budget(request.messages)
+        if any(isinstance(m, ToolMessage) and is_flagged(str(m.content)) for m in sent):
+            shared.flag_raised = True
+        response = await handler(request.override(messages=sent))
         message = response.result[-1]
         if not isinstance(message, AIMessage):
             raise TypeError(f"the model returned a {type(message).__name__}")
@@ -414,6 +447,7 @@ async def run_agent(
     selection: AgentMiddleware[Any, Any, Any] | None = None,
     tool_output_chars: int = DEFAULT_TOOL_OUTPUT_CHARS,
     history_tokens: int = DEFAULT_HISTORY_TOKENS,
+    listing_seconds: float = DEFAULT_LISTING_SECONDS,
     *,
     confirm_writes: bool,
     decisions: dict[str, Decision] | None = None,
@@ -425,7 +459,7 @@ async def run_agent(
     always: set[str] = set()
     changed_tools: list[str] = []
     listings = await asyncio.gather(
-        *(_list_tools(user_id, server, connections) for server in servers)
+        *(_list_tools(user_id, server, connections, listing_seconds) for server in servers)
     )
     for listing in listings:
         server = listing.server
@@ -436,14 +470,16 @@ async def run_agent(
             unavailable.append(listing.failure)
             continue
         listed = listing.tools
+        _warn_of_unknown_confirm_tools(server, listed)
         if server.tools is not None:
             listed = [info for info in listed if info.name in server.tools]
         listed = _names_the_model_accepts(server.name, listed)
         pinned = pin_tools(tokens, user_id, server.name, listed)
         changed_tools += [f"{server.name}__{name}" for name in pinned.changed]
-        for info in pinned.kept:
+        kept = tuple(_confirming(server, pinned.kept))
+        for info in kept:
             tools[f"{server.name}__{info.name}"] = _Tool(server, info)
-        for info in allowed_tools(tokens, user_id, server.name, pinned.kept):
+        for info in allowed_tools(tokens, user_id, server.name, kept):
             if server.always_allow and not info.destructive:
                 always.add(f"{server.name}__{info.name}")
     listed_any = len(listings) > len(not_connected) + len(unavailable)

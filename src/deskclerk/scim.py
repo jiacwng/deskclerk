@@ -122,6 +122,9 @@ class ScimUsers:
             return self._select("WHERE user_name = ?", (value,))
         return self._select("", ())
 
+    def is_deactivated(self, external_id: str) -> bool:
+        return any(not user.active for user in self.find("externalId", external_id))
+
     def save(self, user: ScimUser) -> None:
         with self._database() as database:
             database.execute(

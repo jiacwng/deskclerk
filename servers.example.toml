@@ -25,6 +25,9 @@ auth = "none"
 # headers = { "X-Team" = "${env:LINEAR_TEAM}" }
 # Set to false so every write tool of this server asks each time and has no Always allow button.
 # always_allow = false
+# Tools that always ask first with a confirm card and never get Always allow, whatever the server
+# says about them. Each name must be a tool the server lists, or deskclerk logs a warning.
+# confirm_tools = ["send_email"]
 # Mutual TLS. Mount these files into the container.
 # client_cert = "/run/certs/client.pem"
 # client_key = "/run/certs/client.key"
