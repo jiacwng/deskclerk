@@ -157,12 +157,14 @@ class BlockedOut(BaseModel):
     tool: str
     arguments: dict[str, Any]
     reason: str
+    rejected: bool
 
 
 class PendingOut(BaseModel):
     id: str
     server: str
     tool: str
+    description: str
     arguments: dict[str, Any]
     destructive: bool
     always_allowable: bool

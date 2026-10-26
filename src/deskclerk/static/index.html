@@ -151,10 +151,10 @@ button.small { min-height: 1.875rem; padding: 0.2rem 0.6rem; font-size: 0.8125re
 .call, .note { min-width: 0; border-top: 1px solid var(--line-soft); }
 .calls > :first-child { border-top: 0; }
 .call summary, .note {
-  display: grid; grid-template-columns: 7rem minmax(0, 1fr); align-items: baseline; column-gap: 0.75rem;
+  display: grid; grid-template-columns: 9rem minmax(0, 1fr); align-items: baseline; column-gap: 0.75rem;
   padding: 0.4rem 0.75rem; font-size: 0.8125rem;
 }
-.call summary { cursor: pointer; list-style: none; grid-template-columns: 7rem auto minmax(0, 1fr) auto; }
+.call summary { cursor: pointer; list-style: none; grid-template-columns: 9rem auto minmax(0, 1fr) auto; }
 .call summary::-webkit-details-marker { display: none; }
 .call summary:hover { background: var(--sunk); }
 .call summary::after { content: "Show"; font-size: 0.75rem; color: var(--muted); }
@@ -185,6 +185,15 @@ pre {
 .pending-card { padding: 0.75rem; border-top: 1px solid var(--line); display: grid; gap: 0.5rem; }
 .pending-card[data-choice="approve"] { box-shadow: inset 3px 0 0 var(--ok); }
 .pending-card[data-choice="reject"] { box-shadow: inset 3px 0 0 var(--bad); }
+.pending-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.25rem 0.5rem; }
+.pending-note { font-size: 0.75rem; color: var(--muted); }
+.args { display: grid; gap: 0.25rem; font-size: 0.8125rem; }
+.arg { display: grid; grid-template-columns: minmax(0, 8rem) minmax(0, 1fr); column-gap: 0.75rem; }
+.arg-name { font-family: var(--mono); font-size: 0.75rem; color: var(--muted); }
+.arg-value { white-space: pre-wrap; }
+.raw summary { cursor: pointer; font-size: 0.75rem; font-weight: 600; color: var(--muted); }
+.raw summary:hover { color: var(--fg); }
+.raw pre { margin-top: 0.25rem; }
 .pending-actions { display: flex; align-items: center; flex-wrap: wrap; }
 .pending-actions button.choice { min-height: 2rem; }
 .pending-actions button.choice.approve { border-radius: 4px 0 0 4px; margin-right: -1px; }
@@ -253,7 +262,7 @@ textarea::placeholder { color: var(--muted); }
 
     <section id="confirm" class="confirm" aria-labelledby="confirm-title" hidden>
       <div class="confirm-head">
-        <h2 id="confirm-title" class="confirm-title">Confirm calls</h2>
+        <h2 id="confirm-title" class="confirm-title" tabindex="-1">Confirm calls</h2>
         <p class="small">Each call below needs your approval before it runs. Approve or reject each one, then press Send.</p>
       </div>
       <div id="pending" class="pending"></div>
@@ -384,6 +393,28 @@ function part(title, content) {
   return box;
 }
 
+function argumentList(args) {
+  const names = Object.keys(args);
+  if (names.length === 0) return make("p", "muted small", "No arguments");
+  const list = make("div", "args");
+  for (const name of names) {
+    const value = args[name];
+    const line = make("div", "arg");
+    line.append(
+      make("span", "arg-name", name + ":"),
+      make("span", "arg-value", typeof value === "string" ? value : JSON.stringify(value)),
+    );
+    list.append(line);
+  }
+  return list;
+}
+
+function rawArguments(args) {
+  const box = make("details", "raw");
+  box.append(make("summary", "", "Show raw"), make("pre", "", JSON.stringify(args, null, 2)));
+  return box;
+}
+
 function callRow(call, badgeClass, badgeText, parts) {
   const row = make("details", "call");
   const head = make("summary");
@@ -411,8 +442,12 @@ function buildCalls(result) {
     rows.push(callRow(call, call.is_error ? "bad" : "ok", call.is_error ? "Failed" : "Done", parts));
   }
   for (const call of result.blocked) {
-    const parts = [part("Reason", call.reason), part("Arguments", JSON.stringify(call.arguments, null, 2))];
-    rows.push(callRow(call, "bad", "Blocked", parts));
+    const shownArguments = part("Arguments", JSON.stringify(call.arguments, null, 2));
+    if (call.rejected) {
+      rows.push(callRow(call, "info", "Rejected by you", [shownArguments]));
+    } else {
+      rows.push(callRow(call, "bad", "Blocked", [part("Reason", call.reason), shownArguments]));
+    }
   }
   for (const name of result.not_connected) {
     rows.push(noteRow("warn", "Not connected", name + " is not connected, so its tools were not offered"));
@@ -472,8 +507,9 @@ function showPending(pending) {
   list.replaceChildren();
   for (const call of pending) {
     const card = make("div", "pending-card");
-    const title = make("div");
-    title.append(make("span", "call-server", call.server + " "), make("span", "call-tool", call.tool));
+    const title = make("div", "pending-title");
+    title.append(make("span", "call-server", call.server), make("span", "call-tool", call.tool));
+    if (call.destructive) title.append(make("span", "badge bad", "Deletes data"));
     const group = make("div", "pending-actions");
     group.setAttribute("role", "group");
     group.setAttribute("aria-label", "Decision for " + call.server + " " + call.tool);
@@ -495,7 +531,10 @@ function showPending(pending) {
       updateDecided(pending.length);
     };
     group.append(approve, ...(always ? [always] : []), reject, verdict);
-    card.append(title, part("Arguments", JSON.stringify(call.arguments, null, 2)), group);
+    card.append(title);
+    if (call.description !== "") card.append(make("p", "small", call.description));
+    card.append(argumentList(call.arguments), rawArguments(call.arguments), group);
+    if (always) card.append(make("p", "pending-note", "Always allow runs this tool without asking again."));
     list.append(card);
   }
   waiting = pending.length;
@@ -512,7 +551,12 @@ function showResult(result) {
   turn.calls.replaceChildren(...buildCalls(result));
   turn.cost.textContent = "Cost: " + result.cost_usd.toFixed(4) + " USD";
   showPending(result.pending);
-  (result.pending.length > 0 ? el("confirm") : turn.node).scrollIntoView({ block: "nearest" });
+  if (result.pending.length > 0) {
+    el("confirm-title").focus();
+    el("confirm").scrollIntoView({ block: "nearest" });
+  } else {
+    turn.node.scrollIntoView({ block: "nearest" });
+  }
 }
 
 async function ask() {
