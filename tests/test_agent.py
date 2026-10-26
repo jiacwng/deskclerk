@@ -1428,6 +1428,56 @@ async def test_a_destructive_tool_cannot_be_always_allowed_and_always_pauses(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("described", "shown"),
+    [
+        ("Appends a line to the notes.  It is kept\nin order.", "Appends a line to the notes."),
+        ("word " * 60, ("word " * 60)[:159].rstrip() + "…"),
+    ],
+    ids=["the-first-sentence", "at-most-160-characters"],
+)
+async def test_a_pending_call_carries_a_short_description_of_the_tool(
+    append_server: RunningServer,
+    append_connections: OAuthConnections,
+    append_saver: AsyncSqliteSaver,
+    described: str,
+    shown: str,
+) -> None:
+    append_server.redescribe_append_note(described)
+    model = script(calls(("notes__append_note", {"text": "one"})), answer("saved"))
+    paused = await run(
+        append_connections,
+        [server_record(append_server)],
+        model,
+        checkpointer=append_saver,
+        confirm_writes=True,
+    )
+    assert paused.pending[0].description == shown
+
+
+@pytest.mark.anyio
+async def test_a_rejected_call_is_marked_rejected_and_a_refused_call_is_not(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
+) -> None:
+    server = server_record(mcp_server)
+    model = script(calls(("notes__write_note", {"text": "hi"})), answer("understood"))
+    paused = await run(connections, [server], model, checkpointer=saver, confirm_writes=True)
+    resumed = await run(
+        connections,
+        [server],
+        model,
+        checkpointer=saver,
+        confirm_writes=True,
+        decisions={paused.pending[0].id: "reject"},
+    )
+    assert [call.rejected for call in resumed.blocked] == [True]
+    gate = RecordingGate(False, "the request did not ask for a note")
+    refused_model = script(calls(("notes__write_note", {"text": "hi"})), answer("no"))
+    refused = await run(connections, [server], refused_model, gate)
+    assert [call.rejected for call in refused.blocked] == [False]
+
+
+@pytest.mark.anyio
 async def test_a_server_that_forbids_always_allow_ignores_a_stored_grant(
     append_server: RunningServer,
     append_connections: OAuthConnections,
