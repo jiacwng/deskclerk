@@ -7,6 +7,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import logging
 import re
 import sqlite3
 import time
@@ -90,7 +91,9 @@ MAX_REQUEST_CHARS = 4000
 LOGIN_LIFETIME_SECONDS = 600
 SECONDS_PER_HOUR = 3600
 BEARER = {"WWW-Authenticate": "Bearer"}
-SIGN_IN_FAILED = "sign-in was refused or expired; start again at /login"
+MAX_REASON_CHARS = 200
+
+_log = logging.getLogger(__name__)
 
 CONNECT_ERRORS: dict[type[Exception], int] = {
     UnknownState: 400,
@@ -105,7 +108,19 @@ try:
     MODEL_ERRORS: tuple[type[Exception], ...] = (anthropic.APIError, openai.APIError)
 except ImportError:
     MODEL_ERRORS = (anthropic.APIError,)
-BROWSER_AUTH_REFUSED = "the login server's ID token was refused"
+
+
+def _clip(text: str | None) -> str:
+    return repr((text or "")[:MAX_REASON_CHARS])
+
+
+def _upstream_reason(error: BaseException) -> str:
+    leaf = first_leaf(error)
+    return f"{type(leaf).__name__}: {str(leaf)[:MAX_REASON_CHARS]}"
+
+
+def _link_failure(code: str) -> RedirectResponse:
+    return RedirectResponse(f"/?error={code}", status_code=303)
 
 
 def _upstream_detail(error: BaseException) -> str:
@@ -321,10 +336,7 @@ def create_app(
     async def endpoints() -> oidc.Endpoints:
         if "endpoints" not in discovered:
             async with idp_client() as client:
-                try:
-                    discovered["endpoints"] = await oidc.discover(settings, client)
-                except AuthUnavailable:
-                    raise HTTPException(503, "the login server cannot be reached") from None
+                discovered["endpoints"] = await oidc.discover(settings, client)
         return discovered["endpoints"]
 
     if settings.scim_token is not None:
@@ -351,7 +363,7 @@ def create_app(
             failed.append("checkpointer")
         try:
             await endpoints()
-        except HTTPException:
+        except AuthUnavailable:
             failed.append("login server discovery")
         if failed:
             return JSONResponse({"not_ready": failed}, status_code=503)
@@ -372,9 +384,17 @@ def create_app(
         }
         return Response(script, media_type="text/javascript", headers=headers)
 
+    def sign_in_failed(code: str, reason: str) -> RedirectResponse:
+        _log.warning("sign-in failed: %s", reason)
+        return _link_failure(code)
+
     @app.get("/login")
     async def login() -> Response:
-        begun = oidc.start(settings, await endpoints())
+        try:
+            found = await endpoints()
+        except AuthUnavailable as unreachable:
+            return sign_in_failed("login_unreachable", str(unreachable))
+        begun = oidc.start(settings, found)
         pending = {"state": begun.state, "verifier": begun.verifier, "nonce": begun.nonce}
         value = cookies.sign(session_key, "login", pending, LOGIN_LIFETIME_SECONDS)
         response = RedirectResponse(begun.url, status_code=302)
@@ -391,32 +411,50 @@ def create_app(
 
     @app.get("/login/callback")
     async def login_callback(
-        request: Request, code: str | None = None, state: str | None = None
+        request: Request,
+        code: str | None = None,
+        state: str | None = None,
+        error: str | None = None,
+        error_description: str | None = None,
     ) -> Response:
+        if error is not None:
+            reason = f"the login server returned error={_clip(error)} "
+            return sign_in_failed(
+                "sign_in_refused", reason + f"error_description={_clip(error_description)}"
+            )
         pending = cookies.unsign(session_key, "login", request.cookies.get(LOGIN_COOKIE, ""))
-        if pending is None or code is None or state is None:
-            raise HTTPException(400, SIGN_IN_FAILED)
+        if pending is None:
+            return sign_in_failed(
+                "sign_in_refused", "the login cookie is missing, expired or forged"
+            )
+        if code is None or state is None:
+            return sign_in_failed("sign_in_refused", "the callback carries no code or no state")
         if not hmac.compare_digest(str(pending.get("state", "")).encode(), state.encode()):
-            raise HTTPException(400, SIGN_IN_FAILED)
-        found = await endpoints()
+            return sign_in_failed(
+                "sign_in_refused", "the callback state does not match the login cookie"
+            )
+        try:
+            found = await endpoints()
+        except AuthUnavailable as unreachable:
+            return sign_in_failed("login_unreachable", str(unreachable))
         async with idp_client() as client:
             try:
                 verifier = str(pending.get("verifier", ""))
                 token = await oidc.exchange_code(settings, found, client, code, verifier)
-            except oidc.SignInRefused:
-                raise HTTPException(400, SIGN_IN_FAILED) from None
-            except oidc.NoIdToken:
-                raise HTTPException(401, BROWSER_AUTH_REFUSED) from None
-            except AuthUnavailable:
-                raise HTTPException(503, "the login server cannot be reached") from None
+            except oidc.SignInRefused as refused:
+                return sign_in_failed("sign_in_refused", str(refused))
+            except oidc.NoIdToken as missing:
+                return sign_in_failed("sign_in_refused", str(missing))
+            except AuthUnavailable as unreachable:
+                return sign_in_failed("login_unreachable", str(unreachable))
         try:
             identity = await run_in_threadpool(
                 identify, token, settings, signing_key, str(pending.get("nonce", ""))
             )
-        except AuthError:
-            raise HTTPException(401, BROWSER_AUTH_REFUSED) from None
-        except AuthUnavailable:
-            raise HTTPException(503, "the login server cannot be reached") from None
+        except AuthError as refused:
+            return sign_in_failed("sign_in_refused", f"the ID token was refused: {refused}")
+        except AuthUnavailable as unreachable:
+            return sign_in_failed("login_unreachable", str(unreachable))
         session = await run_in_threadpool(sessions.create, identity, session_seconds)
         response = RedirectResponse("/", status_code=303)
         response.delete_cookie(LOGIN_COOKIE, path="/login")
@@ -477,7 +515,8 @@ def create_app(
             url = await connections.begin(who.identity.user_id, server)
         except tuple(CONNECT_ERRORS) as error:
             raise HTTPException(CONNECT_ERRORS[type(error)], str(error)) from None
-        except UPSTREAM_ERRORS:
+        except UPSTREAM_ERRORS as failure:
+            _log.warning("connect to %s failed to start: %s", name, _upstream_reason(failure))
             raise HTTPException(502, f"cannot start the sign-in to {name}") from None
         return ConnectOut(authorization_url=url)
 
@@ -489,11 +528,17 @@ def create_app(
             headers={"Cache-Control": "public, max-age=3600"},
         )
 
+    def connect_failed(failure: Exception) -> RedirectResponse:
+        _log.warning("connect failed: %s", failure)
+        expired = isinstance(failure, FlowExpired | UnknownState)
+        return _link_failure("connect_expired" if expired else "connect_failed")
+
     @app.get("/oauth/callback")
     async def oauth_callback(
         state: str,
         code: str | None = None,
         error: str | None = None,
+        error_description: str | None = None,
         iss: str | None = None,
         who: Caller = Depends(caller),
     ) -> Response:
@@ -501,14 +546,20 @@ def create_app(
             try:
                 connections.cancel(who.identity.user_id, state)
             except tuple(CONNECT_ERRORS) as refused:
-                raise HTTPException(CONNECT_ERRORS[type(refused)], str(refused)) from None
-            raise HTTPException(400, "the server did not give access, so nothing was connected")
+                return connect_failed(refused)
+            _log.warning(
+                "connect refused by the server: error=%s error_description=%s",
+                _clip(error),
+                _clip(error_description),
+            )
+            return _link_failure("connect_failed")
         try:
             server_name = await connections.complete(who.identity.user_id, state, code, iss)
         except tuple(CONNECT_ERRORS) as failure:
-            raise HTTPException(CONNECT_ERRORS[type(failure)], str(failure)) from None
-        except UPSTREAM_ERRORS:
-            raise HTTPException(502, "the server did not accept the sign-in") from None
+            return connect_failed(failure)
+        except UPSTREAM_ERRORS as failure:
+            _log.warning("connect failed to complete: %s", _upstream_reason(failure))
+            return _link_failure("connect_failed")
         audit.connection(who.identity, "connect", server_name)
         return RedirectResponse("/", status_code=303)
 

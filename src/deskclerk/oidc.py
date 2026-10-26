@@ -16,6 +16,7 @@ from deskclerk.config import Settings
 
 TIMEOUT_SECONDS = 10
 LOGIN_SCOPE = "openid profile email"
+MAX_REASON_CHARS = 200
 
 
 class SignInRefused(Exception):
@@ -74,6 +75,20 @@ def start(settings: Settings, endpoints: Endpoints) -> SignInStart:
     return SignInStart(f"{endpoints.authorization}?{query}", state, verifier, nonce)
 
 
+def _refusal(response: httpx.Response) -> str:
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    fields = body if isinstance(body, dict) else {}
+    given = [
+        f"{name}={fields[name][:MAX_REASON_CHARS]!r}"
+        for name in ("error", "error_description")
+        if isinstance(fields.get(name), str)
+    ]
+    return f"the login server refused the code (status {response.status_code}) " + " ".join(given)
+
+
 async def exchange_code(
     settings: Settings, endpoints: Endpoints, client: httpx.AsyncClient, code: str, verifier: str
 ) -> str:
@@ -89,7 +104,7 @@ async def exchange_code(
             form["client_secret"] = settings.client_secret.get_secret_value()
         response = await client.post(endpoints.token, data=form)
         if 400 <= response.status_code < 500:
-            raise SignInRefused("the login server refused the code")
+            raise SignInRefused(_refusal(response))
         response.raise_for_status()
         body = response.json()
     except (httpx.HTTPError, ValueError) as error:

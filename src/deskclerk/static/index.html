@@ -282,6 +282,7 @@ textarea::placeholder { color: var(--muted); }
 <section id="signin" class="signin" hidden>
   <h2 class="signin-title">Sign in to continue</h2>
   <p class="muted">deskclerk acts on your connected servers as you.</p>
+  <p id="signin-error" class="error" role="alert" hidden></p>
   <a class="link-button primary" href="/login">Sign in</a>
 </section>
 
@@ -386,6 +387,22 @@ const FAILURE_SENTENCES = {
   502: "A service deskclerk relies on did not answer. Try again.",
   504: "The request took too long. Try again.",
 };
+
+const LINK_ERROR_SENTENCES = {
+  sign_in_refused: "Sign-in was refused. Try again, and ask your administrator if it keeps failing.",
+  login_unreachable: "The login server could not be reached. Try again in a minute.",
+  connect_expired: "That connection took too long and expired. Start it again.",
+  connect_failed: "The server could not be connected. Try again, and ask your administrator if it keeps failing.",
+};
+
+function takeLinkError() {
+  const address = new URL(window.location.href);
+  const code = address.searchParams.get("error");
+  if (code === null) return "";
+  address.searchParams.delete("error");
+  window.history.replaceState(null, "", address.pathname + address.search + address.hash);
+  return LINK_ERROR_SENTENCES[code] ?? "";
+}
 
 function showError(text, raw = "") {
   const box = el("error");
@@ -723,9 +740,12 @@ async function send() {
 }
 
 async function start() {
+  const linkError = takeLinkError();
   const response = await api("/me");
   if (!response.ok) {
     el("signin").hidden = false;
+    el("signin-error").textContent = linkError;
+    el("signin-error").hidden = linkError === "";
     return;
   }
   el("status").textContent = "Signed in as " + (await response.json()).name;
@@ -749,6 +769,7 @@ async function start() {
   phone.addEventListener("change", fitRail);
   fitRail();
   loadServers();
+  if (linkError !== "") showError(linkError);
 }
 
 start();
