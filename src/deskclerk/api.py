@@ -122,6 +122,14 @@ class MissingSessionKey(RuntimeError):
     pass
 
 
+class FailedTurn(Exception):
+    def __init__(self, status: int, detail: str, executed: list[ExecutedCall]) -> None:
+        super().__init__(detail)
+        self.status = status
+        self.detail = detail
+        self.executed = executed
+
+
 class AskBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -285,6 +293,11 @@ def create_app(
     )
 
     app.add_middleware(LimitRequestSize)
+
+    @app.exception_handler(FailedTurn)
+    async def failed_turn(_: Request, failure: FailedTurn) -> JSONResponse:
+        calls = [ExecutedOut(**vars(call)).model_dump() for call in failure.executed]
+        return JSONResponse({"detail": failure.detail, "calls": calls}, status_code=failure.status)
 
     scim_users = ScimUsers(tokens.path) if settings.scim_token is not None else None
 
@@ -654,7 +667,7 @@ def create_app(
                     entry,
                     executed,
                 )
-                raise HTTPException(504, detail) from None
+                raise FailedTurn(504, detail, executed) from None
             except ask_failures as error:
                 cost = spending.cost_usd - spent_before
                 raise upstream_failure(
@@ -705,7 +718,7 @@ def create_app(
         error: BaseException,
         entry: str,
         executed: list[ExecutedCall],
-    ) -> HTTPException:
+    ) -> FailedTurn:
         detail = _upstream_detail(error)
         audit.asked(
             identity,
@@ -719,6 +732,6 @@ def create_app(
             entry,
             executed,
         )
-        return HTTPException(502, detail)
+        return FailedTurn(502, detail, executed)
 
     return app
