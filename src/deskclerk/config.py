@@ -13,6 +13,9 @@ MIN_SESSION_KEY_CHARS = 32
 MAX_PORT = 65535
 DEFAULT_ASK_SECONDS = 180
 DEFAULT_TOOL_OUTPUT_CHARS = 20000
+ASK_SECONDS_PER_LISTING_SECOND = 10
+MIN_LISTING_SECONDS = 5
+DEFAULT_LISTING_SECONDS = DEFAULT_ASK_SECONDS / ASK_SECONDS_PER_LISTING_SECOND
 DEFAULT_HISTORY_TOKENS = 40000
 
 
@@ -68,6 +71,10 @@ class Settings(BaseSettings):
                 f"https://deskclerk.example.com, not {value!r}"
             )
         return value.rstrip("/")
+
+    @property
+    def listing_seconds(self) -> float:
+        return max(MIN_LISTING_SECONDS, self.ask_seconds / ASK_SECONDS_PER_LISTING_SECOND)
 
     @property
     def sign_in_redirect_url(self) -> str:

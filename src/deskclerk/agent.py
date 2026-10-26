@@ -40,7 +40,11 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.runtime import Runtime
 from langgraph.types import Command, Interrupt
 
-from deskclerk.config import DEFAULT_HISTORY_TOKENS, DEFAULT_TOOL_OUTPUT_CHARS
+from deskclerk.config import (
+    DEFAULT_HISTORY_TOKENS,
+    DEFAULT_LISTING_SECONDS,
+    DEFAULT_TOOL_OUTPUT_CHARS,
+)
 from deskclerk.connections import (
     UPSTREAM_ERRORS,
     NotConnected,
@@ -240,11 +244,17 @@ def _warn_of_unknown_confirm_tools(server: McpServer, listed: list[ToolInfo]) ->
             )
 
 
-async def _list_tools(user_id: str, server: McpServer, connections: OAuthConnections) -> _Listing:
+async def _list_tools(
+    user_id: str, server: McpServer, connections: OAuthConnections, listing_seconds: float
+) -> _Listing:
     try:
-        return _Listing(server, await connections.tools(user_id, server), True, None)
+        async with asyncio.timeout(listing_seconds):
+            tools = await connections.tools(user_id, server)
+        return _Listing(server, tools, True, None)
     except NotConnected:
         return _Listing(server, [], False, None)
+    except TimeoutError:
+        return _Listing(server, [], True, McpServerFailed(server.name, "TimeoutError"))
     except (*UPSTREAM_ERRORS, BaseExceptionGroup) as error:
         failure = _server_failure(server.name, error)
         if failure is None:
@@ -287,7 +297,10 @@ class _Guard(AgentMiddleware[AgentState[Any], None, Any]):
     ) -> ModelResponse[Any]:
         shared = self.shared
         shared.shown = {tool.name for tool in request.tools if isinstance(tool, BaseTool)}
-        response = await handler(request.override(messages=self._within_budget(request.messages)))
+        sent = self._within_budget(request.messages)
+        if any(isinstance(m, ToolMessage) and is_flagged(str(m.content)) for m in sent):
+            shared.flag_raised = True
+        response = await handler(request.override(messages=sent))
         message = response.result[-1]
         if not isinstance(message, AIMessage):
             raise TypeError(f"the model returned a {type(message).__name__}")
@@ -434,6 +447,7 @@ async def run_agent(
     selection: AgentMiddleware[Any, Any, Any] | None = None,
     tool_output_chars: int = DEFAULT_TOOL_OUTPUT_CHARS,
     history_tokens: int = DEFAULT_HISTORY_TOKENS,
+    listing_seconds: float = DEFAULT_LISTING_SECONDS,
     *,
     confirm_writes: bool,
     decisions: dict[str, Decision] | None = None,
@@ -445,7 +459,7 @@ async def run_agent(
     always: set[str] = set()
     changed_tools: list[str] = []
     listings = await asyncio.gather(
-        *(_list_tools(user_id, server, connections) for server in servers)
+        *(_list_tools(user_id, server, connections, listing_seconds) for server in servers)
     )
     for listing in listings:
         server = listing.server
