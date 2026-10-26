@@ -11,6 +11,7 @@ import json
 import logging
 import sys
 import time
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -43,6 +44,7 @@ class Audit:
         cost_usd: float,
         cause: str | None = None,
         entry: str = "ask",
+        executed: Sequence[ExecutedCall] = (),
     ) -> None:
         line = self._line(identity, entry)
         line.update(
@@ -51,7 +53,7 @@ class Audit:
                 "outcome": outcome,
                 "text_chars": len(request),
                 "text_hmac": self._hmac(request),
-                "executed": [] if result is None else [self._executed(c) for c in result.executed],
+                "executed": [self._executed(c) for c in executed],
                 "blocked": [] if result is None else [self._blocked(c) for c in result.blocked],
                 "pending": [] if result is None else [self._pending(c) for c in result.pending],
                 "decided": [] if result is None else [self._decided(c) for c in result.decided],

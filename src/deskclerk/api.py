@@ -32,6 +32,7 @@ from deskclerk.agent import (
     AlwaysAllowRefused,
     ConversationWaiting,
     Decision,
+    ExecutedCall,
     Gate,
     McpServerFailed,
     NothingToConfirm,
@@ -529,6 +530,7 @@ def create_app(
             except BudgetExceeded as error:
                 refuse(402, str(error), "over_budget")
             spent_before = spending.cost_usd
+            executed: list[ExecutedCall] = []
             try:
                 with tracing.ask(identity.user_id) if tracing else nullcontext(None) as trace:
                     async with asyncio.timeout(settings.ask_seconds):
@@ -554,6 +556,7 @@ def create_app(
                             history_tokens=settings.history_tokens,
                             confirm_writes=True,
                             decisions=decisions,
+                            executed=executed,
                         )
                     if trace:
                         trace.finish(result.flagged)
@@ -576,13 +579,22 @@ def create_app(
                     "(set DESKCLERK_ASK_SECONDS to change it)"
                 )
                 audit.asked(
-                    identity, conversation, text, started, "timed_out", None, cost, detail, entry
+                    identity,
+                    conversation,
+                    text,
+                    started,
+                    "timed_out",
+                    None,
+                    cost,
+                    detail,
+                    entry,
+                    executed,
                 )
                 raise HTTPException(504, detail) from None
             except ask_failures as error:
                 cost = spending.cost_usd - spent_before
                 raise upstream_failure(
-                    identity, conversation, text, started, cost, error, entry
+                    identity, conversation, text, started, cost, error, entry, executed
                 ) from None
             except BaseExceptionGroup as group:
                 failed = group.subgroup(ask_failures)
@@ -590,11 +602,21 @@ def create_app(
                     raise
                 cost = spending.cost_usd - spent_before
                 raise upstream_failure(
-                    identity, conversation, text, started, cost, first_leaf(failed), entry
+                    identity, conversation, text, started, cost, first_leaf(failed), entry, executed
                 ) from None
         cost = spending.cost_usd - spent_before
         outcome = "awaiting_confirmation" if result.pending else "answered"
-        audit.asked(identity, conversation, text, started, outcome, result, cost, entry=entry)
+        audit.asked(
+            identity,
+            conversation,
+            text,
+            started,
+            outcome,
+            result,
+            cost,
+            entry=entry,
+            executed=result.executed,
+        )
         return AskOut(
             conversation=conversation,
             answer=result.answer,
@@ -618,10 +640,20 @@ def create_app(
         cost: float,
         error: BaseException,
         entry: str,
+        executed: list[ExecutedCall],
     ) -> HTTPException:
         detail = _upstream_detail(error)
         audit.asked(
-            identity, conversation, request, started, "upstream_error", None, cost, detail, entry
+            identity,
+            conversation,
+            request,
+            started,
+            "upstream_error",
+            None,
+            cost,
+            detail,
+            entry,
+            executed,
         )
         return HTTPException(502, detail)
 

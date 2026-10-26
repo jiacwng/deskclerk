@@ -1147,6 +1147,60 @@ def test_a_model_that_fails_gives_502_naming_the_model_and_the_audit_cause(
     assert asks[0]["cause"] == "the model did not answer (APIConnectionError)"
 
 
+class BlocksAfterScript(ScriptedModel):
+    def _generate(self, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return super()._generate(*args, **kwargs)
+        except StopIteration:
+            time.sleep(4)
+            raise
+
+
+def test_a_write_that_ran_before_the_model_failed_is_in_the_audit_line(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="deskclerk.audit")
+    model = ProviderGoneAfterScript(messages=iter([calls(("notes__write_note", {"text": "hi"}))]))
+    ada = as_user(sign_token, "ada")
+    with web(
+        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, tmp_path
+    ) as site:
+        connect(site, ada)
+        response = ask_and_approve(site, ada)
+    assert response.status_code == 502
+    assert [note[1] for note in notes_server.notes] == ["hi"]
+    [line] = [line for line in audit_lines(caplog) if line["entry"] == "confirm"]
+    assert line["outcome"] == "upstream_error"
+    assert line["executed"] == [{"server": "notes", "tool": "write_note", "is_error": False}]
+
+
+def test_a_write_that_ran_before_the_deadline_is_in_the_audit_line(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="deskclerk.audit")
+    settings = make_settings(token_settings, ask_seconds=2)
+    model = BlocksAfterScript(messages=iter([calls(("notes__write_note", {"text": "hi"}))]))
+    ada = as_user(sign_token, "ada")
+    with web(settings, [notes(notes_server)], model, token_signing_key, tmp_path) as site:
+        connect(site, ada)
+        response = ask_and_approve(site, ada)
+    assert response.status_code == 504
+    assert [note[1] for note in notes_server.notes] == ["hi"]
+    [line] = [line for line in audit_lines(caplog) if line["entry"] == "confirm"]
+    assert line["outcome"] == "timed_out"
+    assert line["executed"] == [{"server": "notes", "tool": "write_note", "is_error": False}]
+
+
 class OpenAiGone(ScriptedModel):
     def _generate(self, *args: Any, **kwargs: Any) -> Any:
         request = httpx2.Request("POST", "https://api.openai.com/v1/chat/completions")
