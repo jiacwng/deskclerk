@@ -331,3 +331,18 @@ def test_a_server_allows_always_allow_unless_the_file_forbids_it(tmp_path: Path)
     )
     ledger, wiki = load_servers(path, {})
     assert (ledger.always_allow, wiki.always_allow) == (False, True)
+
+
+def test_confirm_tools_are_read_and_default_to_none(tmp_path: Path) -> None:
+    entry = '[[server]]\nname = "a"\nurl = "https://a.test/mcp"\n'
+    forced = load_servers(write(tmp_path, entry + 'confirm_tools = ["send", "wipe"]\n'), {})[0]
+    assert forced.confirm_tools == ("send", "wipe")
+    assert load_servers(write(tmp_path, entry), {})[0].confirm_tools == ()
+
+
+def test_a_confirm_tool_name_must_not_be_empty_or_repeated(tmp_path: Path) -> None:
+    entry = '[[server]]\nname = "a"\nurl = "https://a.test/mcp"\n'
+    with pytest.raises(ServersError, match="needs a name"):
+        load_servers(write(tmp_path, entry + 'confirm_tools = [" "]\n'), {})
+    with pytest.raises(ServersError, match="listed twice"):
+        load_servers(write(tmp_path, entry + 'confirm_tools = ["x", "x"]\n'), {})

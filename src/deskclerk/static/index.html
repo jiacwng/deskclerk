@@ -616,7 +616,7 @@ function showPending(pending) {
     const card = make("div", "pending-card");
     const title = make("div", "pending-title");
     title.append(make("span", "call-server", call.server), make("span", "call-tool", call.tool));
-    if (call.destructive) title.append(make("span", "badge bad", "Deletes data"));
+    if (call.destructive) title.append(make("span", "badge bad", "May delete or overwrite"));
     const group = make("div", "pending-actions");
     group.setAttribute("role", "group");
     group.setAttribute("aria-label", "Decision for " + call.server + " " + call.tool);
