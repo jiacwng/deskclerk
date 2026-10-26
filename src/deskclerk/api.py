@@ -67,11 +67,13 @@ from deskclerk.conversations import (
     saved_messages,
     thread_id,
 )
+from deskclerk.erasure import erase_user
 from deskclerk.instructions import system_prompt
 from deskclerk.jev import Jev
 from deskclerk.providers import BudgetExceeded, Usage, cost_of
 from deskclerk.quota import Quota
 from deskclerk.retention import delete_old_threads, delete_old_threads_daily
+from deskclerk.scim import ScimUsers, mount_scim
 from deskclerk.scope import jev_tool_selection
 from deskclerk.screen import jev_screen
 from deskclerk.servers import McpServer
@@ -302,6 +304,15 @@ def create_app(
                 except AuthUnavailable:
                     raise HTTPException(503, "the login server cannot be reached") from None
         return discovered["endpoints"]
+
+    if settings.scim_token is not None:
+        mount_scim(
+            app,
+            settings.scim_token.get_secret_value(),
+            settings.public_url,
+            ScimUsers(tokens.path),
+            lambda user_id: erase_user(user_id, tokens, sessions, spending_store, audit),
+        )
 
     @app.get("/livez")
     async def livez() -> dict[str, str]:
