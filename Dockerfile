@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir --require-hashes -r requirements-build.lock -r re
 
 USER deskclerk
 
-HEALTHCHECK --interval=2s --timeout=5s --retries=30 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=2s --start-interval=2s --retries=3 \
     CMD python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/readyz' % os.environ.get('DESKCLERK_PORT', '8000'))"
 
 CMD ["python", "-m", "deskclerk"]
