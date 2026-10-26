@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- The chat page: sign in, connect servers, ask. Model and tool text is set with textContent only. -->
+<!-- The chat page: sign in, connect servers, ask. Tool text is set with textContent only; answers are markdown cleaned by DOMPurify. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -157,7 +157,24 @@ button.small { min-height: 1.875rem; padding: 0.2rem 0.6rem; font-size: 0.8125re
 .turn { display: grid; gap: 0.625rem; min-width: 0; }
 .request { background: var(--sunk); border-radius: 4px; padding: 0.5rem 0.75rem; white-space: pre-wrap; font-weight: 500; }
 .who-label { font-size: 0.75rem; font-weight: 600; color: var(--muted); margin-bottom: 0.125rem; }
-.answer { white-space: pre-wrap; max-width: 68ch; line-height: 1.6; text-wrap: pretty; }
+.answer { max-width: 68ch; line-height: 1.6; text-wrap: pretty; min-width: 0; }
+.plain { white-space: pre-wrap; }
+.answer > * + * { margin-top: 0.75rem; }
+.answer h1, .answer h2, .answer h3, .answer h4, .answer h5, .answer h6 { margin-bottom: 0; font-size: 1rem; line-height: 1.4; }
+.answer h1, .answer h2 { font-size: 1.0625rem; }
+.answer ul, .answer ol { padding-left: 1.5rem; }
+.answer ul { list-style: disc; }
+.answer li + li { margin-top: 0.25rem; }
+.answer li > ul, .answer li > ol { margin-top: 0.25rem; }
+.answer a { color: var(--accent); text-underline-offset: 2px; }
+.answer blockquote { margin-left: 0; padding-left: 0.75rem; border-left: 3px solid var(--line); color: var(--muted); }
+.answer hr { border: 0; border-top: 1px solid var(--line); }
+.answer code { font: 0.8125rem/1.5 var(--mono); background: var(--sunk); border-radius: 3px; padding: 0.05rem 0.3rem; overflow-wrap: anywhere; }
+.answer pre { white-space: pre; overflow-wrap: normal; max-height: none; overflow-x: auto; overflow-y: hidden; }
+.answer pre code { background: transparent; padding: 0; overflow-wrap: normal; }
+.answer table { display: block; overflow-x: auto; border-collapse: collapse; font-size: 0.875rem; }
+.answer th, .answer td { border: 1px solid var(--line); padding: 0.3rem 0.6rem; text-align: left; overflow-wrap: normal; }
+.answer th { background: var(--sunk); }
 
 .calls { display: grid; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
 .calls:empty { display: none; }
@@ -234,13 +251,19 @@ textarea::placeholder { color: var(--muted); }
 .composer-row .hint { margin-left: auto; }
 @media (max-width: 30rem) { .composer-row .hint { display: none; } }
 .error { color: var(--bad); background: var(--bad-soft); border-radius: 4px; padding: 0.4rem 0.625rem; font-size: 0.875rem; }
-.working { color: var(--muted); font-size: 0.8125rem; }
-.working:empty { display: none; }
+.error-raw { display: block; margin-top: 0.125rem; font-size: 0.75rem; color: var(--muted); }
+.working-row { display: flex; align-items: center; gap: 0.5rem; color: var(--muted); font-size: 0.8125rem; }
+.spinner {
+  flex: none; width: 0.875rem; height: 0.875rem; border-radius: 50%;
+  border: 2px solid var(--line); border-top-color: var(--accent);
+}
 
 .signin { max-width: 24rem; margin: 4rem auto; padding-inline: 16px; display: grid; gap: 0.75rem; justify-items: start; }
 .signin-title { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.01em; }
 
+@keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: no-preference) {
+  .spinner { animation: spin 0.8s linear infinite; }
   button, .link-button { transition: background-color 0.15s, border-color 0.15s, color 0.15s; }
 }
 </style>
@@ -292,7 +315,7 @@ textarea::placeholder { color: var(--muted); }
       <label for="request" class="sr-only">Your request</label>
       <textarea id="request" maxlength="4000" placeholder="What do you need?"></textarea>
       <p id="error" class="error" role="alert" hidden></p>
-      <p id="working" class="working" role="status"></p>
+      <p id="working" class="sr-only" role="status"></p>
       <div class="composer-row">
         <button id="ask" class="primary" type="submit">Ask</button>
         <button id="new-conversation" type="button">New conversation</button>
@@ -302,6 +325,8 @@ textarea::placeholder { color: var(--muted); }
   </main>
 </div>
 
+<script src="/vendor/marked-18.1.0.umd.js" integrity="sha256-9CTctQj9+T4BN6lwz86PMgfqLj837KX3VWpSh1aDYyo="></script>
+<script src="/vendor/purify-3.4.16.min.js" integrity="sha256-LJCptG1kY/JgOKKbaG6CvJHeAf2snVIp58/js2ATTqI="></script>
 <script>
 async function api(path, options) {
   const response = await fetch(path, options);
@@ -337,18 +362,43 @@ function button(label, onClick, className) {
   return control;
 }
 
+function fieldProblem(item) {
+  const field = (item.loc || []).filter((part) => part !== "body").join(".");
+  return field === "" ? String(item.msg) : field + ": " + item.msg;
+}
+
 async function detail(response) {
+  let body = null;
   try {
-    const body = await response.json();
-    return typeof body.detail === "string" ? body.detail : response.statusText;
+    body = await response.json();
   } catch {
     return response.statusText;
   }
+  if (typeof body?.detail === "string") return body.detail;
+  if (Array.isArray(body?.detail)) return body.detail.map(fieldProblem).join("; ");
+  return response.statusText;
 }
 
-function showError(text) {
-  el("error").textContent = text;
-  el("error").hidden = text === "";
+const FAILURE_SENTENCES = {
+  402: "You have reached this month's budget. It resets at the start of next month.",
+  422: "The request was not accepted. Check it and try again.",
+  429: "Too many requests in a short time. Wait a minute and try again.",
+  502: "A service deskclerk relies on did not answer. Try again.",
+  504: "The request took too long. Try again.",
+};
+
+function showError(text, raw = "") {
+  const box = el("error");
+  box.replaceChildren(text);
+  if (raw !== "") box.append(make("span", "error-raw", raw));
+  box.hidden = text === "";
+}
+
+async function reportFailure(response) {
+  const raw = await detail(response);
+  const sentence = FAILURE_SENTENCES[response.status];
+  if (sentence !== undefined) return showError(sentence, raw);
+  showError(raw === "" ? "Something went wrong (status " + response.status + ")" : raw);
 }
 
 function updateControls() {
@@ -365,7 +415,7 @@ function setBusy(on, text) {
 
 async function connect(name) {
   const response = await post("/servers/" + encodeURIComponent(name) + "/connect");
-  if (!response.ok) return showError(await detail(response));
+  if (!response.ok) return reportFailure(response);
   const target = new URL((await response.json()).authorization_url);
   if (target.protocol !== "https:" && target.protocol !== "http:") return showError("bad link");
   window.location.assign(target.href);
@@ -373,19 +423,19 @@ async function connect(name) {
 
 async function disconnect(name) {
   const response = await post("/servers/" + encodeURIComponent(name) + "/disconnect");
-  if (!response.ok) return showError(await detail(response));
+  if (!response.ok) return reportFailure(response);
   loadServers();
 }
 
 async function logout() {
   const response = await post("/logout");
-  if (!response.ok) return showError(await detail(response));
+  if (!response.ok) return reportFailure(response);
   window.location.reload();
 }
 
 async function loadServers() {
   const response = await api("/servers");
-  if (!response.ok) return showError(await detail(response));
+  if (!response.ok) return reportFailure(response);
   const list = el("servers");
   list.replaceChildren();
   const servers = await response.json();
@@ -468,9 +518,6 @@ function buildCalls(result) {
       rows.push(callRow(call, "bad", "Blocked", [part("Reason", call.reason), shownArguments]));
     }
   }
-  for (const name of result.not_connected) {
-    rows.push(noteRow("warn", "Not connected", name + " is not connected, so its tools were not offered"));
-  }
   for (const name of result.unavailable) {
     rows.push(noteRow("warn", "No answer", name + " did not answer, so its tools were not offered"));
   }
@@ -488,6 +535,47 @@ function buildCalls(result) {
     rows.push(noteRow("warn", "Flagged", result.flagged + " " + noun + " flagged by the injection screen, so later calls waited for your approval"));
   }
   return rows;
+}
+
+const SANITIZE = {
+  ALLOWED_TAGS: [
+    "p", "br", "strong", "em", "del", "code", "pre", "ul", "ol", "li", "blockquote", "hr", "a",
+    "h1", "h2", "h3", "h4", "h5", "h6", "table", "thead", "tbody", "tr", "th", "td",
+  ],
+  ALLOWED_ATTR: ["href", "title", "align"],
+  ALLOWED_URI_REGEXP: /^(?:https?:|mailto:)/i,
+  RETURN_DOM_FRAGMENT: true,
+};
+
+if (window.DOMPurify) {
+  window.DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+    if (node.tagName === "A" && node.hasAttribute("href")) {
+      node.setAttribute("target", "_blank");
+      node.setAttribute("rel", "noopener noreferrer");
+    }
+  });
+}
+
+function renderAnswer(text) {
+  if (!window.marked || !window.DOMPurify) return make("div", "plain", text);
+  return window.DOMPurify.sanitize(window.marked.parse(text, { async: false }), SANITIZE);
+}
+
+function startWorking(turn, text) {
+  const row = make("div", "working-row");
+  row.setAttribute("aria-hidden", "true");
+  const label = make("span");
+  row.append(make("span", "spinner"), label);
+  const started = Date.now();
+  const tick = () => { label.textContent = text + " " + Math.floor((Date.now() - started) / 1000) + " s"; };
+  tick();
+  const timer = setInterval(tick, 1000);
+  turn.append(row);
+  row.scrollIntoView({ block: "nearest" });
+  return () => {
+    clearInterval(timer);
+    row.remove();
+  };
 }
 
 function newTurn(request) {
@@ -565,7 +653,7 @@ function showPending(pending) {
 function showResult(result) {
   conversation = result.conversation;
   const turn = currentTurn;
-  turn.answer.textContent = result.answer;
+  turn.answer.replaceChildren(renderAnswer(result.answer));
   turn.reply.hidden = result.answer === "";
   turn.calls.replaceChildren(...buildCalls(result));
   turn.cost.textContent = "Cost: " + result.cost_usd.toFixed(4) + " USD";
@@ -578,20 +666,35 @@ function showResult(result) {
   }
 }
 
+function discardTurn(turn, previous, request) {
+  turn.node.remove();
+  currentTurn = previous;
+  if (el("turns").childElementCount === 0) el("empty").hidden = false;
+  el("request").value = request;
+}
+
 async function ask() {
   showError("");
   const request = el("request").value;
   if (request.trim() === "") return el("request").focus();
   setBusy(true, "Working on it…");
+  const previous = currentTurn;
+  currentTurn = newTurn(request);
+  const turn = currentTurn;
+  el("request").value = "";
+  const stop = startWorking(turn.node, "Working on it…");
   try {
     const response = await post("/ask", { request, conversation });
-    if (!response.ok) return showError(await detail(response));
-    currentTurn = newTurn(request);
-    el("request").value = "";
+    if (!response.ok) {
+      discardTurn(turn, previous, request);
+      return await reportFailure(response);
+    }
     showResult(await response.json());
   } catch (error) {
+    discardTurn(turn, previous, request);
     showError("Could not reach the server");
   } finally {
+    stop();
     setBusy(false);
     if (waiting === 0) el("request").focus();
   }
@@ -601,18 +704,20 @@ async function send() {
   showError("");
   el("send").disabled = true;
   setBusy(true, "Sending your decisions…");
+  const stop = startWorking(currentTurn.node, "Sending your decisions…");
   try {
     const response = await post("/ask/confirm", { conversation, decisions });
     if (!response.ok) {
       if (response.status >= 500) showPending([]);
       else updateDecided(waiting);
-      return showError(await detail(response));
+      return await reportFailure(response);
     }
     showResult(await response.json());
   } catch (error) {
     updateDecided(waiting);
     showError("Could not reach the server");
   } finally {
+    stop();
     setBusy(false);
   }
 }

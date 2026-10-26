@@ -38,7 +38,7 @@ package-dir = {"" = "src"}
 packages = ["deskclerk"]
 
 [tool.setuptools.package-data]
-deskclerk = ["static/*.html"]
+deskclerk = ["static/*.html", "static/vendor/*"]
 
 [tool.ruff]
 line-length = 100

@@ -16,6 +16,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from importlib import resources
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -39,7 +40,9 @@ from deskclerk.api import (
     CSRF_VALUE,
     LOGIN_COOKIE,
     SESSION_COOKIE,
+    VENDOR_SCRIPTS,
     MissingSessionKey,
+    _content_security_policy,
     create_app,
 )
 from deskclerk.auth import Identity, SigningKeyLookup, discover_jwks_url, jwks_signing_key
@@ -833,8 +836,71 @@ def test_the_page_is_served_with_a_policy_that_allows_only_its_own_script(
     digest = hashlib.sha256(script_block.group(1).encode()).digest()
     policy = response.headers["content-security-policy"]
     assert f"script-src 'sha256-{base64.b64encode(digest).decode()}'" in policy
-    assert "src=" not in response.text
+    sources = re.findall(r'<script src="([^"]*)" integrity="sha256-[^"]*"></script>', response.text)
+    assert sources == [f"/vendor/{name}" for name in VENDOR_SCRIPTS]
+    assert response.text.count("src=") == len(VENDOR_SCRIPTS)
     assert "innerHTML" not in response.text
+
+
+def vendor_file(name: str) -> bytes:
+    return resources.files("deskclerk").joinpath(f"static/vendor/{name}").read_bytes()
+
+
+def test_the_policy_allows_the_inline_script_and_the_two_vendored_scripts_by_hash_only(
+    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings)
+    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+        response = site.client.get("/")
+    inline = re.search(r"<script>(.*?)</script>", response.text, re.DOTALL)
+    assert inline is not None
+    hashes = [inline.group(1).encode(), *(vendor_file(name) for name in VENDOR_SCRIPTS)]
+    expected = [
+        "'sha256-" + base64.b64encode(hashlib.sha256(data).digest()).decode() + "'"
+        for data in hashes
+    ]
+    policy = response.headers["content-security-policy"]
+    directive = next(part for part in policy.split("; ") if part.startswith("script-src"))
+    assert directive == "script-src " + " ".join(expected)
+    assert "unsafe" not in policy
+    assert "'self'" not in directive
+    for source in expected[1:]:
+        assert f'integrity="{source[1:-1]}"' in response.text
+
+
+def test_the_vendored_scripts_are_served_as_javascript_and_nothing_else_is(
+    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings)
+    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+        served = [site.client.get(f"/vendor/{name}") for name in VENDOR_SCRIPTS]
+        missing = site.client.get("/vendor/LICENSE-marked")
+        escaped = site.client.get("/vendor/..%2f..%2fapi.py")
+    for name, response in zip(VENDOR_SCRIPTS, served, strict=True):
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/javascript")
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert response.content == vendor_file(name)
+    assert (missing.status_code, escaped.status_code) == (404, 404)
+
+
+def test_the_policy_refuses_a_page_whose_vendored_script_does_not_match_its_file() -> None:
+    page = "<style></style><script></script>"
+    with pytest.raises(ValueError, match="vendor/marked.js"):
+        _content_security_policy(page, {"marked.js": b"code"})
+
+
+def test_the_page_renders_answers_as_cleaned_markdown_and_hides_not_connected_notes(
+    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings)
+    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+        page = site.client.get("/").text
+    assert "RETURN_DOM_FRAGMENT: true" in page
+    assert "ALLOWED_URI_REGEXP: /^(?:https?:|mailto:)/i" in page
+    assert 'node.setAttribute("rel", "noopener noreferrer")' in page
+    assert "turn.answer.textContent" not in page
+    assert "is not connected, so its tools" not in page
 
 
 def test_the_page_names_each_server_in_its_connect_and_disconnect_buttons(
