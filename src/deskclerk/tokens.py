@@ -12,6 +12,7 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from mcp.shared.auth_utils import calculate_token_expiry
 from pydantic import BaseModel
 
+from deskclerk.database import connect
 from deskclerk.servers import McpServer
 
 Kind = Literal["tokens", "client", "tool_pins", "always_allowed"]
@@ -54,7 +55,7 @@ class TokenStore:
 
     @contextmanager
     def _database(self) -> Iterator[sqlite3.Connection]:
-        database = sqlite3.connect(self.path)
+        database = connect(self.path)
         try:
             with database:
                 yield database

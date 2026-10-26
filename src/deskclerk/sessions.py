@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from deskclerk.auth import Identity
+from deskclerk.database import connect
 
 
 def _digest(session_id: str) -> str:
@@ -31,7 +32,7 @@ class SessionStore:
 
     @contextmanager
     def _database(self) -> Iterator[sqlite3.Connection]:
-        database = sqlite3.connect(self.path)
+        database = connect(self.path)
         try:
             with database:
                 yield database

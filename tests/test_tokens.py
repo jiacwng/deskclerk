@@ -1,5 +1,7 @@
 # The token file keeps tokens encrypted, keyed by employee and server, readable only with the key.
 
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -101,3 +103,10 @@ def test_deleting_a_connection_removes_its_pins_and_keeps_the_registered_client(
     assert store.get("ada", SERVER.name, "tool_pins") is None
     assert store.get("ada", SERVER.name, "client") == "{}"
     assert store.get("ada", other.name, "tool_pins") == "{}"
+
+
+def test_the_token_file_uses_a_write_ahead_log(tmp_path: Path, key: str) -> None:
+    path = tmp_path / "tokens.sqlite"
+    TokenStore(path, key)
+    with closing(sqlite3.connect(path)) as database:
+        assert database.execute("PRAGMA journal_mode").fetchone() == ("wal",)
