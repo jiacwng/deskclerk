@@ -139,6 +139,7 @@ async def run(
     thread: str = "ada/test",
     tool_output_chars: int = 20000,
     history_tokens: int = 40000,
+    listing_seconds: float = 18,
     confirm_writes: bool = False,
     decisions: dict[str, Decision] | None = None,
 ) -> AgentResult:
@@ -161,6 +162,7 @@ async def run(
         tool_span,
         tool_output_chars=tool_output_chars,
         history_tokens=history_tokens,
+        listing_seconds=listing_seconds,
         confirm_writes=confirm_writes,
         decisions=decisions,
     )
@@ -358,6 +360,30 @@ class SlowListing(OAuthConnections):
     async def tools(self, user_id: str, server: McpServer) -> list[ToolInfo]:
         await asyncio.sleep(1)
         return await super().tools(user_id, server)
+
+
+class HangingListing(OAuthConnections):
+    async def tools(self, user_id: str, server: McpServer) -> list[ToolInfo]:
+        if server.name == "hangs":
+            await asyncio.sleep(60)
+        return await super().tools(user_id, server)
+
+
+@pytest.mark.anyio
+async def test_a_server_whose_listing_hangs_is_unavailable_and_the_others_still_answer(
+    tmp_path: Path,
+) -> None:
+    store = TokenStore(tmp_path / "tokens.sqlite", Fernet.generate_key().decode())
+    connections = HangingListing(store, REDIRECT, "deskclerk test", 600)
+    with running_mcp_server(REDIRECT, oauth=False) as working:
+        servers = [gone_server("hangs"), McpServer("notes", working.url, None, None, "none")]
+        model = script(calls(("notes__read_note", {})), answer("ok"))
+        started = time.monotonic()
+        result = await run(connections, servers, model, listing_seconds=0.5)
+        elapsed = time.monotonic() - started
+    assert result.unavailable == ("hangs",)
+    assert [call.result for call in result.executed] == ["the note"]
+    assert elapsed < 5
 
 
 @pytest.mark.anyio

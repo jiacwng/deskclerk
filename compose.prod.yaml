@@ -17,6 +17,11 @@ services:
           create_host_path: false
       - deskclerk-data:/app/data
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
 volumes:
   deskclerk-data:
