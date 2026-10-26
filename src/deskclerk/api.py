@@ -163,6 +163,7 @@ class PendingOut(BaseModel):
     tool: str
     arguments: dict[str, Any]
     destructive: bool
+    always_allowable: bool
 
 
 class AskOut(BaseModel):

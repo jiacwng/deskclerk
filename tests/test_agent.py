@@ -1428,6 +1428,53 @@ async def test_a_destructive_tool_cannot_be_always_allowed_and_always_pauses(
 
 
 @pytest.mark.anyio
+async def test_a_server_that_forbids_always_allow_ignores_a_stored_grant(
+    append_server: RunningServer,
+    append_connections: OAuthConnections,
+    append_saver: AsyncSqliteSaver,
+) -> None:
+    await always_allow_append(append_connections, append_server, append_saver)
+    forbidding = replace(server_record(append_server), always_allow=False)
+    model = script(calls(("notes__append_note", {"text": "two"})), answer("saved again"))
+    result = await run(
+        append_connections,
+        [forbidding],
+        model,
+        checkpointer=append_saver,
+        confirm_writes=True,
+        request="again",
+    )
+    assert [call.arguments["text"] for call in result.pending] == ["two"]
+    assert not result.pending[0].always_allowable
+    assert [note[1] for note in append_server.notes] == ["one"]
+
+
+@pytest.mark.anyio
+async def test_a_server_that_forbids_always_allow_refuses_the_decision(
+    append_server: RunningServer,
+    append_connections: OAuthConnections,
+    append_saver: AsyncSqliteSaver,
+) -> None:
+    servers = [replace(server_record(append_server), always_allow=False)]
+    model = script(calls(("notes__append_note", {"text": "one"})), answer("saved"))
+    paused = await run(
+        append_connections, servers, model, checkpointer=append_saver, confirm_writes=True
+    )
+    assert not paused.pending[0].always_allowable
+    with pytest.raises(AlwaysAllowRefused):
+        await run(
+            append_connections,
+            servers,
+            model,
+            checkpointer=append_saver,
+            confirm_writes=True,
+            decisions={paused.pending[0].id: "approve_always"},
+        )
+    assert append_connections.tokens.get("ada", "notes", "always_allowed") is None
+    assert append_server.notes == []
+
+
+@pytest.mark.anyio
 async def test_disconnecting_the_server_clears_the_always_allowed_tool(
     append_server: RunningServer,
     append_connections: OAuthConnections,

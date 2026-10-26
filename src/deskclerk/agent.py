@@ -106,6 +106,7 @@ class PendingCall:
     tool: str
     arguments: dict[str, Any]
     destructive: bool
+    always_allowable: bool
 
 
 @dataclass(frozen=True)
@@ -439,7 +440,7 @@ async def run_agent(
         for info in pinned.kept:
             tools[f"{server.name}__{info.name}"] = _Tool(server, info)
         for info in allowed_tools(tokens, user_id, server.name, pinned.kept):
-            if not info.destructive:
+            if server.always_allow and not info.destructive:
                 always.add(f"{server.name}__{info.name}")
     listed_any = len(listings) > len(not_connected) + len(unavailable)
     if unavailable and not listed_any:
@@ -498,7 +499,9 @@ async def run_agent(
         for interrupt_id, choice in decisions.items():
             waiting_tool = tools.get(waiting[interrupt_id].value["name"])
             if choice == "approve_always" and (
-                waiting_tool is None or waiting_tool.info.destructive
+                waiting_tool is None
+                or waiting_tool.info.destructive
+                or not waiting_tool.server.always_allow
             ):
                 raise AlwaysAllowRefused
         shared.shown = set(tools)
@@ -607,7 +610,12 @@ def _pending_call(interrupt: Interrupt, tools: dict[str, _Tool]) -> PendingCall:
         ("", name) if waiting_tool is None else (waiting_tool.server.name, waiting_tool.info.name)
     )
     destructive = waiting_tool is None or waiting_tool.info.destructive
-    return PendingCall(interrupt.id, server, tool, interrupt.value["args"], destructive)
+    always_allowable = (
+        waiting_tool is not None and not destructive and waiting_tool.server.always_allow
+    )
+    return PendingCall(
+        interrupt.id, server, tool, interrupt.value["args"], destructive, always_allowable
+    )
 
 
 def _decided_calls(
