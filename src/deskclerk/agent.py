@@ -412,6 +412,7 @@ async def run_agent(
     *,
     confirm_writes: bool,
     decisions: dict[str, Decision] | None = None,
+    executed: list[ExecutedCall] | None = None,
 ) -> AgentResult:
     tools: dict[str, _Tool] = {}
     not_connected: list[str] = []
@@ -456,6 +457,7 @@ async def run_agent(
         record_usage,
         tool_output_chars,
         history_tokens,
+        executed=[] if executed is None else executed,
     )
     confirmation = _confirmation(tools, frozenset(always), shared)
     read_only_names: list[BaseTool | str] = [
