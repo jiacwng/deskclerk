@@ -46,6 +46,7 @@ from deskclerk.api import (
     create_app,
 )
 from deskclerk.auth import Identity, SigningKeyLookup, discover_jwks_url, jwks_signing_key
+from deskclerk.bodylimit import MAX_BODY_BYTES
 from deskclerk.config import Settings
 from deskclerk.connections import OAuthConnections
 from deskclerk.instructions import system_prompt
@@ -274,6 +275,15 @@ def test_requests_without_a_session_or_token_are_refused(
     settings = make_settings(token_settings)
     with web(settings, [], script(), token_signing_key, tmp_path) as site:
         assert site.client.request(method, path).status_code == 401
+
+
+def test_an_oversized_body_is_refused_before_sign_in(
+    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings)
+    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+        response = site.client.post("/ask", content=b"x" * (MAX_BODY_BYTES + 1))
+        assert response.status_code == 413
 
 
 def test_a_bad_bearer_token_is_refused_and_a_good_one_names_the_employee(
