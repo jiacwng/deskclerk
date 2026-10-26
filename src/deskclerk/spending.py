@@ -6,6 +6,7 @@ import sqlite3
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -16,6 +17,18 @@ from deskclerk.providers import BudgetExceeded, Usage, cost_of
 
 def month_of(moment: datetime) -> str:
     return moment.strftime("%Y-%m")
+
+
+@dataclass(frozen=True)
+class UsageRow:
+    user_id: str
+    model_usd: float
+    jev_usd: float
+    calls: int
+
+    @property
+    def total_usd(self) -> float:
+        return self.model_usd + self.jev_usd
 
 
 class SpendingStore:
@@ -50,6 +63,21 @@ class SpendingStore:
                 (user_id, month),
             ).fetchone()
         return float(row[0])
+
+    def report(self, month: str) -> list[UsageRow]:
+        with self._database() as database:
+            found = database.execute(
+                "SELECT user_id, "
+                "COALESCE(SUM(CASE WHEN source = 'model' THEN usd END), 0.0), "
+                "COALESCE(SUM(CASE WHEN source = 'jev' THEN usd END), 0.0), "
+                "COUNT(*) FROM costs WHERE month = ? GROUP BY user_id "
+                "ORDER BY SUM(usd) DESC, user_id",
+                (month,),
+            ).fetchall()
+        return [
+            UsageRow(str(user), float(model), float(jev), int(calls))
+            for user, model, jev, calls in found
+        ]
 
     def delete_user(self, user_id: str) -> int:
         with self._database() as database:
