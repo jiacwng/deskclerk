@@ -2,10 +2,14 @@
 # deleted. A checkpoint id is a uuid6, so its age is read from the id without decrypting anything.
 
 import asyncio
+import logging
+import sqlite3
 import time
 
 from langgraph.checkpoint.base.id import UUID
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+_log = logging.getLogger(__name__)
 
 SECONDS_PER_DAY = 86400
 UUID_EPOCH_TICKS = 0x01B21DD213814000
@@ -35,4 +39,7 @@ async def delete_old_threads(checkpointer: AsyncSqliteSaver, retention_days: int
 async def delete_old_threads_daily(checkpointer: AsyncSqliteSaver, retention_days: int) -> None:
     while True:
         await asyncio.sleep(SECONDS_PER_DAY)
-        await delete_old_threads(checkpointer, retention_days)
+        try:
+            await delete_old_threads(checkpointer, retention_days)
+        except sqlite3.Error:
+            _log.exception("retention sweep failed")

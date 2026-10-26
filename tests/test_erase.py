@@ -16,7 +16,7 @@ from langgraph.checkpoint.base import empty_checkpoint
 
 from deskclerk import __main__ as entry
 from deskclerk.auth import Identity
-from deskclerk.conversations import open_checkpointer, thread_id
+from deskclerk.conversations import delete_user_threads, open_checkpointer, thread_id
 from deskclerk.providers import Usage
 from deskclerk.sessions import SessionStore
 from deskclerk.spending import SpendingStore
@@ -81,6 +81,19 @@ def test_erase_removes_only_that_employee_in_all_three_places(
     assert rows(path, "SELECT DISTINCT substr(thread_id, 1, 7) FROM checkpoints") == [("anabel/",)]
     assert rows(path, "SELECT DISTINCT substr(thread_id, 1, 7) FROM writes") == [("anabel/",)]
     assert rows(path, "SELECT COUNT(DISTINCT thread_id) FROM checkpoints") == [(2,)]
+
+
+def test_erase_keeps_an_employee_whose_id_extends_the_erased_id_after_a_slash(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tokens.sqlite"
+    asyncio.run(save_thread(path, "a"))
+    kept = asyncio.run(save_thread(path, "a/b"))
+
+    assert delete_user_threads(path, "a") == 1
+
+    assert rows(path, "SELECT DISTINCT thread_id FROM checkpoints") == [(kept,)]
+    assert rows(path, "SELECT DISTINCT thread_id FROM writes") == [(kept,)]
 
 
 def test_erase_logs_one_audit_line_with_the_counts_and_no_content(

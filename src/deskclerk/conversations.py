@@ -18,6 +18,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from deskclerk.database import BUSY_TIMEOUT_SECONDS, connect
 
 CIPHER_NAME = "fernet"
+UUID_LENGTH = 36
 
 
 class FernetCipher:
@@ -52,14 +53,21 @@ def delete_user_threads(path: Path, user_id: str) -> int:
             tables = {row[0] for row in database.execute("SELECT name FROM sqlite_master")}
             if "checkpoints" not in tables:
                 return 0
-            arguments = (len(prefix), prefix)
+            arguments = (len(prefix) + UUID_LENGTH, len(prefix), prefix)
             threads = database.execute(
                 "SELECT COUNT(DISTINCT thread_id) FROM checkpoints "
-                "WHERE substr(thread_id, 1, ?) = ?",
+                "WHERE length(thread_id) = ? AND substr(thread_id, 1, ?) = ?",
                 arguments,
             ).fetchone()[0]
-            database.execute("DELETE FROM checkpoints WHERE substr(thread_id, 1, ?) = ?", arguments)
-            database.execute("DELETE FROM writes WHERE substr(thread_id, 1, ?) = ?", arguments)
+            database.execute(
+                "DELETE FROM checkpoints "
+                "WHERE length(thread_id) = ? AND substr(thread_id, 1, ?) = ?",
+                arguments,
+            )
+            database.execute(
+                "DELETE FROM writes WHERE length(thread_id) = ? AND substr(thread_id, 1, ?) = ?",
+                arguments,
+            )
     finally:
         database.close()
     return int(threads)
