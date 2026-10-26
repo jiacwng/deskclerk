@@ -23,6 +23,8 @@ auth = "none"
 # groups = ["engineering"]
 # Headers sent with every request. ${env:NAME} is replaced by that variable.
 # headers = { "X-Team" = "${env:LINEAR_TEAM}" }
+# Set to false so every write tool of this server asks each time and has no Always allow button.
+# always_allow = false
 # Mutual TLS. Mount these files into the container.
 # client_cert = "/run/certs/client.pem"
 # client_key = "/run/certs/client.key"

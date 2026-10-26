@@ -41,6 +41,7 @@ class McpServer:
     client_cert: str | None = None
     client_key: str | None = None
     groups: tuple[str, ...] | None = None
+    always_allow: bool = True
 
     def open_to(self, groups: frozenset[str]) -> bool:
         return self.groups is None or not groups.isdisjoint(self.groups)
@@ -60,6 +61,7 @@ class _ServerEntry(BaseModel):
     client_cert: str | None = None
     client_key: str | None = None
     groups: list[str] | None = None
+    always_allow: bool = True
 
     @field_validator("name")
     @classmethod
@@ -240,6 +242,7 @@ def load_servers(path: Path, environ: Mapping[str, str] = os.environ) -> list[Mc
                 entry.client_cert,
                 entry.client_key,
                 None if entry.groups is None else tuple(entry.groups),
+                entry.always_allow,
             )
         )
     return servers

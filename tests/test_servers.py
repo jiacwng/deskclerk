@@ -321,3 +321,13 @@ def test_a_server_with_an_empty_group_list_is_refused(tmp_path: Path, groups: st
     )
     with pytest.raises(ServersError, match="groups"):
         load_servers(path, {})
+
+
+def test_a_server_allows_always_allow_unless_the_file_forbids_it(tmp_path: Path) -> None:
+    path = write(
+        tmp_path,
+        '[[server]]\nname = "ledger"\nurl = "https://a.test/mcp"\nalways_allow = false\n'
+        '[[server]]\nname = "wiki"\nurl = "https://b.test/mcp"\n',
+    )
+    ledger, wiki = load_servers(path, {})
+    assert (ledger.always_allow, wiki.always_allow) == (False, True)

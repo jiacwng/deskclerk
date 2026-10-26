@@ -14,7 +14,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -1685,6 +1685,7 @@ def test_a_destructive_call_cannot_be_always_allowed_and_a_non_destructive_one_c
         paused = ask(site, ada, "append one").json()
         [waiting] = paused["pending"]
         assert waiting["destructive"] is False
+        assert waiting["always_allowable"] is True
         always = confirm(site, ada, paused["conversation"], {waiting["id"]: "approve_always"})
         assert always.json()["answer"] == "appended"
         automatic = ask(site, ada, "append two").json()
@@ -1699,6 +1700,29 @@ def test_a_destructive_call_cannot_be_always_allowed_and_a_non_destructive_one_c
         "approve_always",
         "always",
     ]
+
+
+def test_the_page_payload_hides_always_allow_for_a_server_that_forbids_it(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    append_server: RunningServer,
+    tmp_path: Path,
+) -> None:
+    forbidding = replace(notes(append_server), always_allow=False)
+    model = script(calls(("notes__append_note", {"text": "one"})), answer("appended"))
+    ada = as_user(sign_token, "ada")
+    with web(
+        make_settings(token_settings), [forbidding], model, token_signing_key, tmp_path
+    ) as site:
+        connect(site, ada)
+        paused = ask(site, ada, "append one").json()
+        [waiting] = paused["pending"]
+        assert waiting["destructive"] is False
+        assert waiting["always_allowable"] is False
+        refused = confirm(site, ada, paused["conversation"], {waiting["id"]: "approve_always"})
+        assert refused.status_code == 422
+    assert append_server.notes == []
 
 
 def test_livez_answers_without_a_sign_in(

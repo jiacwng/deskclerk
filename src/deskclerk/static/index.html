@@ -481,7 +481,7 @@ function showPending(pending) {
     const reject = button("Reject", () => decide("reject"), "choice reject");
     approve.setAttribute("aria-pressed", "false");
     reject.setAttribute("aria-pressed", "false");
-    const always = call.destructive ? null : button("Always allow", () => decide("approve_always"), "choice always");
+    const always = call.always_allowable ? button("Always allow", () => decide("approve_always"), "choice always") : null;
     if (always) always.setAttribute("aria-pressed", "false");
     const verdict = make("span", "badge info", "Not decided");
     const decide = (choice) => {
