@@ -267,7 +267,10 @@ class _Guard(AgentMiddleware[AgentState[Any], None, Any]):
     ) -> ModelResponse[Any]:
         shared = self.shared
         shared.shown = {tool.name for tool in request.tools if isinstance(tool, BaseTool)}
-        response = await handler(request.override(messages=self._within_budget(request.messages)))
+        sent = self._within_budget(request.messages)
+        if any(isinstance(m, ToolMessage) and is_flagged(str(m.content)) for m in sent):
+            shared.flag_raised = True
+        response = await handler(request.override(messages=sent))
         message = response.result[-1]
         if not isinstance(message, AIMessage):
             raise TypeError(f"the model returned a {type(message).__name__}")
