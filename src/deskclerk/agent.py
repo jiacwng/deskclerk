@@ -49,7 +49,7 @@ from deskclerk.connections import (
     first_leaf,
 )
 from deskclerk.conversations import close_unanswered_calls, earlier_texts
-from deskclerk.instructions import unavailable_note
+from deskclerk.instructions import not_connected_note, unavailable_note
 from deskclerk.pinning import allow_tool, allowed_tools, pin_tools
 from deskclerk.providers import Usage, usage_from
 from deskclerk.screen import Screen, is_flagged
@@ -479,7 +479,9 @@ async def run_agent(
     agent = create_agent(
         model,
         [_langchain_tool(name, tool, user_id, connections) for name, tool in tools.items()],
-        system_prompt=system + unavailable_note(unavailable_names),
+        system_prompt=system
+        + not_connected_note(tuple(not_connected))
+        + unavailable_note(unavailable_names),
         middleware=middleware,
         checkpointer=checkpointer,
     )

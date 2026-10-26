@@ -245,6 +245,10 @@ async def test_a_server_the_employee_has_not_connected_is_skipped_and_reported(
     assert result.not_connected == ("other",)
     names = [tool.name for tool in model.bound]
     assert names and all(name.startswith("notes__") for name in names)
+    system = model.seen[0][0]
+    assert isinstance(system, SystemMessage)
+    assert "has not connected these servers" in str(system.content)
+    assert "other" in str(system.content)
 
 
 @pytest.mark.anyio

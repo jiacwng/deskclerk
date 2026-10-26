@@ -145,8 +145,14 @@ async def test_tokens_the_server_no_longer_accepts_never_start_a_redirect(
     await connect(connections, "ada", server)
     storage = TokenStore(token_path, key).storage_for("ada", server, REDIRECT)
     await storage.set_tokens(OAuthToken(access_token="revoked", token_type="Bearer"))
+    store = TokenStore(token_path, key)
+    store.put("ada", "notes", "tool_pins", "pins")
+    store.put("ada", "notes", "always_allowed", "grants")
     with pytest.raises(NotConnected):
         await connections.tools("ada", server)
+    assert store.get("ada", "notes", "tokens") is None
+    assert store.get("ada", "notes", "tool_pins") == "pins"
+    assert store.get("ada", "notes", "always_allowed") == "grants"
 
 
 @pytest.mark.anyio
