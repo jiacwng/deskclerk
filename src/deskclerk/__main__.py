@@ -17,7 +17,7 @@ from deskclerk.audit import Audit, log_to_stdout
 from deskclerk.auth import AuthUnavailable, discover_jwks_url, jwks_signing_key
 from deskclerk.config import load_settings
 from deskclerk.connections import OAuthConnections
-from deskclerk.conversations import delete_user_threads
+from deskclerk.erasure import erase_user
 from deskclerk.jev import jev_from_environment
 from deskclerk.providers import MissingApiKey, ProviderNotInstalled, chat_model
 from deskclerk.secret_files import SecretFileError, read_secret_files
@@ -46,17 +46,17 @@ def erase(user_id: str) -> None:
     except (ValidationError, TokenKeyError) as error:
         sys.exit(f"deskclerk: {error}")
     spending_store = SpendingStore(settings.token_file.parent / SPENDING_FILE)
-    secrets = tokens.delete_user(user_id)
-    sessions = SessionStore(settings.token_file).delete_user(user_id)
-    threads = delete_user_threads(settings.token_file, user_id)
-    costs = spending_store.delete_user(user_id)
     log_to_stdout()
-    Audit(settings.audit_text, settings.audit_key).erased(
-        user_id, secrets, sessions, threads, costs
+    erased = erase_user(
+        user_id,
+        tokens,
+        SessionStore(settings.token_file),
+        spending_store,
+        Audit(settings.audit_text, settings.audit_key),
     )
     print(
-        f"deskclerk: erased {user_id}: {secrets} secrets, {sessions} sessions, "
-        f"{threads} conversations, {costs} spending rows"
+        f"deskclerk: erased {user_id}: {erased.secrets} secrets, {erased.sessions} sessions, "
+        f"{erased.threads} conversations, {erased.costs} spending rows"
     )
 
 
