@@ -393,3 +393,19 @@ async def test_a_registered_client_wins_over_the_metadata_url(token_path: Path, 
             "ada", server_record(running, preregistered=True)
         )
         assert parse_qs(urlparse(authorization_url).query)["client_id"] == [PRESET_CLIENT_ID]
+
+
+@pytest.mark.anyio
+async def test_cancelling_all_flows_of_an_employee_leaves_the_others_waiting(
+    mcp_server: RunningServer, token_path: Path, key: str
+) -> None:
+    connections = make_connections(token_path, key)
+    server = server_record(mcp_server)
+    ada_state, ada_code = await approve(await connections.begin("ada", server))
+    bob_state, bob_code = await approve(await connections.begin("bob", server))
+
+    connections.cancel_all_for("ada")
+
+    with pytest.raises(UnknownState):
+        await connections.complete("ada", ada_state, ada_code)
+    assert await connections.complete("bob", bob_state, bob_code) == server.name
