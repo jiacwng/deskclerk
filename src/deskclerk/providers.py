@@ -30,6 +30,7 @@ PRICE_PROVIDERS = {
     "azure_openai": "azure",
     "bedrock_converse": "aws",
 }
+NO_PRICE = "none"
 REGION_VARIABLES = ("AWS_REGION", "AWS_DEFAULT_REGION")
 
 
@@ -79,13 +80,15 @@ def split_model(model: str) -> tuple[str, str]:
 
 
 def cost_of(model: str, usage: Usage) -> float:
-    provider, name = split_model(model)
     uncached = usage.input_tokens - usage.cache_read_tokens - usage.cache_write_tokens
     if uncached < 0:
         raise InconsistentUsage(
             f"{usage.cache_read_tokens} cache read and {usage.cache_write_tokens} cache write "
             f"tokens exceed the {usage.input_tokens} input tokens"
         )
+    if model == NO_PRICE:
+        return 0.0
+    provider, name = split_model(model)
     try:
         calculation = calc_price(
             PriceUsage(

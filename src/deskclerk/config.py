@@ -92,6 +92,8 @@ class Settings(BaseSettings):
     @field_validator("model", "price_model")
     @classmethod
     def _provider_and_model(cls, value: str, info: ValidationInfo) -> str:
+        if info.field_name == "price_model" and value == "none":
+            return value
         provider, _, name = value.partition(":")
         if not provider or not name:
             raise ValueError(

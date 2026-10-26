@@ -202,3 +202,31 @@ def test_a_provider_package_that_is_not_installed_names_the_extra(
                 price_model="anthropic:claude-haiku-5-5",
             )
         )
+
+
+def test_the_price_model_none_costs_nothing() -> None:
+    settings = Settings(model="openai:qwen3-4b", price_model="none")
+
+    assert cost_of(settings.price_model, Usage(1_000_000, 1_000_000, 0, 0)) == 0.0
+
+
+def test_cache_tokens_beyond_the_input_tokens_are_refused_under_price_model_none() -> None:
+    with pytest.raises(InconsistentUsage):
+        cost_of("none", Usage(100, 0, 80, 30))
+
+
+def test_the_model_none_is_refused() -> None:
+    with pytest.raises(ValueError, match="DESKCLERK_MODEL is provider:model"):
+        Settings(model="none")
+
+
+def test_a_local_server_builds_at_its_base_url_with_price_model_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:9/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+
+    model = chat_model(Settings(model="openai:qwen3-4b", price_model="none"))
+
+    assert isinstance(model, ChatOpenAI)
+    assert str(model.root_client.base_url) == "http://127.0.0.1:9/v1/"
