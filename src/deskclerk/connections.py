@@ -206,6 +206,12 @@ class OAuthConnections:
                 del self._pending[state]
                 flow.task.cancel()
 
+    def cancel_all_for(self, user_id: str) -> None:
+        for state, flow in list(self._pending.items()):
+            if flow.user_id == user_id:
+                del self._pending[state]
+                flow.task.cancel()
+
     def _drop_expired_flows(self, now: float) -> None:
         for state, flow in list(self._pending.items()):
             if now > flow.deadline:

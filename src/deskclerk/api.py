@@ -19,6 +19,7 @@ from typing import Any, NoReturn
 from uuid import UUID, uuid4
 
 import anthropic
+import anyio.from_thread
 import httpx
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -282,6 +283,12 @@ def create_app(
         title="deskclerk", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan
     )
 
+    scim_users = ScimUsers(tokens.path) if settings.scim_token is not None else None
+
+    async def refuse_deactivated(user_id: str) -> None:
+        if scim_users is not None and await run_in_threadpool(scim_users.is_deactivated, user_id):
+            raise HTTPException(403, "this account has been deactivated")
+
     async def caller(request: Request) -> Caller:
         header = request.headers.get("authorization")
         if header is not None:
@@ -296,12 +303,14 @@ def create_app(
                 raise HTTPException(401, str(error), BEARER) from None
             except AuthUnavailable:
                 raise HTTPException(503, "the login server cannot be reached") from None
+            await refuse_deactivated(identity.user_id)
             return Caller(identity, by_cookie=False)
         session_identity = await run_in_threadpool(
             sessions.lookup, request.cookies.get(SESSION_COOKIE, "")
         )
         if session_identity is None:
             raise HTTPException(401, "sign in at /login", BEARER)
+        await refuse_deactivated(session_identity.user_id)
         return Caller(session_identity, by_cookie=True)
 
     async def posting_caller(request: Request, who: Caller = Depends(caller)) -> Caller:
@@ -327,13 +336,18 @@ def create_app(
                     raise HTTPException(503, "the login server cannot be reached") from None
         return discovered["endpoints"]
 
-    if settings.scim_token is not None:
+    async def erase_when_idle(user_id: str) -> None:
+        async with ask_locks.setdefault(user_id, asyncio.Lock()):
+            connections.cancel_all_for(user_id)
+            await run_in_threadpool(erase_user, user_id, tokens, sessions, spending_store, audit)
+
+    if settings.scim_token is not None and scim_users is not None:
         mount_scim(
             app,
             settings.scim_token.get_secret_value(),
             settings.public_url,
-            ScimUsers(tokens.path),
-            lambda user_id: erase_user(user_id, tokens, sessions, spending_store, audit),
+            scim_users,
+            lambda user_id: anyio.from_thread.run(erase_when_idle, user_id),
         )
 
     @app.get("/livez")
@@ -417,6 +431,7 @@ def create_app(
             raise HTTPException(401, BROWSER_AUTH_REFUSED) from None
         except AuthUnavailable:
             raise HTTPException(503, "the login server cannot be reached") from None
+        await refuse_deactivated(identity.user_id)
         session = await run_in_threadpool(sessions.create, identity, session_seconds)
         response = RedirectResponse("/", status_code=303)
         response.delete_cookie(LOGIN_COOKIE, path="/login")
@@ -554,6 +569,7 @@ def create_app(
         checkpointer: AsyncSqliteSaver = app.state.checkpointer
         thread = thread_id(identity.user_id, conversation)
         async with ask_locks.setdefault(identity.user_id, asyncio.Lock()):
+            await refuse_deactivated(identity.user_id)
             history = await saved_messages(checkpointer, thread)
             if conversation_id is not None and not history:
                 refuse(404, "no such conversation", "unknown_conversation")
