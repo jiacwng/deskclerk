@@ -40,7 +40,7 @@ Keycloak and a demo task server on ports 8000, 8080 and 8100.
 1. In `.env`, set `DESKCLERK_ISSUER`, `DESKCLERK_CLIENT_ID` and `DESKCLERK_PUBLIC_URL` for your
    login server, and register `https://<your deskclerk>/login/callback` with it.
 2. List your MCP servers in `servers.toml`. `servers.example.toml` describes each option.
-3. Start deskclerk alone with `docker compose up -d --no-deps deskclerk`, behind a reverse proxy
+3. Start deskclerk with `docker compose -f compose.prod.yaml up -d`, behind a reverse proxy
    that serves HTTPS. With Caddy this is enough:
 
    ```
