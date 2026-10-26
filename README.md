@@ -51,7 +51,8 @@ Keycloak and a demo task server on ports 8000, 8080 and 8100.
 
 `.env.example` describes every other setting: the model provider, the screen, budgets, retention
 and tracing. Keep `DESKCLERK_TOKEN_KEY`, because the stored tokens and conversations are encrypted
-with it. Run one container, because quotas and pending sign-ins live in its memory.
+with it. Run one container, because quotas and pending sign-ins live in its memory. With a
+TypeSafe key, each request and every tool result are also sent to TypeSafe's API to be screened.
 `docker compose exec deskclerk python -m deskclerk erase <user_id>` deletes one employee's data.
 
 ## Results
