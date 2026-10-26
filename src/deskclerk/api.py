@@ -39,6 +39,7 @@ from deskclerk.agent import (
     WrongDecisions,
     no_tool_span,
     run_agent,
+    waiting_calls,
 )
 from deskclerk.audit import Audit
 from deskclerk.auth import (
@@ -64,6 +65,7 @@ from deskclerk.connections import (
 from deskclerk.conversations import (
     last_request,
     open_checkpointer,
+    past_turns,
     saved_messages,
     thread_id,
 )
@@ -168,6 +170,17 @@ class PendingOut(BaseModel):
     arguments: dict[str, Any]
     destructive: bool
     always_allowable: bool
+
+
+class TurnOut(BaseModel):
+    request: str
+    answer: str
+
+
+class ConversationOut(BaseModel):
+    conversation: UUID
+    turns: list[TurnOut]
+    pending: list[PendingOut]
 
 
 class AskOut(BaseModel):
@@ -519,6 +532,31 @@ def create_app(
         await run_in_threadpool(tokens.delete_connection, who.identity.user_id, server.name)
         audit.connection(who.identity, "disconnect", server.name)
         return Response(status_code=204)
+
+    @app.get("/conversations/{conversation_id}")
+    async def conversation_turns(
+        conversation_id: UUID, who: Caller = Depends(caller)
+    ) -> ConversationOut:
+        checkpointer: AsyncSqliteSaver = app.state.checkpointer
+        thread = thread_id(who.identity.user_id, conversation_id)
+        history = await saved_messages(checkpointer, thread)
+        if not history:
+            raise HTTPException(404, "no such conversation")
+        waiting = await waiting_calls(
+            who.identity.user_id,
+            [s for s in servers if s.open_to(who.identity.groups)],
+            connections,
+            tokens,
+            checkpointer,
+            thread,
+        )
+        return ConversationOut(
+            conversation=conversation_id,
+            turns=[
+                TurnOut(request=request, answer=answer) for request, answer in past_turns(history)
+            ],
+            pending=[PendingOut(**vars(call)) for call in waiting],
+        )
 
     @app.post("/ask")
     async def ask(body: AskBody, who: Caller = Depends(posting_caller)) -> AskOut:
