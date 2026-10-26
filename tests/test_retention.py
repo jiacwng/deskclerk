@@ -2,16 +2,25 @@
 # keeps a newer one; zero days keeps everything.
 
 import asyncio
+import logging
+import sqlite3
 import time
 from pathlib import Path
 
+import pytest
 from cryptography.fernet import Fernet
 from langgraph.checkpoint.base.id import UUID
 
+from deskclerk import retention
 from deskclerk.auth import SigningKeyLookup
 from deskclerk.config import Settings
 from deskclerk.conversations import open_checkpointer
-from deskclerk.retention import TICKS_PER_SECOND, UUID_EPOCH_TICKS, delete_old_threads
+from deskclerk.retention import (
+    TICKS_PER_SECOND,
+    UUID_EPOCH_TICKS,
+    delete_old_threads,
+    delete_old_threads_daily,
+)
 from test_agent import script
 from test_api import make_settings, web
 from test_erase import KEY, rows, save_thread
@@ -69,3 +78,37 @@ def test_the_server_deletes_old_threads_at_startup_and_zero_keeps_them(
     start_server(30, token_settings, token_signing_key, tmp_path)
     assert rows(path, "SELECT COUNT(*) FROM checkpoints") == [(0,)]
     assert rows(path, "SELECT COUNT(*) FROM writes") == [(0,)]
+
+
+def test_a_failed_daily_sweep_is_logged_and_the_next_one_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    runs = 0
+    sleeps = 0
+
+    async def fake_sleep(seconds: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps > 2:
+            raise asyncio.CancelledError
+
+    async def failing_first(checkpointer: object, days: int) -> int:
+        nonlocal runs
+        runs += 1
+        if runs == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return 0
+
+    async def run() -> None:
+        async with open_checkpointer(tmp_path / "tokens.sqlite", Fernet(KEY)) as saver:
+            await delete_old_threads_daily(saver, 30)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(retention, "delete_old_threads", failing_first)
+    caplog.set_level(logging.ERROR, logger="deskclerk.retention")
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(run())
+
+    assert runs == 2
+    assert "database is locked" in caplog.text
