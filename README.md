@@ -5,7 +5,10 @@
 deskclerk is an agent that works in a company's tools for its employees. An admin lists the
 company's MCP servers. Employees sign in with the company login, connect their own accounts and
 ask in plain words. A call that changes data waits until the employee approves it in the page.
-Tool results are screened for prompt injection, and every request goes to an audit log.
+Before a tool result reaches the model, it is screened for prompt injection: text in an email,
+page or ticket that tries to make the agent do something the employee did not ask for. The screen
+is Jev, a hosted model from TypeSafe that answers yes or no questions about text. Every request
+goes to an audit log.
 
 ```mermaid
 flowchart LR
@@ -17,10 +20,12 @@ flowchart LR
 
 ## Try it
 
-You need Docker with Compose and an Anthropic API key. This runs deskclerk, a development
-Keycloak and a demo task server on ports 8000, 8080 and 8100.
+You need Docker with Compose and an API key for one model provider: Anthropic, OpenAI, Azure
+OpenAI or AWS Bedrock. This runs deskclerk, a development Keycloak and a demo task server on ports
+8000, 8080 and 8100.
 
-1. Copy `.env.example` to `.env`. Fill in `ANTHROPIC_API_KEY`, and make `DESKCLERK_TOKEN_KEY` and
+1. Copy `.env.example` to `.env`. Fill in `ANTHROPIC_API_KEY`, or set `DESKCLERK_MODEL` and your
+   provider's key as `.env.example` shows. Make `DESKCLERK_TOKEN_KEY` and
    `DESKCLERK_SESSION_KEY` with the two `python3` commands in the file. Without a TypeSafe key,
    also set `DESKCLERK_ALLOW_UNSCREENED=true`.
 2. Copy `servers.example.toml` to `servers.toml`. It lists the demo task server, which needs no
