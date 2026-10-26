@@ -191,19 +191,34 @@ class Caller:
     by_cookie: bool
 
 
-# The page is one file with one script and one style block, so the policy allows exactly those
-# two blocks by hash and nothing else.
-def _content_security_policy(page: str) -> str:
-    sources = []
+VENDOR_SCRIPTS = ("marked-18.1.0.umd.js", "purify-3.4.16.min.js")
+
+
+def _sha256_source(data: bytes) -> str:
+    return "sha256-" + base64.b64encode(hashlib.sha256(data).digest()).decode()
+
+
+# The page has one inline script, one style block and two vendored scripts, so the policy allows
+# exactly those by hash and nothing else. Each vendored script carries an integrity attribute that
+# must equal the hash of the file the app serves, which browsers need to match a hash to a file.
+def _content_security_policy(page: str, vendor: dict[str, bytes]) -> str:
+    blocks = {}
     for tag in ("script", "style"):
         match = re.search(rf"<{tag}>(.*?)</{tag}>", page, re.DOTALL)
         if match is None:
             raise ValueError(f"index.html has no <{tag}> block")
-        digest = base64.b64encode(hashlib.sha256(match.group(1).encode()).digest()).decode()
-        sources.append(f"{tag}-src 'sha256-{digest}'")
+        blocks[tag] = [_sha256_source(match.group(1).encode())]
+    for name, data in vendor.items():
+        source = _sha256_source(data)
+        if f'<script src="/vendor/{name}" integrity="{source}"></script>' not in page:
+            raise ValueError(f"index.html does not load vendor/{name} with integrity {source}")
+        blocks["script"].append(source)
     fixed = ["default-src 'none'", "connect-src 'self'", "base-uri 'none'"]
     fixed += ["form-action 'self'", "frame-ancestors 'none'"]
-    return "; ".join([*fixed, *sources])
+    allowed = [
+        f"{tag}-src " + " ".join(f"'{source}'" for source in found) for tag, found in blocks.items()
+    ]
+    return "; ".join([*fixed, *allowed])
 
 
 def create_app(
@@ -238,8 +253,12 @@ def create_app(
     )
     server_by_name = {server.name: server for server in servers}
     page = resources.files("deskclerk").joinpath("static/index.html").read_text(encoding="utf-8")
+    vendor = {
+        name: resources.files("deskclerk").joinpath(f"static/vendor/{name}").read_bytes()
+        for name in VENDOR_SCRIPTS
+    }
     page_headers = {
-        "Content-Security-Policy": _content_security_policy(page),
+        "Content-Security-Policy": _content_security_policy(page, vendor),
         "Cache-Control": "no-store",
         "X-Content-Type-Options": "nosniff",
         "Referrer-Policy": "no-referrer",
@@ -341,6 +360,17 @@ def create_app(
     @app.get("/", response_class=HTMLResponse)
     async def index() -> HTMLResponse:
         return HTMLResponse(page, headers=page_headers)
+
+    @app.get("/vendor/{name}")
+    async def vendor_script(name: str) -> Response:
+        script = vendor.get(name)
+        if script is None:
+            raise HTTPException(404, f"no script named {name}")
+        headers = {
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "public, max-age=31536000, immutable",
+        }
+        return Response(script, media_type="text/javascript", headers=headers)
 
     @app.get("/login")
     async def login() -> Response:
