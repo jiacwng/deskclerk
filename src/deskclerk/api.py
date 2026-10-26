@@ -601,6 +601,7 @@ def create_app(
                             jev_tool_selection(jev, settings.tool_selection, spending.record_jev),
                             tool_output_chars=settings.tool_output_chars,
                             history_tokens=settings.history_tokens,
+                            listing_seconds=settings.listing_seconds,
                             confirm_writes=True,
                             decisions=decisions,
                             executed=executed,
