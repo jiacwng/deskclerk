@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
+from deskclerk.database import connect
 from deskclerk.jev import PRICE_PER_INPUT_TOKEN
 from deskclerk.providers import BudgetExceeded, Usage, cost_of
 
@@ -35,7 +36,7 @@ class SpendingStore:
 
     @contextmanager
     def _database(self) -> Iterator[sqlite3.Connection]:
-        database = sqlite3.connect(self._path)
+        database = connect(self._path)
         try:
             with database:
                 yield database

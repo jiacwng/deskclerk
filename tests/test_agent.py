@@ -707,6 +707,15 @@ async def saver(connections: OAuthConnections) -> AsyncIterator[AsyncSqliteSaver
 
 
 @pytest.mark.anyio
+async def test_the_checkpointer_opens_its_file_in_write_ahead_log_mode(tmp_path: Path) -> None:
+    path = tmp_path / "conversations.sqlite"
+    async with open_checkpointer(path, Fernet(Fernet.generate_key())):
+        pass
+    with sqlite3.connect(path) as database:
+        assert database.execute("PRAGMA journal_mode").fetchone() == ("wal",)
+
+
+@pytest.mark.anyio
 async def test_a_follow_up_sees_the_earlier_turn_and_its_per_ask_fields_stay_per_ask(
     mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
 ) -> None:

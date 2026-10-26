@@ -2,7 +2,6 @@
 # token file, encrypted with the token key. A thread id starts with the employee's id, so one
 # employee can never load another's. Erasing an employee deletes every thread with their prefix.
 
-import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,6 +14,8 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMe
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.serde.encrypted import EncryptedSerializer
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+from deskclerk.database import BUSY_TIMEOUT_SECONDS, connect
 
 CIPHER_NAME = "fernet"
 
@@ -34,7 +35,8 @@ class FernetCipher:
 
 @asynccontextmanager
 async def open_checkpointer(path: Path, fernet: Fernet) -> AsyncIterator[AsyncSqliteSaver]:
-    async with aiosqlite.connect(path) as connection:
+    async with aiosqlite.connect(path, timeout=BUSY_TIMEOUT_SECONDS) as connection:
+        await connection.execute("PRAGMA journal_mode=WAL")
         yield AsyncSqliteSaver(connection, serde=EncryptedSerializer(FernetCipher(fernet)))
 
 
@@ -44,7 +46,7 @@ def thread_id(user_id: str, conversation: UUID) -> str:
 
 def delete_user_threads(path: Path, user_id: str) -> int:
     prefix = f"{user_id}/"
-    database = sqlite3.connect(path)
+    database = connect(path)
     try:
         with database:
             tables = {row[0] for row in database.execute("SELECT name FROM sqlite_master")}
