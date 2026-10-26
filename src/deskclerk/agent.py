@@ -94,6 +94,7 @@ class BlockedCall:
     tool: str
     arguments: dict[str, Any]
     reason: str
+    rejected: bool
 
 
 Decision = Literal["approve", "approve_always", "reject"]
@@ -104,6 +105,7 @@ class PendingCall:
     id: str
     server: str
     tool: str
+    description: str
     arguments: dict[str, Any]
     destructive: bool
     always_allowable: bool
@@ -325,7 +327,9 @@ class _Guard(AgentMiddleware[AgentState[Any], None, Any]):
                 verdict = await shared.gate(proposed)
                 if not verdict.allowed:
                     shared.blocked.append(
-                        BlockedCall(tool.server.name, tool.info.name, call["args"], verdict.reason)
+                        BlockedCall(
+                            tool.server.name, tool.info.name, call["args"], verdict.reason, False
+                        )
                     )
                     text = f"This call was blocked and not run: {verdict.reason}"
                     return ToolMessage(text, tool_call_id=call_id, status="error")
@@ -527,7 +531,7 @@ async def run_agent(
     for call, choice in decided:
         if choice == "reject":
             shared.blocked.append(
-                BlockedCall(call.server, call.tool, call.arguments, "the employee declined")
+                BlockedCall(call.server, call.tool, call.arguments, "the employee declined", True)
             )
         if choice == "approve_always":
             allow_tool(tokens, user_id, call.server, tools[f"{call.server}__{call.tool}"].info)
@@ -554,6 +558,7 @@ async def run_agent(
 
 _REVIEW: InterruptOnConfig = {"allowed_decisions": ["approve", "reject"]}
 _REJECTION = "User rejected the tool call"
+_DESCRIPTION_CHARS = 160
 
 
 def _confirmation(
@@ -613,9 +618,26 @@ def _pending_call(interrupt: Interrupt, tools: dict[str, _Tool]) -> PendingCall:
     always_allowable = (
         waiting_tool is not None and not destructive and waiting_tool.server.always_allow
     )
+    description = "" if waiting_tool is None else _first_sentence(waiting_tool.info.description)
     return PendingCall(
-        interrupt.id, server, tool, interrupt.value["args"], destructive, always_allowable
+        interrupt.id,
+        server,
+        tool,
+        description,
+        interrupt.value["args"],
+        destructive,
+        always_allowable,
     )
+
+
+def _first_sentence(description: str) -> str:
+    text = " ".join(description.split())
+    sentence_end = text.find(". ")
+    if sentence_end != -1:
+        text = text[: sentence_end + 1]
+    if len(text) > _DESCRIPTION_CHARS:
+        text = text[: _DESCRIPTION_CHARS - 1].rstrip() + "…"
+    return text
 
 
 def _decided_calls(

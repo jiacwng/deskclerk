@@ -604,6 +604,7 @@ def test_a_write_that_fails_the_write_check_never_reaches_the_server(
     [blocked] = body["blocked"]
     assert blocked["tool"] == "write_note"
     assert blocked["reason"].startswith("schema check:")
+    assert blocked["rejected"] is False
 
 
 def test_a_request_must_be_between_1_and_4000_characters(
@@ -1513,6 +1514,7 @@ def test_a_rejected_write_never_runs_and_the_model_reads_that_it_was_declined(
     assert [(c["tool"], c["reason"]) for c in done["blocked"]] == [
         ("write_note", "the employee declined")
     ]
+    assert [c["rejected"] for c in done["blocked"]] == [True]
     assert done["answer"] == "understood"
     assert "The tool was not executed" in str(model.seen[1][-1].content)
 
@@ -1672,6 +1674,7 @@ def test_a_destructive_call_cannot_be_always_allowed_and_a_non_destructive_one_c
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger="deskclerk.audit")
+    append_server.redescribe_append_note("Appends a line to the notes. Nothing is removed.")
     model = script(
         calls(("notes__delete_note", {"note_id": "n-1"})),
         answer("deleted"),
@@ -1696,6 +1699,7 @@ def test_a_destructive_call_cannot_be_always_allowed_and_a_non_destructive_one_c
         [waiting] = paused["pending"]
         assert waiting["destructive"] is False
         assert waiting["always_allowable"] is True
+        assert waiting["description"] == "Appends a line to the notes."
         always = confirm(site, ada, paused["conversation"], {waiting["id"]: "approve_always"})
         assert always.json()["answer"] == "appended"
         automatic = ask(site, ada, "append two").json()
