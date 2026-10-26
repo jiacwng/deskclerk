@@ -139,6 +139,7 @@ async def run(
     thread: str = "ada/test",
     tool_output_chars: int = 20000,
     history_tokens: int = 40000,
+    listing_seconds: float = 18,
     confirm_writes: bool = False,
     decisions: dict[str, Decision] | None = None,
 ) -> AgentResult:
@@ -161,6 +162,7 @@ async def run(
         tool_span,
         tool_output_chars=tool_output_chars,
         history_tokens=history_tokens,
+        listing_seconds=listing_seconds,
         confirm_writes=confirm_writes,
         decisions=decisions,
     )
@@ -362,6 +364,30 @@ class SlowListing(OAuthConnections):
     async def tools(self, user_id: str, server: McpServer) -> list[ToolInfo]:
         await asyncio.sleep(1)
         return await super().tools(user_id, server)
+
+
+class HangingListing(OAuthConnections):
+    async def tools(self, user_id: str, server: McpServer) -> list[ToolInfo]:
+        if server.name == "hangs":
+            await asyncio.sleep(60)
+        return await super().tools(user_id, server)
+
+
+@pytest.mark.anyio
+async def test_a_server_whose_listing_hangs_is_unavailable_and_the_others_still_answer(
+    tmp_path: Path,
+) -> None:
+    store = TokenStore(tmp_path / "tokens.sqlite", Fernet.generate_key().decode())
+    connections = HangingListing(store, REDIRECT, "deskclerk test", 600)
+    with running_mcp_server(REDIRECT, oauth=False) as working:
+        servers = [gone_server("hangs"), McpServer("notes", working.url, None, None, "none")]
+        model = script(calls(("notes__read_note", {})), answer("ok"))
+        started = time.monotonic()
+        result = await run(connections, servers, model, listing_seconds=0.5)
+        elapsed = time.monotonic() - started
+    assert result.unavailable == ("hangs",)
+    assert [call.result for call in result.executed] == ["the note"]
+    assert elapsed < 5
 
 
 @pytest.mark.anyio
@@ -1252,7 +1278,7 @@ async def test_a_read_before_any_flag_runs_without_asking(
 
 
 @pytest.mark.anyio
-async def test_a_flag_from_an_earlier_turn_does_not_gate_the_next_request(
+async def test_a_flag_from_an_earlier_turn_gates_the_next_request_while_its_text_is_sent(
     mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
 ) -> None:
     servers = [server_record(mcp_server)]
@@ -1266,6 +1292,32 @@ async def test_a_flag_from_an_earlier_turn_does_not_gate_the_next_request(
     )
     model = script(calls(("notes__read_note", {})), answer("again"))
     second = await run(connections, servers, model, checkpointer=saver, confirm_writes=True)
+    assert [(call.server, call.tool) for call in second.pending] == [("notes", "read_note")]
+
+
+@pytest.mark.anyio
+async def test_a_flag_stops_gating_once_the_flagged_result_is_trimmed_from_the_history(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
+) -> None:
+    servers = [server_record(mcp_server)]
+    await run(
+        connections,
+        servers,
+        script(calls(("notes__read_note", {})), answer("seen")),
+        screen=RecordingScreen(FLAGGED),
+        checkpointer=saver,
+        confirm_writes=True,
+    )
+    model = script(calls(("notes__read_note", {})), answer("again"))
+    second = await run(
+        connections,
+        servers,
+        model,
+        request="b" * 1000,
+        checkpointer=saver,
+        confirm_writes=True,
+        history_tokens=100,
+    )
     assert (second.pending, second.answer) == ((), "again")
 
 
@@ -1607,3 +1659,46 @@ async def test_an_always_allowed_tool_pauses_again_after_a_flagged_result_in_the
     )
     assert [note[1] for note in append_server.notes] == ["one"]
     assert [call.decision for call in rejected.decided] == ["reject"]
+
+
+@pytest.mark.anyio
+async def test_a_confirm_tool_waits_for_the_card_though_the_server_calls_it_read_only(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
+) -> None:
+    forced = replace(server_record(mcp_server), confirm_tools=("read_note",))
+    model = script(calls(("notes__read_note", {})), answer("done"))
+    paused = await run(connections, [forced], model, checkpointer=saver, confirm_writes=True)
+    assert [call.tool for call in paused.pending] == ["read_note"]
+    assert paused.pending[0].destructive
+    assert not paused.pending[0].always_allowable
+    with pytest.raises(AlwaysAllowRefused):
+        await run(
+            connections,
+            [forced],
+            model,
+            checkpointer=saver,
+            confirm_writes=True,
+            decisions={paused.pending[0].id: "approve_always"},
+        )
+
+
+@pytest.mark.anyio
+async def test_a_read_only_tool_not_in_confirm_tools_runs_without_a_card(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    other = replace(server_record(mcp_server), confirm_tools=("write_note",))
+    model = script(calls(("notes__read_note", {})), answer("done"))
+    result = await run(connections, [other], model, confirm_writes=True)
+    assert result.pending == ()
+    assert result.answer == "done"
+
+
+@pytest.mark.anyio
+async def test_an_unknown_confirm_tool_is_logged_and_the_rest_still_work(
+    mcp_server: RunningServer, connections: OAuthConnections, caplog: pytest.LogCaptureFixture
+) -> None:
+    odd = replace(server_record(mcp_server), confirm_tools=("no_such_tool",))
+    model = script(calls(("notes__read_note", {})), answer("done"))
+    result = await run(connections, [odd], model, confirm_writes=True)
+    assert result.answer == "done"
+    assert "no_such_tool" in caplog.text
