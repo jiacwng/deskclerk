@@ -7,7 +7,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal, cast
 
 from langchain.agents import create_agent
@@ -222,6 +222,26 @@ def _names_the_model_accepts(server: str, listed: list[ToolInfo]) -> list[ToolIn
             continue
         accepted.append(info)
     return accepted
+
+
+def _confirming(server: McpServer, kept: tuple[ToolInfo, ...]) -> list[ToolInfo]:
+    return [
+        replace(info, read_only=False, destructive=True)
+        if info.name in server.confirm_tools
+        else info
+        for info in kept
+    ]
+
+
+def _warn_of_unknown_confirm_tools(server: McpServer, listed: list[ToolInfo]) -> None:
+    listed_names = {info.name for info in listed}
+    for name in server.confirm_tools:
+        if name not in listed_names:
+            _log.warning(
+                "server %s lists %s in confirm_tools, but the server has no such tool",
+                server.name,
+                name,
+            )
 
 
 async def _list_tools(
@@ -450,14 +470,16 @@ async def run_agent(
             unavailable.append(listing.failure)
             continue
         listed = listing.tools
+        _warn_of_unknown_confirm_tools(server, listed)
         if server.tools is not None:
             listed = [info for info in listed if info.name in server.tools]
         listed = _names_the_model_accepts(server.name, listed)
         pinned = pin_tools(tokens, user_id, server.name, listed)
         changed_tools += [f"{server.name}__{name}" for name in pinned.changed]
-        for info in pinned.kept:
+        kept = tuple(_confirming(server, pinned.kept))
+        for info in kept:
             tools[f"{server.name}__{info.name}"] = _Tool(server, info)
-        for info in allowed_tools(tokens, user_id, server.name, pinned.kept):
+        for info in allowed_tools(tokens, user_id, server.name, kept):
             if server.always_allow and not info.destructive:
                 always.add(f"{server.name}__{info.name}")
     listed_any = len(listings) > len(not_connected) + len(unavailable)

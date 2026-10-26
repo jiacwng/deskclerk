@@ -1655,3 +1655,46 @@ async def test_an_always_allowed_tool_pauses_again_after_a_flagged_result_in_the
     )
     assert [note[1] for note in append_server.notes] == ["one"]
     assert [call.decision for call in rejected.decided] == ["reject"]
+
+
+@pytest.mark.anyio
+async def test_a_confirm_tool_waits_for_the_card_though_the_server_calls_it_read_only(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
+) -> None:
+    forced = replace(server_record(mcp_server), confirm_tools=("read_note",))
+    model = script(calls(("notes__read_note", {})), answer("done"))
+    paused = await run(connections, [forced], model, checkpointer=saver, confirm_writes=True)
+    assert [call.tool for call in paused.pending] == ["read_note"]
+    assert paused.pending[0].destructive
+    assert not paused.pending[0].always_allowable
+    with pytest.raises(AlwaysAllowRefused):
+        await run(
+            connections,
+            [forced],
+            model,
+            checkpointer=saver,
+            confirm_writes=True,
+            decisions={paused.pending[0].id: "approve_always"},
+        )
+
+
+@pytest.mark.anyio
+async def test_a_read_only_tool_not_in_confirm_tools_runs_without_a_card(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    other = replace(server_record(mcp_server), confirm_tools=("write_note",))
+    model = script(calls(("notes__read_note", {})), answer("done"))
+    result = await run(connections, [other], model, confirm_writes=True)
+    assert result.pending == ()
+    assert result.answer == "done"
+
+
+@pytest.mark.anyio
+async def test_an_unknown_confirm_tool_is_logged_and_the_rest_still_work(
+    mcp_server: RunningServer, connections: OAuthConnections, caplog: pytest.LogCaptureFixture
+) -> None:
+    odd = replace(server_record(mcp_server), confirm_tools=("no_such_tool",))
+    model = script(calls(("notes__read_note", {})), answer("done"))
+    result = await run(connections, [odd], model, confirm_writes=True)
+    assert result.answer == "done"
+    assert "no_such_tool" in caplog.text
