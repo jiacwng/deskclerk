@@ -941,6 +941,7 @@ def test_the_page_shows_the_calls_that_ran_before_a_failure(
     assert "These calls ran before the error" in page
     assert "body?.calls" in page
     assert "if (!kept) discardTurn" in page
+    assert "failTurn(turn" in page
 
 
 def test_the_page_renders_answers_as_cleaned_markdown_and_hides_not_connected_notes(
