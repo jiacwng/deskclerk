@@ -62,8 +62,13 @@ OpenAI or AWS Bedrock. This runs deskclerk, a development Keycloak and a demo ta
 
 `.env.example` describes every other setting: the model provider, the screen, budgets, retention
 and tracing. Keep `DESKCLERK_TOKEN_KEY`, because the stored tokens and conversations are encrypted
-with it. Run one container, because quotas and pending sign-ins live in its memory. With a
-TypeSafe key, each request and every tool result are also sent to TypeSafe's API to be screened.
+with it. With a TypeSafe key, each request and every tool result are also sent to TypeSafe's API
+to be screened.
+
+All state lives in one Postgres database. `compose.prod.yaml` starts it and sets
+`DESKCLERK_DATABASE_URL` from `POSTGRES_PASSWORD`, which you set in `.env` with letters and digits
+only. To use your own Postgres, set `DESKCLERK_DATABASE_URL` instead. Several copies of deskclerk
+can run behind a load balancer on one database, and each copy opens up to 41 connections.
 
 ## Operate it
 
@@ -72,8 +77,9 @@ TypeSafe key, each request and every tool result are also sent to TypeSafe's API
 - `... python -m deskclerk erase <user_id>` deletes one employee's data. The user id is the
   `DESKCLERK_USER_CLAIM` value, the object ID on Entra ID. With SCIM, the login server does this
   when it removes the employee.
-- To back up, run `docker compose -f compose.prod.yaml stop`, then
-  `docker compose -f compose.prod.yaml cp deskclerk:/app/data ./backup`. Keep the token key with it.
+- To back up, run
+  `docker compose -f compose.prod.yaml exec postgres pg_dump -U deskclerk deskclerk > backup.sql`.
+  Keep the token key with it.
 - To upgrade, run `git pull`, then `docker compose -f compose.prod.yaml up -d --build`.
 - `/livez` answers while the process runs, and `/readyz` once it can serve.
 - Sign-in and connection failures are logged with their reason. The audit log is one JSON line per

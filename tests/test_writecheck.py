@@ -1,7 +1,7 @@
 # The write gate: schema first, then ids a destructive call names. One integration test runs a
 # refused delete through the agent against the real test MCP server.
 
-from pathlib import Path
+from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
@@ -9,13 +9,14 @@ from cryptography.fernet import Fernet
 from langgraph.checkpoint.memory import InMemorySaver
 
 from deskclerk.agent import ProposedCall, run_agent
-from deskclerk.connections import ToolInfo
+from deskclerk.connections import OAuthConnections, ToolInfo
 from deskclerk.conversations import open_checkpointer, saved_messages
+from deskclerk.database import Database
 from deskclerk.screen import pass_through
 from deskclerk.writecheck import write_check
 from mcp_server import running_mcp_server
 from test_agent import answer, calls, script
-from test_connections import REDIRECT, connect, make_connections, server_record
+from test_connections import REDIRECT, connect, server_record, serving_connections
 
 DELETE_SCHEMA = {
     "type": "object",
@@ -123,9 +124,16 @@ async def test_the_write_check_allows_a_call_only_when_its_ids_are_grounded(
         assert reason in verdict.reason
 
 
+@pytest.fixture
+async def connections(database: Database) -> AsyncIterator[OAuthConnections]:
+    async with serving_connections(database, Fernet.generate_key().decode()) as running:
+        yield running
+
+
 @pytest.mark.anyio
-async def test_a_delete_of_an_unseen_id_never_reaches_the_server(tmp_path: Path) -> None:
-    connections = make_connections(tmp_path / "tokens.sqlite", Fernet.generate_key().decode())
+async def test_a_delete_of_an_unseen_id_never_reaches_the_server(
+    connections: OAuthConnections,
+) -> None:
     with running_mcp_server(REDIRECT, delete_tool=True) as running:
         server = server_record(running)
         await connect(connections, "ada", server)
@@ -153,35 +161,36 @@ async def test_a_delete_of_an_unseen_id_never_reaches_the_server(tmp_path: Path)
 
 
 @pytest.mark.anyio
-async def test_a_delete_may_name_an_id_the_employee_gave_in_an_earlier_turn(tmp_path: Path) -> None:
-    connections = make_connections(tmp_path / "tokens.sqlite", Fernet.generate_key().decode())
+async def test_a_delete_may_name_an_id_the_employee_gave_in_an_earlier_turn(
+    connections: OAuthConnections,
+) -> None:
     with running_mcp_server(REDIRECT, delete_tool=True) as running:
         server = server_record(running)
         await connect(connections, "ada", server)
-        async with open_checkpointer(connections.tokens.path, connections.tokens.fernet) as saver:
-            for request, model in (
-                ("note n-7 is the old one", script(answer("Noted."))),
-                (
-                    "delete it",
-                    script(calls(("notes__delete_note", {"note_id": "n-7"})), answer("deleted")),
-                ),
-            ):
-                result = await run_agent(
-                    "ada",
-                    request,
-                    "system",
-                    [server],
-                    connections,
-                    connections.tokens,
-                    saver,
-                    "ada/test",
-                    await saved_messages(saver, "ada/test"),
-                    model,
-                    write_check(),
-                    pass_through,
-                    5,
-                    lambda usage: None,
-                    confirm_writes=False,
-                )
+        saver = await open_checkpointer(connections.tokens.database, connections.tokens.fernet)
+        for request, model in (
+            ("note n-7 is the old one", script(answer("Noted."))),
+            (
+                "delete it",
+                script(calls(("notes__delete_note", {"note_id": "n-7"})), answer("deleted")),
+            ),
+        ):
+            result = await run_agent(
+                "ada",
+                request,
+                "system",
+                [server],
+                connections,
+                connections.tokens,
+                saver,
+                "ada/test",
+                await saved_messages(saver, "ada/test"),
+                model,
+                write_check(),
+                pass_through,
+                5,
+                lambda usage: None,
+                confirm_writes=False,
+            )
     assert running.deleted == ["n-7"]
     assert result.blocked == ()

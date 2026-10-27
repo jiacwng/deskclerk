@@ -1,19 +1,18 @@
 # SCIM 2.0 (RFC 7643 and 7644) User endpoints under /scim/v2, so an identity provider can tell
 # deskclerk that an employee left. Deactivating or deleting a user erases their data. The users
-# the provider created are kept in one SQLite table; groups are not supported. The wire models,
+# the provider created are kept in one Postgres table; groups are not supported. The wire models,
 # filter parser, PATCH engine and error bodies come from scim2-models.
 
 import hmac
-import sqlite3
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, FastAPI, Header, Request, Response
 from fastapi.responses import JSONResponse
+from psycopg.errors import UniqueViolation
 from pydantic import ValidationError
 from scim2_models import (
     AuthenticationScheme,
@@ -46,7 +45,7 @@ from scim2_models import (
 )
 from scim2_models.path.expressions import CompareOperator, Comparison
 
-from deskclerk.database import connect
+from deskclerk.database import Database
 
 MAX_PAGE = 100
 UserModel = User[Any]
@@ -83,66 +82,59 @@ class ScimUser:
 
 
 class ScimUsers:
-    def __init__(self, path: Path) -> None:
-        self._path = path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with self._database() as database:
-            database.execute(
-                "CREATE TABLE IF NOT EXISTS scim_users ("
-                "id TEXT PRIMARY KEY, external_id TEXT NOT NULL UNIQUE, "
-                "user_name TEXT NOT NULL UNIQUE COLLATE NOCASE, active INTEGER NOT NULL)"
-            )
-
-    @contextmanager
-    def _database(self) -> Iterator[sqlite3.Connection]:
-        database = connect(self._path)
-        try:
-            with database:
-                yield database
-        finally:
-            database.close()
+    def __init__(self, database: Database) -> None:
+        self._pool = database.pool
+        database.create_tables(
+            "CREATE TABLE IF NOT EXISTS scim_users ("
+            "position BIGSERIAL, id TEXT PRIMARY KEY, external_id TEXT NOT NULL UNIQUE, "
+            "user_name TEXT NOT NULL, active BOOLEAN NOT NULL)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS scim_users_user_name "
+            "ON scim_users (lower(user_name))",
+        )
 
     def add(self, external_id: str, user_name: str, active: bool) -> ScimUser:
         user = ScimUser(str(uuid.uuid4()), external_id, user_name, active)
-        with self._database() as database:
-            database.execute(
-                "INSERT INTO scim_users (id, external_id, user_name, active) VALUES (?, ?, ?, ?)",
-                (user.id, user.external_id, user.user_name, int(user.active)),
+        with self._pool.connection() as connection:
+            connection.execute(
+                "INSERT INTO scim_users (id, external_id, user_name, active) "
+                "VALUES (%s, %s, %s, %s)",
+                (user.id, user.external_id, user.user_name, user.active),
             )
         return user
 
     def get(self, user_id: str) -> ScimUser | None:
-        users = self._select("WHERE id = ?", (user_id,))
+        users = self._select("WHERE id = %s", (user_id,))
         return users[0] if users else None
 
     def find(self, attribute: str | None, value: str | None) -> list[ScimUser]:
         if attribute == "externalId":
-            return self._select("WHERE external_id = ?", (value,))
+            return self._select("WHERE external_id = %s", (value,))
         if attribute == "userName":
-            return self._select("WHERE user_name = ?", (value,))
+            return self._select("WHERE lower(user_name) = lower(%s)", (value,))
         return self._select("", ())
 
     def is_deactivated(self, external_id: str) -> bool:
         return any(not user.active for user in self.find("externalId", external_id))
 
     def save(self, user: ScimUser) -> None:
-        with self._database() as database:
-            database.execute(
-                "UPDATE scim_users SET external_id = ?, user_name = ?, active = ? WHERE id = ?",
-                (user.external_id, user.user_name, int(user.active), user.id),
+        with self._pool.connection() as connection:
+            connection.execute(
+                "UPDATE scim_users SET external_id = %s, user_name = %s, active = %s WHERE id = %s",
+                (user.external_id, user.user_name, user.active, user.id),
             )
 
     def delete(self, user_id: str) -> None:
-        with self._database() as database:
-            database.execute("DELETE FROM scim_users WHERE id = ?", (user_id,))
+        with self._pool.connection() as connection:
+            connection.execute("DELETE FROM scim_users WHERE id = %s", (user_id,))
 
     def _select(self, where: str, arguments: tuple[str | None, ...]) -> list[ScimUser]:
-        with self._database() as database:
-            rows = database.execute(
-                f"SELECT id, external_id, user_name, active FROM scim_users {where} ORDER BY rowid",  # noqa: S608
+        with self._pool.connection() as connection:
+            rows = connection.execute(
+                "SELECT id, external_id, user_name, active FROM scim_users "  # noqa: S608
+                f"{where} ORDER BY position",
                 arguments,
             ).fetchall()
-        return [ScimUser(row[0], row[1], row[2], bool(row[3])) for row in rows]
+        return [ScimUser(row[0], row[1], row[2], row[3]) for row in rows]
 
 
 @contextmanager
@@ -222,7 +214,7 @@ def mount_scim(
     def save(user: ScimUser) -> ScimUser:
         try:
             users.save(user)
-        except sqlite3.IntegrityError:
+        except UniqueViolation:
             raise UniquenessException(detail="userName or externalId is already used") from None
         if not user.active:
             erase(user.external_id)
@@ -284,7 +276,7 @@ def mount_scim(
             raise InvalidValueException(detail="externalId is required")
         try:
             user = users.add(new.external_id, new.user_name, new.active is not False)
-        except sqlite3.IntegrityError:
+        except UniqueViolation:
             raise UniquenessException(detail="userName or externalId is already used") from None
         if not user.active:
             erase(user.external_id)

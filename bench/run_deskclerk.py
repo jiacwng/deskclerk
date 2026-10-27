@@ -4,10 +4,10 @@
 import argparse
 import asyncio
 import json
+import os
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 from collections.abc import Callable
 from contextlib import ExitStack
@@ -32,6 +32,7 @@ from mcp.shared.exceptions import MCPError
 from deskclerk.agent import AgentResult, Gate, ProposedCall, Verdict, run_agent
 from deskclerk.config import Settings
 from deskclerk.connections import OAuthConnections
+from deskclerk.database import Database
 from deskclerk.instructions import INSTRUCTIONS
 from deskclerk.jev import PRICE_PER_INPUT_TOKEN, Jev, jev_from_environment
 from deskclerk.providers import Usage, cost_of, model_options, usage_from
@@ -315,8 +316,9 @@ def main() -> None:
     jev = jev_from_environment(arguments.jev_budget_usd)
     if arguments.selection == "server" and jev is None:
         raise SystemExit("TYPESAFE_API_KEY is not set")
-    with ExitStack() as stack, tempfile.TemporaryDirectory() as scratch:
-        tokens = TokenStore(Path(scratch) / "tokens.sqlite", Fernet.generate_key().decode())
+    database = Database(os.environ["DESKCLERK_DATABASE_URL"])
+    with ExitStack() as stack:
+        tokens = TokenStore(database, Fernet.generate_key().decode())
         connections = OAuthConnections(tokens, "http://127.0.0.1/callback", "bench", 60)
         workers = [
             make_worker(

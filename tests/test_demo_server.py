@@ -5,8 +5,7 @@ import re
 import socket
 import threading
 import time
-from collections.abc import Iterator
-from pathlib import Path
+from collections.abc import AsyncIterator, Iterator
 
 import pytest
 import uvicorn
@@ -15,12 +14,13 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from deskclerk.agent import run_agent
 from deskclerk.connections import OAuthConnections
+from deskclerk.database import Database
 from deskclerk.screen import pass_through
 from deskclerk.servers import McpServer
 from deskclerk.writecheck import write_check
 from tasks_server import build_server
 from test_agent import answer, calls, script
-from test_connections import make_connections
+from test_connections import serving_connections
 
 
 @pytest.fixture
@@ -43,8 +43,9 @@ def demo_server() -> Iterator[McpServer]:
 
 
 @pytest.fixture
-def connections(tmp_path: Path) -> OAuthConnections:
-    return make_connections(tmp_path / "tokens.sqlite", Fernet.generate_key().decode())
+async def connections(database: Database) -> AsyncIterator[OAuthConnections]:
+    async with serving_connections(database, Fernet.generate_key().decode()) as running:
+        yield running
 
 
 @pytest.mark.anyio

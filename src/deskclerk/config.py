@@ -1,7 +1,7 @@
 # Settings read from DESKCLERK_* environment variables by pydantic-settings: how employees sign
 # in, the model and the budget, the audit log and the request quota, the MCP server list, the
-# encrypted store of each employee's MCP tokens, how long conversations are kept and the session
-# of the web front and the SCIM endpoints that offboard a leaver.
+# Postgres database that holds all state, how long conversations are kept and the session of the
+# web front and the SCIM endpoints that offboard a leaver.
 
 from pathlib import Path
 from typing import Any
@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     audit_key: SecretStr | None = None
     requests_per_minute: int = 20
     servers_file: Path = Path("servers.toml")
-    token_file: Path = Path("data/tokens.sqlite")
+    database_url: SecretStr
     token_key: SecretStr | None = None
     step_limit: int = 8
     ask_seconds: int = Field(default=DEFAULT_ASK_SECONDS, gt=0)

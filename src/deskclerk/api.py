@@ -9,7 +9,6 @@ import hashlib
 import hmac
 import logging
 import re
-import sqlite3
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, nullcontext
@@ -22,10 +21,11 @@ from uuid import UUID, uuid4
 import anthropic
 import anyio.from_thread
 import httpx
+import psycopg
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from langchain_core.language_models import BaseChatModel
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -73,6 +73,7 @@ from deskclerk.conversations import (
     saved_messages,
     thread_id,
 )
+from deskclerk.database import Database
 from deskclerk.erasure import erase_user
 from deskclerk.instructions import system_prompt
 from deskclerk.jev import Jev
@@ -268,6 +269,7 @@ def _content_security_policy(page: str, vendor: dict[str, bytes]) -> str:
 
 def create_app(
     settings: Settings,
+    database: Database,
     servers: list[McpServer],
     connections: OAuthConnections,
     tokens: TokenStore,
@@ -286,10 +288,8 @@ def create_app(
     secure_cookies = settings.sign_in_redirect_url.startswith("https://")
     session_seconds = settings.session_hours * SECONDS_PER_HOUR
     cost_of(settings.price_model, Usage(0, 0, 0, 0))
-    quota = Quota(settings.requests_per_minute)
+    quota = Quota(database, settings.requests_per_minute)
     audit = Audit(settings.audit_text, settings.audit_key)
-    spendings: dict[tuple[str, str], Spending] = {}
-    ask_locks: dict[str, asyncio.Lock] = {}
     discovered: dict[str, oidc.Endpoints] = {}
     ask_failures: tuple[type[Exception], ...] = (
         McpServerFailed,
@@ -311,13 +311,14 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        async with open_checkpointer(tokens.path, tokens.fernet) as checkpointer:
+        async with database.serving(), connections.listening():
+            checkpointer = await open_checkpointer(database, tokens.fernet)
             app.state.checkpointer = checkpointer
             sweep = None
             if settings.retention_days > 0:
-                await delete_old_threads(checkpointer, settings.retention_days)
+                await delete_old_threads(database, checkpointer, settings.retention_days)
                 sweep = asyncio.create_task(
-                    delete_old_threads_daily(checkpointer, settings.retention_days)
+                    delete_old_threads_daily(database, checkpointer, settings.retention_days)
                 )
             yield
             if sweep is not None:
@@ -334,7 +335,7 @@ def create_app(
         calls = [ExecutedOut(**vars(call)).model_dump() for call in failure.executed]
         return JSONResponse({"detail": failure.detail, "calls": calls}, status_code=failure.status)
 
-    scim_users = ScimUsers(tokens.path) if settings.scim_token is not None else None
+    scim_users = ScimUsers(database) if settings.scim_token is not None else None
 
     async def is_deactivated(user_id: str) -> bool:
         return scim_users is not None and await run_in_threadpool(
@@ -390,8 +391,8 @@ def create_app(
         return discovered["endpoints"]
 
     async def erase_when_idle(user_id: str) -> None:
-        async with ask_locks.setdefault(user_id, asyncio.Lock()):
-            connections.cancel_all_for(user_id)
+        async with database.user_lock(user_id):
+            await connections.cancel_all_for(user_id)
             await run_in_threadpool(erase_user, user_id, tokens, sessions, spending_store, audit)
 
     if settings.scim_token is not None and scim_users is not None:
@@ -412,7 +413,7 @@ def create_app(
         failed = []
         try:
             await run_in_threadpool(tokens.check)
-        except sqlite3.Error:
+        except psycopg.Error:
             failed.append("token store")
         if not hasattr(app.state, "checkpointer"):
             failed.append("checkpointer")
@@ -601,7 +602,7 @@ def create_app(
     ) -> Response:
         if error is not None or code is None:
             try:
-                connections.cancel(who.identity.user_id, state)
+                await connections.cancel(who.identity.user_id, state)
             except tuple(CONNECT_ERRORS) as refused:
                 return connect_failed(refused)
             _log.warning(
@@ -623,7 +624,7 @@ def create_app(
     @app.post("/servers/{name}/disconnect", status_code=204)
     async def disconnect(name: str, who: Caller = Depends(posting_caller)) -> Response:
         server = known_server(name, who.identity)
-        connections.cancel_for(who.identity.user_id, server.name)
+        await connections.cancel_for(who.identity.user_id, server.name)
         await run_in_threadpool(tokens.delete_connection, who.identity.user_id, server.name)
         audit.connection(who.identity, "disconnect", server.name)
         return Response(status_code=204)
@@ -632,7 +633,7 @@ def create_app(
     async def conversation_turns(
         conversation_id: UUID, who: Caller = Depends(caller)
     ) -> ConversationOut:
-        checkpointer: AsyncSqliteSaver = app.state.checkpointer
+        checkpointer: AsyncPostgresSaver = app.state.checkpointer
         thread = thread_id(who.identity.user_id, conversation_id)
         history = await saved_messages(checkpointer, thread)
         if not history:
@@ -682,16 +683,16 @@ def create_app(
             audit.asked(identity, conversation_id, text, started, outcome, None, 0.0, entry=entry)
             raise HTTPException(status, detail, headers)
 
-        if not quota.allows(identity.user_id):
+        if not await quota.allows(identity.user_id):
             refuse(
                 429,
                 f"at most {settings.requests_per_minute} asks a minute",
                 "rate_limited",
                 {"Retry-After": "60"},
             )
-        checkpointer: AsyncSqliteSaver = app.state.checkpointer
+        checkpointer: AsyncPostgresSaver = app.state.checkpointer
         thread = thread_id(identity.user_id, conversation)
-        async with ask_locks.setdefault(identity.user_id, asyncio.Lock()):
+        async with database.user_lock(identity.user_id):
             await refuse_deactivated(identity.user_id)
             history = await saved_messages(checkpointer, thread)
             if conversation_id is not None and not history:
@@ -699,15 +700,9 @@ def create_app(
             if decisions is not None:
                 text = last_request(history)
             month = month_of(datetime.now(UTC))
-            if (identity.user_id, month) not in spendings:
-                spendings[identity.user_id, month] = Spending(
-                    settings.price_model,
-                    settings.budget_usd,
-                    spending_store,
-                    identity.user_id,
-                    month,
-                )
-            spending = spendings[identity.user_id, month]
+            spending = Spending(
+                settings.price_model, settings.budget_usd, spending_store, identity.user_id, month
+            )
             try:
                 spending.check()
             except BudgetExceeded as error:

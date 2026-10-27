@@ -9,6 +9,7 @@ from deskclerk.config import Settings
 from deskclerk.servers import secret_variables
 
 SECRET_VARIABLES = (
+    "DESKCLERK_DATABASE_URL",
     "DESKCLERK_TOKEN_KEY",
     "DESKCLERK_SESSION_KEY",
     "DESKCLERK_CLIENT_SECRET",

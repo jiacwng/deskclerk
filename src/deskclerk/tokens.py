@@ -1,10 +1,6 @@
-# An SQLite file holding each employee's OAuth tokens, client registrations, pinned tool
+# A Postgres table holding each employee's OAuth tokens, client registrations, pinned tool
 # definitions and always allowed tools for each MCP server, encrypted with Fernet.
 
-import sqlite3
-from collections.abc import Iterator
-from contextlib import contextmanager
-from pathlib import Path
 from typing import Literal
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -12,7 +8,7 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from mcp.shared.auth_utils import calculate_token_expiry
 from pydantic import BaseModel
 
-from deskclerk.database import connect
+from deskclerk.database import Database
 from deskclerk.servers import McpServer
 
 Kind = Literal["tokens", "client", "tool_pins", "always_allowed"]
@@ -30,52 +26,44 @@ class _StoredTokens(BaseModel):
 
 
 class TokenStore:
-    def __init__(self, path: Path, key: str) -> None:
+    def __init__(self, database: Database, key: str) -> None:
         try:
             self.fernet = Fernet(key)
         except ValueError:
             raise TokenKeyError("the token key is not a Fernet key") from None
-        self.path = path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with self._database() as database:
-            database.execute(
-                "CREATE TABLE IF NOT EXISTS secrets ("
-                "user_id TEXT NOT NULL, server_name TEXT NOT NULL, kind TEXT NOT NULL, "
-                "value BLOB NOT NULL, PRIMARY KEY (user_id, server_name, kind))"
+        self.database = database
+        database.create_tables(
+            "CREATE TABLE IF NOT EXISTS secrets ("
+            "user_id TEXT NOT NULL, server_name TEXT NOT NULL, kind TEXT NOT NULL, "
+            "value BYTEA NOT NULL, PRIMARY KEY (user_id, server_name, kind))",
+            "CREATE TABLE IF NOT EXISTS key_check ("
+            "only_row BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (only_row), value BYTEA NOT NULL)",
+        )
+        with database.pool.connection() as connection:
+            connection.execute(
+                "INSERT INTO key_check (value) VALUES (%s) ON CONFLICT DO NOTHING",
+                (self.fernet.encrypt(KEY_CHECK_TEXT),),
             )
-            database.execute("CREATE TABLE IF NOT EXISTS key_check (value BLOB NOT NULL)")
-            row = database.execute("SELECT value FROM key_check").fetchone()
-            if row is None:
-                database.execute(
-                    "INSERT INTO key_check (value) VALUES (?)",
-                    (self.fernet.encrypt(KEY_CHECK_TEXT),),
-                )
-            else:
-                self._decrypt(row[0])
-
-    @contextmanager
-    def _database(self) -> Iterator[sqlite3.Connection]:
-        database = connect(self.path)
-        try:
-            with database:
-                yield database
-        finally:
-            database.close()
+            row = connection.execute("SELECT value FROM key_check").fetchone()
+        if row is not None:
+            self._decrypt(row[0])
 
     def check(self) -> None:
-        with self._database() as database:
-            database.execute("SELECT value FROM key_check").fetchone()
+        with self.database.pool.connection() as connection:
+            connection.execute("SELECT value FROM key_check").fetchone()
 
     def _decrypt(self, value: bytes) -> str:
         try:
-            return self.fernet.decrypt(value).decode()
+            return self.fernet.decrypt(bytes(value)).decode()
         except InvalidToken:
-            raise TokenKeyError("the token file was not encrypted with this token key") from None
+            raise TokenKeyError(
+                "the stored tokens were not encrypted with this token key"
+            ) from None
 
     def get(self, user_id: str, server_name: str, kind: Kind) -> str | None:
-        with self._database() as database:
-            row = database.execute(
-                "SELECT value FROM secrets WHERE user_id = ? AND server_name = ? AND kind = ?",
+        with self.database.pool.connection() as connection:
+            row = connection.execute(
+                "SELECT value FROM secrets WHERE user_id = %s AND server_name = %s AND kind = %s",
                 (user_id, server_name, kind),
             ).fetchone()
         if row is None:
@@ -83,31 +71,31 @@ class TokenStore:
         return self._decrypt(row[0])
 
     def put(self, user_id: str, server_name: str, kind: Kind, text: str) -> None:
-        with self._database() as database:
-            database.execute(
-                "INSERT OR REPLACE INTO secrets (user_id, server_name, kind, value) "
-                "VALUES (?, ?, ?, ?)",
+        with self.database.pool.connection() as connection:
+            connection.execute(
+                "INSERT INTO secrets (user_id, server_name, kind, value) VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (user_id, server_name, kind) DO UPDATE SET value = EXCLUDED.value",
                 (user_id, server_name, kind, self.fernet.encrypt(text.encode())),
             )
 
     def delete_tokens(self, user_id: str, server_name: str) -> None:
-        with self._database() as database:
-            database.execute(
-                "DELETE FROM secrets WHERE user_id = ? AND server_name = ? AND kind = 'tokens'",
+        with self.database.pool.connection() as connection:
+            connection.execute(
+                "DELETE FROM secrets WHERE user_id = %s AND server_name = %s AND kind = 'tokens'",
                 (user_id, server_name),
             )
 
     def delete_connection(self, user_id: str, server_name: str) -> None:
-        with self._database() as database:
-            database.execute(
-                "DELETE FROM secrets WHERE user_id = ? AND server_name = ? "
+        with self.database.pool.connection() as connection:
+            connection.execute(
+                "DELETE FROM secrets WHERE user_id = %s AND server_name = %s "
                 "AND kind IN ('tokens', 'tool_pins', 'always_allowed')",
                 (user_id, server_name),
             )
 
     def delete_user(self, user_id: str) -> int:
-        with self._database() as database:
-            return database.execute("DELETE FROM secrets WHERE user_id = ?", (user_id,)).rowcount
+        with self.database.pool.connection() as connection:
+            return connection.execute("DELETE FROM secrets WHERE user_id = %s", (user_id,)).rowcount
 
     def storage_for(
         self, user_id: str, server: McpServer, redirect_url: str

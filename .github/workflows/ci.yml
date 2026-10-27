@@ -27,7 +27,7 @@ jobs:
       - run: ruff format --check .
       - run: ruff check .
       - run: mypy
-      - run: docker compose up -d --wait keycloak
+      - run: docker compose up -d --wait keycloak postgres
       - run: pytest
       - name: container sends sign-in to keycloak
         run: |
@@ -35,6 +35,7 @@ jobs:
             echo "ANTHROPIC_API_KEY=unused"
             echo "DESKCLERK_ALLOW_UNSCREENED=true"
             echo "DESKCLERK_TOKEN_KEY=$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+            echo "POSTGRES_PASSWORD=$(python -c 'import secrets; print(secrets.token_hex(16))')"
             echo "DESKCLERK_SESSION_KEY=$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
           } > .env
           cp servers.example.toml servers.toml
