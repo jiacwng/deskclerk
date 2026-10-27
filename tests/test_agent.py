@@ -31,6 +31,8 @@ from deskclerk.agent import (
     AlwaysAllowRefused,
     ConversationWaiting,
     Decision,
+    Edit,
+    Gate,
     McpServerFailed,
     NothingToConfirm,
     ProposedCall,
@@ -46,6 +48,7 @@ from deskclerk.screen import NOTICE, Screen, pass_through
 from deskclerk.servers import McpServer
 from deskclerk.tokens import TokenStore
 from deskclerk.tracing import AskTrace
+from deskclerk.writecheck import write_check
 from mcp_server import RunningServer, running_mcp_server
 from test_connections import REDIRECT, connect, make_connections, server_record
 from test_tracing import MaskingClient
@@ -129,7 +132,7 @@ async def run(
     connections: OAuthConnections,
     servers: list[McpServer],
     model: BaseChatModel,
-    gate: RecordingGate | None = None,
+    gate: Gate | None = None,
     screen: Screen = pass_through,
     step_limit: int = 5,
     trace_config: RunnableConfig | None = None,
@@ -1702,3 +1705,94 @@ async def test_an_unknown_confirm_tool_is_logged_and_the_rest_still_work(
     result = await run(connections, [odd], model, confirm_writes=True)
     assert result.answer == "done"
     assert "no_such_tool" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_an_edited_write_runs_with_the_edited_arguments_and_the_model_reads_the_notice(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
+) -> None:
+    servers = [server_record(mcp_server)]
+    gate = RecordingGate(True)
+    model = script(calls(("notes__write_note", {"text": "hi"})), answer("saved it"))
+    paused = await run(connections, servers, model, gate, checkpointer=saver, confirm_writes=True)
+    resumed = await run(
+        connections,
+        servers,
+        model,
+        gate,
+        checkpointer=saver,
+        confirm_writes=True,
+        decisions={paused.pending[0].id: Edit({"text": "hello"})},
+    )
+    assert [note[1] for note in mcp_server.notes] == ["hello"]
+    assert [(call.tool, call.arguments, call.result) for call in resumed.executed] == [
+        ("write_note", {"text": "hello"}, "wrote hello")
+    ]
+    assert gate.asked[-1].arguments == {"text": "hello"}
+    assert [(call.tool, call.decision) for call in resumed.decided] == [("write_note", "edit")]
+    reply = model.seen[1][-1]
+    assert isinstance(reply, ToolMessage)
+    assert 'Executed instead: notes__write_note with arguments {"text": "hello"}' in str(
+        reply.content
+    )
+    assert str(reply.content).endswith("wrote hello")
+
+
+@pytest.mark.anyio
+async def test_an_edit_that_breaks_the_tool_schema_is_blocked_by_the_write_check(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
+) -> None:
+    servers = [server_record(mcp_server)]
+    model = script(calls(("notes__write_note", {"text": "hi"})), answer("could not"))
+    paused = await run(
+        connections, servers, model, write_check(), checkpointer=saver, confirm_writes=True
+    )
+    resumed = await run(
+        connections,
+        servers,
+        model,
+        write_check(),
+        checkpointer=saver,
+        confirm_writes=True,
+        decisions={paused.pending[0].id: Edit({"text": 5})},
+    )
+    assert mcp_server.notes == []
+    assert resumed.executed == ()
+    assert [(call.tool, call.arguments, call.rejected) for call in resumed.blocked] == [
+        ("write_note", {"text": 5}, False)
+    ]
+    assert resumed.blocked[0].reason.startswith("schema check")
+    reply = model.seen[1][-1]
+    assert isinstance(reply, ToolMessage)
+    assert "This call was blocked and not run" in str(reply.content)
+
+
+@pytest.mark.anyio
+async def test_an_edited_delete_may_name_an_id_the_employee_typed(
+    append_server: RunningServer,
+    append_connections: OAuthConnections,
+    append_saver: AsyncSqliteSaver,
+) -> None:
+    servers = [server_record(append_server)]
+    model = script(calls(("notes__delete_note", {"note_id": "n-1"})), answer("deleted"))
+    paused = await run(
+        append_connections,
+        servers,
+        model,
+        write_check(),
+        request="delete note n-1",
+        checkpointer=append_saver,
+        confirm_writes=True,
+    )
+    resumed = await run(
+        append_connections,
+        servers,
+        model,
+        write_check(),
+        request="delete note n-1",
+        checkpointer=append_saver,
+        confirm_writes=True,
+        decisions={paused.pending[0].id: Edit({"note_id": "n-9"})},
+    )
+    assert resumed.blocked == ()
+    assert append_server.deleted == ["n-9"]
