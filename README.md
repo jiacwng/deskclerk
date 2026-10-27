@@ -43,8 +43,13 @@ OpenAI or AWS Bedrock. This runs deskclerk, a development Keycloak and a demo ta
 ## Run it at your company
 
 1. In `.env`, set `DESKCLERK_ISSUER`, `DESKCLERK_CLIENT_ID` and `DESKCLERK_PUBLIC_URL` for your
-   login server, and register `https://<your deskclerk>/login/callback` with it.
+   login server, and register `https://<your deskclerk>/login/callback` with it. Set
+   `DESKCLERK_CLIENT_SECRET` too when the login server gives the app a secret, as Entra ID and Okta
+   web apps do. The issuer is `https://login.microsoftonline.com/<tenant>/v2.0` on Entra ID and
+   `https://<org>.okta.com/oauth2/default` on Okta.
 2. List your MCP servers in `servers.toml`. `servers.example.toml` describes each option.
+   When you register an OAuth app for a server, its callback is
+   `https://<your deskclerk>/oauth/callback`.
 3. Start deskclerk with `docker compose -f compose.prod.yaml up -d`, behind a reverse proxy
    that serves HTTPS. With Caddy this is enough:
 
@@ -58,7 +63,20 @@ OpenAI or AWS Bedrock. This runs deskclerk, a development Keycloak and a demo ta
 and tracing. Keep `DESKCLERK_TOKEN_KEY`, because the stored tokens and conversations are encrypted
 with it. Run one container, because quotas and pending sign-ins live in its memory. With a
 TypeSafe key, each request and every tool result are also sent to TypeSafe's API to be screened.
-`docker compose exec deskclerk python -m deskclerk erase <user_id>` deletes one employee's data.
+
+## Operate it
+
+- `docker compose -f compose.prod.yaml exec deskclerk python -m deskclerk usage` prints what each
+  employee spent this month.
+- `... python -m deskclerk erase <user_id>` deletes one employee's data. The user id is the
+  `DESKCLERK_USER_CLAIM` value, the object ID on Entra ID. With SCIM, the login server does this
+  when it removes the employee.
+- To back up, run `docker compose -f compose.prod.yaml stop`, then
+  `docker compose -f compose.prod.yaml cp deskclerk:/app/data ./backup`. Keep the token key with it.
+- To upgrade, run `git pull`, then `docker compose -f compose.prod.yaml up -d --build`.
+- `/livez` answers while the process runs, and `/readyz` once it can serve.
+- Sign-in and connection failures are logged with their reason. The audit log is one JSON line per
+  request on standard output.
 
 ## Results
 
