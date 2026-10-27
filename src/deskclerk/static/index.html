@@ -344,6 +344,16 @@ const post = (path, body) => api(path, {
 const el = (id) => document.getElementById(id);
 
 let conversation = null;
+const STORED = "deskclerk.conversation";
+function remember(id) {
+  try {
+    if (id === null) sessionStorage.removeItem(STORED);
+    else sessionStorage.setItem(STORED, id);
+  } catch (error) {}
+}
+function remembered() {
+  try { return sessionStorage.getItem(STORED); } catch (error) { return null; }
+}
 let currentTurn = null;
 let decisions = {};
 let waiting = 0;
@@ -620,6 +630,7 @@ function newTurn(request) {
 
 function newConversation() {
   conversation = null;
+  remember(null);
   currentTurn = null;
   el("turns").replaceChildren();
   el("empty").hidden = false;
@@ -678,6 +689,7 @@ function showPending(pending) {
 
 function showResult(result) {
   conversation = result.conversation;
+  remember(conversation);
   const turn = currentTurn;
   turn.answer.replaceChildren(renderAnswer(result.answer));
   turn.reply.hidden = result.answer === "";
@@ -749,6 +761,29 @@ async function send() {
   }
 }
 
+async function replay() {
+  const id = remembered();
+  if (id === null) return;
+  try {
+    const response = await api("/conversations/" + encodeURIComponent(id));
+    if (!response.ok) {
+      if (response.status === 404 || response.status === 422) remember(null);
+      return;
+    }
+    const past = await response.json();
+    conversation = past.conversation;
+    for (const item of past.turns) {
+      currentTurn = newTurn(item.request);
+      currentTurn.answer.replaceChildren(renderAnswer(item.answer));
+      currentTurn.reply.hidden = item.answer === "";
+    }
+    showPending(past.pending);
+    if (past.pending.length > 0) el("confirm").scrollIntoView({ block: "nearest" });
+  } catch (error) {
+    showError("Could not reload the conversation");
+  }
+}
+
 async function start() {
   const linkError = takeLinkError();
   const response = await api("/me");
@@ -779,6 +814,7 @@ async function start() {
   phone.addEventListener("change", fitRail);
   fitRail();
   loadServers();
+  replay();
   if (linkError !== "") showError(linkError);
 }
 

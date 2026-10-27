@@ -24,3 +24,13 @@ def unavailable_note(names: tuple[str, ...]) -> str:
         f"\nThese servers did not answer, so their tools are not offered: {', '.join(names)}. "
         "If the request needs them, tell the employee they are unavailable."
     )
+
+
+def not_connected_note(names: tuple[str, ...]) -> str:
+    if not names:
+        return ""
+    return (
+        "\nThe employee has not connected these servers, so their tools are not offered: "
+        f"{', '.join(names)}. If the request needs them, tell the employee to connect them "
+        "in the server list first."
+    )
