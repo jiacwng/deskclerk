@@ -1724,7 +1724,7 @@ async def test_an_unknown_confirm_tool_is_logged_and_the_rest_still_work(
 
 @pytest.mark.anyio
 async def test_an_edited_write_runs_with_the_edited_arguments_and_the_model_reads_the_notice(
-    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncPostgresSaver
 ) -> None:
     servers = [server_record(mcp_server)]
     gate = RecordingGate(True)
@@ -1755,7 +1755,7 @@ async def test_an_edited_write_runs_with_the_edited_arguments_and_the_model_read
 
 @pytest.mark.anyio
 async def test_an_edit_that_breaks_the_tool_schema_is_blocked_by_the_write_check(
-    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncSqliteSaver
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncPostgresSaver
 ) -> None:
     servers = [server_record(mcp_server)]
     model = script(calls(("notes__write_note", {"text": "hi"})), answer("could not"))
@@ -1786,7 +1786,7 @@ async def test_an_edit_that_breaks_the_tool_schema_is_blocked_by_the_write_check
 async def test_an_edited_delete_may_name_an_id_the_employee_typed(
     append_server: RunningServer,
     append_connections: OAuthConnections,
-    append_saver: AsyncSqliteSaver,
+    append_saver: AsyncPostgresSaver,
 ) -> None:
     servers = [server_record(append_server)]
     model = script(calls(("notes__delete_note", {"note_id": "n-1"})), answer("deleted"))

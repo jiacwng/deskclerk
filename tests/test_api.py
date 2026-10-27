@@ -1895,14 +1895,14 @@ def test_an_edited_confirmation_runs_the_edited_arguments_and_is_audited_as_an_e
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger="deskclerk.audit")
     model = script(calls(("notes__write_note", {"text": "hi"})), answer("saved"))
     ada = as_user(sign_token, "ada")
     with web(
-        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, tmp_path
+        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, database
     ) as site:
         connect(site, ada)
         paused = ask(site, ada, "save a note").json()
@@ -1919,12 +1919,12 @@ def test_a_malformed_edit_is_refused_and_the_client_cannot_name_another_tool(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     model = script(calls(("notes__write_note", {"text": "hi"})), answer("saved"))
     ada = as_user(sign_token, "ada")
     with web(
-        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, tmp_path
+        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, database
     ) as site:
         connect(site, ada)
         paused = ask(site, ada, "save a note").json()
