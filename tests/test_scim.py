@@ -292,7 +292,11 @@ def test_a_deactivated_employee_is_refused_by_bearer_and_by_session_until_reacti
 
 
 def test_a_deactivated_employee_cannot_sign_in(
-    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     settings = make_settings(token_settings, scim_token=SecretStr(TOKEN))
     idp = FakeIdp(settings.issuer)
@@ -301,8 +305,12 @@ def test_a_deactivated_employee_cannot_sign_in(
         patch_active(site.client, user_id, False)
         state, _, _ = begin_sign_in(site)
         response = finish_sign_in(site, idp, sign_token, state, {"sub": "ana"})
-        assert response.status_code == 403
+        assert (response.status_code, response.headers["location"]) == (
+            303,
+            "/?error=sign_in_refused",
+        )
         assert SESSION_COOKIE not in site.client.cookies
+    assert "account deactivated" in caplog.text
     assert rows(tmp_path / "tokens.sqlite", "SELECT 1 FROM sessions WHERE user_id = 'ana'") == []
 
 
