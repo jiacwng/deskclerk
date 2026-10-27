@@ -37,6 +37,7 @@ from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.serde.types import INTERRUPT
 from langgraph.runtime import Runtime
 from langgraph.types import Command, Interrupt
 
@@ -53,7 +54,7 @@ from deskclerk.connections import (
     first_leaf,
 )
 from deskclerk.conversations import close_unanswered_calls, earlier_texts
-from deskclerk.instructions import unavailable_note
+from deskclerk.instructions import not_connected_note, unavailable_note
 from deskclerk.pinning import allow_tool, allowed_tools, pin_tools
 from deskclerk.providers import Usage, usage_from
 from deskclerk.screen import Screen, is_flagged
@@ -427,32 +428,22 @@ def _cut(text: str, limit: int) -> str:
     return f"{text[:limit]}\n[deskclerk: {limit:,} of {len(text):,} characters shown]"
 
 
-async def run_agent(
+@dataclass(frozen=True)
+class _Offer:
+    tools: dict[str, _Tool]
+    always: set[str]
+    not_connected: list[str]
+    unavailable: tuple[str, ...]
+    changed_tools: list[str]
+
+
+async def _offer(
     user_id: str,
-    request: str,
-    system: str,
     servers: list[McpServer],
     connections: OAuthConnections,
     tokens: TokenStore,
-    checkpointer: BaseCheckpointSaver[Any],
-    thread: str,
-    history: list[BaseMessage],
-    model: BaseChatModel,
-    gate: Gate,
-    screen: Screen,
-    step_limit: int,
-    record_usage: Callable[[Usage], None],
-    trace_config: RunnableConfig | None = None,
-    tool_span: ToolSpan = no_tool_span,
-    selection: AgentMiddleware[Any, Any, Any] | None = None,
-    tool_output_chars: int = DEFAULT_TOOL_OUTPUT_CHARS,
-    history_tokens: int = DEFAULT_HISTORY_TOKENS,
-    listing_seconds: float = DEFAULT_LISTING_SECONDS,
-    *,
-    confirm_writes: bool,
-    decisions: dict[str, Decision] | None = None,
-    executed: list[ExecutedCall] | None = None,
-) -> AgentResult:
+    listing_seconds: float,
+) -> _Offer:
     tools: dict[str, _Tool] = {}
     not_connected: list[str] = []
     unavailable: list[McpServerFailed] = []
@@ -487,6 +478,42 @@ async def run_agent(
         names = ", ".join(failure.server_name for failure in unavailable)
         raise McpServerFailed(names, unavailable[0].cause)
     unavailable_names = tuple(failure.server_name for failure in unavailable)
+    return _Offer(tools, always, not_connected, unavailable_names, changed_tools)
+
+
+async def run_agent(
+    user_id: str,
+    request: str,
+    system: str,
+    servers: list[McpServer],
+    connections: OAuthConnections,
+    tokens: TokenStore,
+    checkpointer: BaseCheckpointSaver[Any],
+    thread: str,
+    history: list[BaseMessage],
+    model: BaseChatModel,
+    gate: Gate,
+    screen: Screen,
+    step_limit: int,
+    record_usage: Callable[[Usage], None],
+    trace_config: RunnableConfig | None = None,
+    tool_span: ToolSpan = no_tool_span,
+    selection: AgentMiddleware[Any, Any, Any] | None = None,
+    tool_output_chars: int = DEFAULT_TOOL_OUTPUT_CHARS,
+    history_tokens: int = DEFAULT_HISTORY_TOKENS,
+    listing_seconds: float = DEFAULT_LISTING_SECONDS,
+    *,
+    confirm_writes: bool,
+    decisions: dict[str, Decision] | None = None,
+    executed: list[ExecutedCall] | None = None,
+) -> AgentResult:
+    offer = await _offer(user_id, servers, connections, tokens, listing_seconds)
+    tools, always = offer.tools, offer.always
+    not_connected, unavailable_names, changed_tools = (
+        offer.not_connected,
+        offer.unavailable,
+        offer.changed_tools,
+    )
 
     shared = _Shared(
         request,
@@ -515,7 +542,9 @@ async def run_agent(
     agent = create_agent(
         model,
         [_langchain_tool(name, tool, user_id, connections) for name, tool in tools.items()],
-        system_prompt=system + unavailable_note(unavailable_names),
+        system_prompt=system
+        + not_connected_note(tuple(not_connected))
+        + unavailable_note(unavailable_names),
         middleware=middleware,
         checkpointer=checkpointer,
     )
@@ -715,3 +744,27 @@ def _langchain_tool(
         coroutine=call_server,
         response_format="content_and_artifact",
     )
+
+
+async def waiting_calls(
+    user_id: str,
+    servers: list[McpServer],
+    connections: OAuthConnections,
+    tokens: TokenStore,
+    checkpointer: BaseCheckpointSaver[Any],
+    thread: str,
+    listing_seconds: float = DEFAULT_LISTING_SECONDS,
+) -> tuple[PendingCall, ...]:
+    saved = await checkpointer.aget_tuple({"configurable": {"thread_id": thread}})
+    if saved is None or not saved.pending_writes:
+        return ()
+    interrupts = [
+        interrupt
+        for _, channel, value in saved.pending_writes
+        if channel == INTERRUPT
+        for interrupt in (value if isinstance(value, list | tuple) else [value])
+    ]
+    if not interrupts:
+        return ()
+    tools = (await _offer(user_id, servers, connections, tokens, listing_seconds)).tools
+    return tuple(_pending_call(interrupt, tools) for interrupt in interrupts)

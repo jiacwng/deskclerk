@@ -35,7 +35,6 @@ from pydantic import SecretStr
 
 from deskclerk import cookies, sessions
 from deskclerk.api import (
-    BROWSER_AUTH_REFUSED,
     CSRF_HEADER,
     CSRF_VALUE,
     LOGIN_COOKIE,
@@ -184,6 +183,12 @@ def finish_sign_in(
     return site.client.get(f"/login/callback?code=c&state={state}", follow_redirects=False)
 
 
+SIGN_IN_REFUSED = "/?error=sign_in_refused"
+LOGIN_UNREACHABLE = "/?error=login_unreachable"
+CONNECT_EXPIRED = "/?error=connect_expired"
+CONNECT_FAILED = "/?error=connect_failed"
+
+
 def notes(running: RunningServer) -> McpServer:
     return McpServer("notes", running.url, None, None)
 
@@ -307,7 +312,7 @@ def test_a_callback_without_the_sign_in_cookie_is_refused(
     settings = make_settings(token_settings)
     with web(settings, [], script(), token_signing_key, tmp_path) as site:
         response = site.client.get("/login/callback?code=x&state=y", follow_redirects=False)
-        assert response.status_code == 400
+        assert (response.status_code, response.headers["location"]) == (303, SIGN_IN_REFUSED)
 
 
 def test_connecting_is_finished_by_the_employee_who_started_it(
@@ -324,7 +329,7 @@ def test_connecting_is_finished_by_the_employee_who_started_it(
         stolen = site.client.get(
             "/oauth/callback", params=started, headers=grace, follow_redirects=False
         )
-        assert stolen.status_code == 403
+        assert (stolen.status_code, stolen.headers["location"]) == (303, CONNECT_FAILED)
         assert site.tokens.get("grace", "notes", "tokens") is None
 
         finished = site.client.get(
@@ -336,7 +341,7 @@ def test_connecting_is_finished_by_the_employee_who_started_it(
         again = site.client.get(
             "/oauth/callback", params=started, headers=ada, follow_redirects=False
         )
-        assert again.status_code == 400
+        assert (again.status_code, again.headers["location"]) == (303, CONNECT_EXPIRED)
 
 
 def test_connect_errors_are_clear(
@@ -412,6 +417,33 @@ def test_an_ask_runs_the_agent_and_the_server_sees_the_write_under_that_employee
         other = ask(site, grace).json()
         assert other["not_connected"] == ["notes"]
         assert len(notes_server.notes) == 1
+
+
+def test_a_connection_whose_refresh_fails_shows_as_not_connected_and_is_named_to_the_model(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(token_settings)
+    model = script(answer("connect notes first"))
+    ada = as_user(sign_token, "ada")
+    with web(settings, [notes(notes_server)], model, token_signing_key, tmp_path) as site:
+        connect(site, ada)
+        stored = json.loads(site.tokens.get("ada", "notes", "tokens") or "")
+        stored["token"]["access_token"] = "revoked"
+        stored["token"]["refresh_token"] = None
+        site.tokens.put("ada", "notes", "tokens", json.dumps(stored))
+        body = ask(site, ada).json()
+        assert body["not_connected"] == ["notes"]
+        listing = site.client.get("/servers", headers=ada).json()
+        assert [(entry["name"], entry["connected"]) for entry in listing] == [("notes", False)]
+    system = model.seen[0][0]
+    assert isinstance(system, SystemMessage)
+    assert "has not connected these servers, so their tools are not offered: notes." in str(
+        system.content
+    )
 
 
 def test_an_ask_gives_the_model_the_instructions_with_today_s_utc_date(
@@ -964,7 +996,7 @@ def test_an_employee_signs_in_through_keycloak_and_asks(tmp_path: Path) -> None:
         assert f"{landing.scheme}://{landing.netloc}{landing.path}" == settings.sign_in_redirect_url
 
         forged = site.client.get(f"{landing.path}?code=x&state=forged")
-        assert forged.status_code == 400
+        assert (forged.status_code, forged.headers["location"]) == (303, SIGN_IN_REFUSED)
         assert site.client.get("/me").status_code == 401
 
         finished = site.client.get(f"{landing.path}?{landing.query}")
@@ -984,7 +1016,7 @@ def test_a_wrong_state_with_a_valid_login_cookie_never_reaches_the_token_endpoin
     with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
         begin_sign_in(site)
         forged = site.client.get("/login/callback?code=c&state=forged", follow_redirects=False)
-        assert forged.status_code == 400
+        assert (forged.status_code, forged.headers["location"]) == (303, SIGN_IN_REFUSED)
         assert idp.token_calls == []
         assert site.client.get("/me").status_code == 401
 
@@ -1074,7 +1106,7 @@ def test_a_refused_id_token_gives_a_fixed_message_on_the_browser_path(
         state, _, _ = begin_sign_in(site)
         refused = finish_sign_in(site, idp, sign_token, state, claims)
         assert site.client.get("/me").status_code == 401
-    assert (refused.status_code, refused.json()["detail"]) == (401, BROWSER_AUTH_REFUSED)
+    assert (refused.status_code, refused.headers["location"]) == (303, SIGN_IN_REFUSED)
 
 
 def test_a_token_response_without_an_id_token_is_refused(
@@ -1085,7 +1117,7 @@ def test_a_token_response_without_an_id_token_is_refused(
     with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
         state, _, _ = begin_sign_in(site)
         refused = site.client.get(f"/login/callback?code=c&state={state}", follow_redirects=False)
-        assert (refused.status_code, refused.json()["detail"]) == (401, BROWSER_AUTH_REFUSED)
+        assert (refused.status_code, refused.headers["location"]) == (303, SIGN_IN_REFUSED)
         assert site.client.get("/me").status_code == 401
 
 
@@ -1338,6 +1370,7 @@ def _server_refuses(site: Web, started: dict[str, str], ada: dict[str, str]) -> 
         headers=ada,
         follow_redirects=False,
     )
+    assert refused.headers["location"] == CONNECT_FAILED
     return refused.status_code
 
 
@@ -1348,7 +1381,7 @@ def _employee_disconnects(site: Web, started: dict[str, str], ada: dict[str, str
 @pytest.mark.parametrize(
     ("cancel", "expected_status"),
     [
-        pytest.param(_server_refuses, 400, id="a-server-that-refuses-the-sign-in"),
+        pytest.param(_server_refuses, 303, id="a-server-that-refuses-the-sign-in"),
         pytest.param(_employee_disconnects, 204, id="disconnecting-from-that-server"),
     ],
 )
@@ -1369,7 +1402,7 @@ def test_a_pending_connection_that_is_cancelled_cannot_be_finished(
         late = site.client.get(
             "/oauth/callback", params=started, headers=ada, follow_redirects=False
         )
-        assert late.status_code == 400
+        assert (late.status_code, late.headers["location"]) == (303, CONNECT_EXPIRED)
         assert site.tokens.get("ada", "notes", "tokens") is None
 
 
@@ -1416,7 +1449,7 @@ def test_an_unreachable_login_server_gives_503_and_no_session(
 
         state, _, _ = begin_sign_in(site)
         callback = finish_sign_in(site, idp, sign_token, state, {})
-        assert callback.status_code == 503
+        assert (callback.status_code, callback.headers["location"]) == (303, LOGIN_UNREACHABLE)
         assert SESSION_COOKIE not in site.client.cookies
         assert site.client.get("/me").status_code == 401
 
@@ -1459,8 +1492,7 @@ def test_a_callback_with_the_wrong_or_missing_issuer_gives_502_and_connects_noth
         response = site.client.get(
             "/oauth/callback", params=started, headers=ada, follow_redirects=False
         )
-        assert response.status_code == 502
-        assert response.json()["detail"] == "the server did not accept the sign-in"
+        assert (response.status_code, response.headers["location"]) == (303, CONNECT_FAILED)
         assert site.tokens.get("ada", "notes", "tokens") is None
 
 
@@ -1529,6 +1561,47 @@ def test_another_employees_or_an_unknown_conversation_gives_404_and_runs_nothing
         "unknown_conversation",
         "answered",
     ]
+
+
+def test_the_owner_reloads_the_turns_and_a_waiting_confirmation_and_others_get_404(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    tmp_path: Path,
+) -> None:
+    model = script(
+        answer("first answer"), calls(("notes__write_note", {"text": "hi"})), answer("ok")
+    )
+    ada, grace = as_user(sign_token, "ada"), as_user(sign_token, "grace")
+    with web(
+        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, tmp_path
+    ) as site:
+        connect(site, ada)
+        first = ask(site, ada, "hello").json()
+        conversation = first["conversation"]
+        paused = ask_in(site, ada, conversation, "save a note").json()
+        reloaded = site.client.get(f"/conversations/{conversation}", headers=ada)
+        stranger = site.client.get(f"/conversations/{conversation}", headers=grace)
+        unknown = site.client.get(
+            "/conversations/0d6b2c3e-9d5e-4c27-8f3e-3c1d2b4a5e6f", headers=ada
+        )
+        malformed = site.client.get("/conversations/not-an-id", headers=ada)
+        confirm(site, ada, conversation, {paused["pending"][0]["id"]: "approve"})
+        finished = site.client.get(f"/conversations/{conversation}", headers=ada).json()
+    body = reloaded.json()
+    assert body["conversation"] == conversation
+    assert [(t["request"], t["answer"]) for t in body["turns"]] == [
+        ("hello", "first answer"),
+        ("save a note", ""),
+    ]
+    assert body["pending"] == paused["pending"]
+    assert body["pending"][0]["server"] == "notes"
+    assert (stranger.status_code, unknown.status_code) == (404, 404)
+    assert stranger.json() == unknown.json() == {"detail": "no such conversation"}
+    assert malformed.status_code == 422
+    assert finished["pending"] == []
+    assert finished["turns"][-1] == {"request": "save a note", "answer": "ok"}
 
 
 def test_a_renamed_employee_keeps_the_same_conversation(
@@ -1886,3 +1959,116 @@ def test_readyz_names_the_token_store_when_it_cannot_be_read(
         response = site.client.get("/readyz")
     assert response.status_code == 503
     assert "token store" in response.json()["not_ready"]
+
+
+def test_a_token_exchange_the_login_server_refuses_logs_its_reason_and_redirects(
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="deskclerk.api")
+    settings = make_settings(token_settings)
+    idp = FakeIdp(settings.issuer)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/token"):
+            body = {"error": "invalid_grant", "error_description": "Code not valid"}
+            return httpx.Response(400, json=body)
+        return idp.handle(request)
+
+    with web(
+        settings, [], script(), token_signing_key, tmp_path, httpx.MockTransport(handle)
+    ) as site:
+        state, _, _ = begin_sign_in(site)
+        refused = site.client.get(
+            f"/login/callback?code=secret-code&state={state}", follow_redirects=False
+        )
+    assert (refused.status_code, refused.headers["location"]) == (303, SIGN_IN_REFUSED)
+    assert "error='invalid_grant'" in caplog.text
+    assert "error_description='Code not valid'" in caplog.text
+    assert "secret-code" not in caplog.text
+
+
+def test_a_refused_id_token_logs_the_check_that_failed(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="deskclerk.api")
+    settings = make_settings(token_settings)
+    idp = FakeIdp(settings.issuer)
+    with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
+        state, _, _ = begin_sign_in(site)
+        refused = finish_sign_in(site, idp, sign_token, state, {"nonce": "another-nonce"})
+    assert refused.headers["location"] == SIGN_IN_REFUSED
+    assert "nonce does not match the sign-in" in caplog.text
+
+
+def test_an_error_from_the_login_server_on_the_callback_is_logged_and_redirects(
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="deskclerk.api")
+    settings = make_settings(token_settings)
+    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+        refused = site.client.get(
+            "/login/callback?error=access_denied&error_description=no+consent",
+            follow_redirects=False,
+        )
+    assert (refused.status_code, refused.headers["location"]) == (303, SIGN_IN_REFUSED)
+    assert "error='access_denied'" in caplog.text
+    assert "error_description='no consent'" in caplog.text
+
+
+def test_starting_a_sign_in_when_the_login_server_is_down_redirects_and_logs_why(
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="deskclerk.api")
+    settings = make_settings(token_settings)
+
+    def down(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503)
+
+    with web(
+        settings, [], script(), token_signing_key, tmp_path, httpx.MockTransport(down)
+    ) as site:
+        response = site.client.get("/login", follow_redirects=False)
+    assert (response.status_code, response.headers["location"]) == (303, LOGIN_UNREACHABLE)
+    assert "cannot read the endpoints" in caplog.text
+
+
+def test_a_failed_connect_logs_why(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="deskclerk.api")
+    settings = make_settings(token_settings)
+    ada, grace = as_user(sign_token, "ada"), as_user(sign_token, "grace")
+    with web(settings, [notes(notes_server)], script(), token_signing_key, tmp_path) as site:
+        started = start_connect(site, ada)
+        site.client.get("/oauth/callback", params=started, headers=grace, follow_redirects=False)
+    assert "connect failed" in caplog.text
+
+
+def test_the_page_shows_a_sentence_for_each_error_code_and_clears_it_from_the_address(
+    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings)
+    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+        page = site.client.get("/").text
+    for code in ("sign_in_refused", "login_unreachable", "connect_expired", "connect_failed"):
+        assert f"{code}:" in page
+    assert 'address.searchParams.delete("error")' in page
+    assert 'id="signin-error"' in page

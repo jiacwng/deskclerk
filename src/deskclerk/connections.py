@@ -242,6 +242,7 @@ class OAuthConnections:
             not_connected, _ = group.split(NotConnected)
             if not_connected is None:
                 raise
+            self.tokens.delete_tokens(user_id, server.name)
             raise not_connected.exceptions[0] from None
 
     async def tools(self, user_id: str, server: McpServer) -> list[ToolInfo]:

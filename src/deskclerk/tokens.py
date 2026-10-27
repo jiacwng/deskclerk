@@ -90,6 +90,13 @@ class TokenStore:
                 (user_id, server_name, kind, self.fernet.encrypt(text.encode())),
             )
 
+    def delete_tokens(self, user_id: str, server_name: str) -> None:
+        with self._database() as database:
+            database.execute(
+                "DELETE FROM secrets WHERE user_id = ? AND server_name = ? AND kind = 'tokens'",
+                (user_id, server_name),
+            )
+
     def delete_connection(self, user_id: str, server_name: str) -> None:
         with self._database() as database:
             database.execute(
