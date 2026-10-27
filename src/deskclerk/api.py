@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import resources
-from typing import Any, NoReturn
+from typing import Any, Literal, NoReturn
 from uuid import UUID, uuid4
 
 import anthropic
@@ -34,6 +34,7 @@ from deskclerk.agent import (
     AlwaysAllowRefused,
     ConversationWaiting,
     Decision,
+    Edit,
     ExecutedCall,
     Gate,
     McpServerFailed,
@@ -155,11 +156,17 @@ class AskBody(BaseModel):
     conversation: UUID | None = None
 
 
+class EditIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    edit: dict[str, Any]
+
+
 class ConfirmBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     conversation: UUID
-    decisions: dict[str, Decision]
+    decisions: dict[str, Literal["approve", "approve_always", "reject"] | EditIn]
 
 
 class ServerOut(BaseModel):
@@ -654,7 +661,11 @@ def create_app(
 
     @app.post("/ask/confirm")
     async def confirm(body: ConfirmBody, who: Caller = Depends(posting_caller)) -> AskOut:
-        return await take_turn(who.identity, body.conversation, "", body.decisions)
+        decisions: dict[str, Decision] = {
+            call_id: Edit(choice.edit) if isinstance(choice, EditIn) else choice
+            for call_id, choice in body.decisions.items()
+        }
+        return await take_turn(who.identity, body.conversation, "", decisions)
 
     async def take_turn(
         identity: Identity,

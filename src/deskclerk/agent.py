@@ -3,6 +3,7 @@
 # approve or reject them. Every tool result is screened before the model reads it.
 
 import asyncio
+import json
 import logging
 import re
 from collections.abc import Awaitable, Callable, Iterator
@@ -102,7 +103,13 @@ class BlockedCall:
     rejected: bool
 
 
-Decision = Literal["approve", "approve_always", "reject"]
+@dataclass(frozen=True)
+class Edit:
+    arguments: dict[str, Any]
+
+
+Decision = Literal["approve", "approve_always", "reject"] | Edit
+DecisionName = Literal["approve", "approve_always", "reject", "edit"]
 
 
 @dataclass(frozen=True)
@@ -120,7 +127,7 @@ class PendingCall:
 class DecidedCall:
     server: str
     tool: str
-    decision: Decision | Literal["always"]
+    decision: DecisionName | Literal["always"]
 
 
 @dataclass(frozen=True)
@@ -284,6 +291,7 @@ class _Shared:
     shown: set[str] = field(default_factory=set)
     automatic: list[DecidedCall] = field(default_factory=list)
     automatic_ids: set[str] = field(default_factory=set)
+    guarded: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class _Guard(AgentMiddleware[AgentState[Any], None, Any]):
@@ -351,23 +359,37 @@ class _Guard(AgentMiddleware[AgentState[Any], None, Any]):
             return ToolMessage(text, tool_call_id=call_id, status="error")
         async with shared.one_call_at_a_time:
             if not tool.info.read_only:
-                proposed = ProposedCall(
-                    shared.request,
-                    tool.server.name,
-                    tool.info,
-                    call["args"],
-                    shared.earlier + tuple(done.result for done in shared.executed),
-                )
-                verdict = await shared.gate(proposed)
-                if not verdict.allowed:
-                    shared.blocked.append(
-                        BlockedCall(
-                            tool.server.name, tool.info.name, call["args"], verdict.reason, False
-                        )
-                    )
-                    text = f"This call was blocked and not run: {verdict.reason}"
-                    return ToolMessage(text, tool_call_id=call_id, status="error")
+                refusal = await _refusal(shared, tool, call_id, call["args"], ())
+                if refusal is not None:
+                    return refusal
+            shared.guarded[call_id] = call["args"]
             return await handler(request)
+
+
+async def _refusal(
+    shared: _Shared, tool: _Tool, call_id: str, arguments: dict[str, Any], typed: tuple[str, ...]
+) -> ToolMessage | None:
+    proposed = ProposedCall(
+        shared.request,
+        tool.server.name,
+        tool.info,
+        arguments,
+        shared.earlier + tuple(done.result for done in shared.executed) + typed,
+    )
+    verdict = await shared.gate(proposed)
+    if verdict.allowed:
+        return None
+    shared.blocked.append(
+        BlockedCall(tool.server.name, tool.info.name, arguments, verdict.reason, False)
+    )
+    text = f"This call was blocked and not run: {verdict.reason}"
+    return ToolMessage(text, tool_call_id=call_id, status="error")
+
+
+def _typed_texts(arguments: dict[str, Any]) -> tuple[str, ...]:
+    return tuple(
+        value if isinstance(value, str) else json.dumps(value) for value in arguments.values()
+    )
 
 
 class _Run(AgentMiddleware[AgentState[Any], None, Any]):
@@ -385,6 +407,11 @@ class _Run(AgentMiddleware[AgentState[Any], None, Any]):
         tool = shared.offered[call["name"]]
         arguments: dict[str, Any] = call["args"]
         server_name, tool_name = tool.server.name, tool.info.name
+        call_id = call["id"] or ""
+        if not tool.info.read_only and arguments != shared.guarded.get(call_id):
+            refusal = await _refusal(shared, tool, call_id, arguments, _typed_texts(arguments))
+            if refusal is not None:
+                return refusal
         try:
             with shared.tool_span(server_name, tool_name, arguments) as record_output:
                 try:
@@ -581,7 +608,7 @@ async def run_agent(
             confirmation.interrupt_on[interrupt.value["name"]] = _REVIEW
         start = Command(
             resume={
-                interrupt_id: {"type": "reject" if choice == "reject" else "approve"}
+                interrupt_id: _resume_value(choice, waiting[interrupt_id].value["name"])
                 for interrupt_id, choice in decisions.items()
             }
         )
@@ -593,12 +620,12 @@ async def run_agent(
     pending = tuple(_pending_call(interrupt, tools) for interrupt in output.interrupts)
     before = len(saved.values.get("messages", []))
     decided = _decided_calls(output.value["messages"][before:], waiting, tools, decisions or {})
-    for call, choice in decided:
-        if choice == "reject":
+    for call, outcome in decided:
+        if outcome == "reject":
             shared.blocked.append(
                 BlockedCall(call.server, call.tool, call.arguments, "the employee declined", True)
             )
-        if choice == "approve_always":
+        if outcome == "approve_always":
             allow_tool(tokens, user_id, call.server, tools[f"{call.server}__{call.tool}"].info)
 
     last = shared.last_response
@@ -616,12 +643,12 @@ async def run_agent(
         pending,
         (
             *shared.automatic,
-            *(DecidedCall(call.server, call.tool, choice) for call, choice in decided),
+            *(DecidedCall(call.server, call.tool, outcome) for call, outcome in decided),
         ),
     )
 
 
-_REVIEW: InterruptOnConfig = {"allowed_decisions": ["approve", "reject"]}
+_REVIEW: InterruptOnConfig = {"allowed_decisions": ["approve", "edit", "reject"]}
 _REJECTION = "User rejected the tool call"
 _DESCRIPTION_CHARS = 160
 
@@ -651,6 +678,12 @@ def _confirmation(
         else:
             interrupt_on[name] = _REVIEW
     return HumanInTheLoopMiddleware(interrupt_on=interrupt_on, interrupt_mode="per_call")
+
+
+def _resume_value(choice: Decision, tool_name: str) -> dict[str, Any]:
+    if isinstance(choice, Edit):
+        return {"type": "edit", "edited_action": {"name": tool_name, "args": choice.arguments}}
+    return {"type": "reject" if choice == "reject" else "approve"}
 
 
 def _flag_before_pause(
@@ -710,16 +743,18 @@ def _decided_calls(
     waiting: dict[str, Interrupt],
     tools: dict[str, _Tool],
     chosen: dict[str, Decision],
-) -> list[tuple[PendingCall, Decision]]:
+) -> list[tuple[PendingCall, DecisionName]]:
     waiting_by_call = {interrupt.value["tool_call_id"]: interrupt for interrupt in waiting.values()}
-    decided: list[tuple[PendingCall, Decision]] = []
+    decided: list[tuple[PendingCall, DecisionName]] = []
     for message in new_messages:
         if isinstance(message, AIMessage):
             break
         if isinstance(message, ToolMessage) and message.tool_call_id in waiting_by_call:
             call = _pending_call(waiting_by_call[message.tool_call_id], tools)
             declined = message.status == "error" and str(message.content).startswith(_REJECTION)
-            decided.append((call, "reject" if declined else chosen[call.id]))
+            choice = chosen[call.id]
+            name: DecisionName = "edit" if isinstance(choice, Edit) else choice
+            decided.append((call, "reject" if declined else name))
     return decided
 
 

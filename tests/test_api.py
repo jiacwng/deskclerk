@@ -12,7 +12,7 @@ import logging
 import re
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -1684,7 +1684,10 @@ def ask_and_approve(
 
 
 def confirm(
-    site: Web, headers: dict[str, str], conversation: object, decisions: dict[str, str]
+    site: Web,
+    headers: dict[str, str],
+    conversation: object,
+    decisions: Mapping[str, str | dict[str, Any]],
 ) -> httpx2.Response:
     body = {"conversation": conversation, "decisions": decisions}
     return site.client.post("/ask/confirm", json=body, headers=headers)
@@ -1885,6 +1888,62 @@ def test_a_pause_and_its_confirmation_are_audited(
     assert confirmed["executed"] == [{"server": "notes", "tool": "write_note", "is_error": False}]
     assert confirmed["conversation"] == asked["conversation"]
     assert "secret-text" not in caplog.text
+
+
+def test_an_edited_confirmation_runs_the_edited_arguments_and_is_audited_as_an_edit(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="deskclerk.audit")
+    model = script(calls(("notes__write_note", {"text": "hi"})), answer("saved"))
+    ada = as_user(sign_token, "ada")
+    with web(
+        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, tmp_path
+    ) as site:
+        connect(site, ada)
+        paused = ask(site, ada, "save a note").json()
+        edit = {"edit": {"text": "hello"}}
+        done = confirm(site, ada, paused["conversation"], {paused["pending"][0]["id"]: edit})
+    assert done.status_code == 200
+    assert [note[1] for note in notes_server.notes] == ["hello"]
+    confirmed = [line for line in audit_lines(caplog) if line["entry"] == "confirm"][0]
+    assert confirmed["decided"] == [{"server": "notes", "tool": "write_note", "decision": "edit"}]
+
+
+def test_a_malformed_edit_is_refused_and_the_client_cannot_name_another_tool(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    tmp_path: Path,
+) -> None:
+    model = script(calls(("notes__write_note", {"text": "hi"})), answer("saved"))
+    ada = as_user(sign_token, "ada")
+    with web(
+        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, tmp_path
+    ) as site:
+        connect(site, ada)
+        paused = ask(site, ada, "save a note").json()
+        waiting = paused["pending"][0]["id"]
+        malformed: list[dict[str, Any]] = [
+            {"edit": "text"},
+            {"edit": ["text"]},
+            {"edit": None},
+            {"edit": {"text": "x"}, "name": "notes__delete_note"},
+            {"name": "notes__delete_note", "args": {"text": "x"}},
+            {},
+        ]
+        for choice in malformed:
+            refused = confirm(site, ada, paused["conversation"], {waiting: choice})
+            assert refused.status_code == 422
+        assert notes_server.notes == []
+        done = confirm(site, ada, paused["conversation"], {waiting: "approve"})
+        assert done.status_code == 200
+    assert [note[1] for note in notes_server.notes] == ["hi"]
 
 
 @pytest.fixture
