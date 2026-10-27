@@ -3,11 +3,13 @@
 
 import asyncio
 import logging
-import sqlite3
 import time
 
+import psycopg
 from langgraph.checkpoint.base.id import UUID
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+from deskclerk.database import Database
 
 _log = logging.getLogger(__name__)
 
@@ -20,26 +22,27 @@ def checkpoint_unix_time(checkpoint_id: str) -> float:
     return (UUID(hex=checkpoint_id).time - UUID_EPOCH_TICKS) / TICKS_PER_SECOND
 
 
-async def delete_old_threads(checkpointer: AsyncSqliteSaver, retention_days: int) -> int:
-    await checkpointer.setup()
+async def delete_old_threads(
+    database: Database, checkpointer: AsyncPostgresSaver, retention_days: int
+) -> int:
     cutoff = time.time() - retention_days * SECONDS_PER_DAY
-    async with (
-        checkpointer.lock,
-        checkpointer.conn.execute(
-            "SELECT thread_id, MAX(checkpoint_id) FROM checkpoints GROUP BY thread_id"
-        ) as cursor,
-    ):
+    async with database.async_pool.connection() as connection:
+        cursor = await connection.execute(
+            "SELECT thread_id, MAX(checkpoint_id) AS newest FROM checkpoints GROUP BY thread_id"
+        )
         newest = await cursor.fetchall()
-    old = [thread for thread, last in newest if checkpoint_unix_time(last) < cutoff]
+    old = [row["thread_id"] for row in newest if checkpoint_unix_time(row["newest"]) < cutoff]
     for thread in old:
         await checkpointer.adelete_thread(thread)
     return len(old)
 
 
-async def delete_old_threads_daily(checkpointer: AsyncSqliteSaver, retention_days: int) -> None:
+async def delete_old_threads_daily(
+    database: Database, checkpointer: AsyncPostgresSaver, retention_days: int
+) -> None:
     while True:
         await asyncio.sleep(SECONDS_PER_DAY)
         try:
-            await delete_old_threads(checkpointer, retention_days)
-        except sqlite3.Error:
+            await delete_old_threads(database, checkpointer, retention_days)
+        except psycopg.Error:
             _log.exception("retention sweep failed")

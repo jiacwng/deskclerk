@@ -2,8 +2,7 @@
 # asked, and that it is asked once per run. Two tests run it inside the agent against the test
 # MCP server.
 
-from collections.abc import Callable, Iterator
-from pathlib import Path
+from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any, cast
 
 import pytest
@@ -16,6 +15,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from deskclerk.agent import AgentResult, run_agent
 from deskclerk.config import Settings
 from deskclerk.connections import OAuthConnections
+from deskclerk.database import Database
 from deskclerk.jev import Jev, JevError
 from deskclerk.scope import (
     SERVER_QUESTION,
@@ -27,7 +27,7 @@ from deskclerk.screen import pass_through
 from deskclerk.servers import McpServer
 from mcp_server import RunningServer, running_mcp_server
 from test_agent import RecordingGate, ScriptedModel, answer, calls
-from test_connections import REDIRECT, connect, make_connections, server_record
+from test_connections import REDIRECT, connect, server_record, serving_connections
 
 REQUEST = "move my 3pm meeting to Friday"
 
@@ -225,12 +225,12 @@ def other_server() -> Iterator[RunningServer]:
 
 @pytest.fixture
 async def connections(
-    tmp_path: Path, mcp_server: RunningServer, other_server: RunningServer
-) -> OAuthConnections:
-    connections = make_connections(tmp_path / "tokens.sqlite", Fernet.generate_key().decode())
-    await connect(connections, "ada", server_record(mcp_server))
-    await connect(connections, "ada", McpServer("extra", other_server.url, None, None))
-    return connections
+    database: Database, mcp_server: RunningServer, other_server: RunningServer
+) -> AsyncIterator[OAuthConnections]:
+    async with serving_connections(database, Fernet.generate_key().decode()) as running:
+        await connect(running, "ada", server_record(mcp_server))
+        await connect(running, "ada", McpServer("extra", other_server.url, None, None))
+        yield running
 
 
 class RecordingModel(ScriptedModel):

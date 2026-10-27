@@ -21,6 +21,7 @@ from langchain_core.tools import BaseTool
 from deskclerk.agent import Gate, ProposedCall, Verdict
 from deskclerk.config import Settings
 from deskclerk.connections import OAuthConnections
+from deskclerk.database import Database
 from deskclerk.jev import Jev
 from deskclerk.tokens import TokenStore
 from run_deskclerk import (
@@ -76,9 +77,11 @@ def text() -> WorkbenchText:
 
 
 @pytest.fixture
-def connections(tmp_path: Path) -> OAuthConnections:
-    tokens = TokenStore(tmp_path / "tokens.sqlite", Fernet.generate_key().decode())
-    return OAuthConnections(tokens, "http://127.0.0.1/callback", "bench", 60)
+def connections() -> Iterator[OAuthConnections]:
+    database = Database(os.environ["DESKCLERK_DATABASE_URL"])
+    tokens = TokenStore(database, Fernet.generate_key().decode())
+    yield OAuthConnections(tokens, "http://127.0.0.1/callback", "bench", 60)
+    database.close()
 
 
 def delete_task() -> tuple[Task, str, str]:

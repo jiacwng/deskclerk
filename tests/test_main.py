@@ -8,12 +8,12 @@ import uvicorn
 from cryptography.fernet import Fernet
 
 from deskclerk import __main__ as entry
+from deskclerk.database import Database
 
 
 @pytest.fixture
-def environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def environment(monkeypatch: pytest.MonkeyPatch, database: Database) -> None:
     monkeypatch.setenv("DESKCLERK_TOKEN_KEY", Fernet.generate_key().decode())
-    monkeypatch.setenv("DESKCLERK_TOKEN_FILE", str(tmp_path / "tokens.sqlite"))
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
     monkeypatch.delenv("DESKCLERK_ALLOW_UNSCREENED", raising=False)
 
@@ -63,11 +63,10 @@ def test_a_screen_key_starts_the_server_without_the_allowance(
 
 
 def test_a_secret_file_reaches_the_settings_before_they_load(
-    monkeypatch: pytest.MonkeyPatch, served: list[Any], tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, served: list[Any], tmp_path: Path, database: Database
 ) -> None:
     key_file = tmp_path / "key"
     key_file.write_text(Fernet.generate_key().decode() + "\n")
-    monkeypatch.setenv("DESKCLERK_TOKEN_FILE", str(tmp_path / "tokens.sqlite"))
     monkeypatch.setenv("DESKCLERK_ALLOW_UNSCREENED", "true")
     monkeypatch.setenv("DESKCLERK_TOKEN_KEY", "placeholder")
     monkeypatch.delenv("DESKCLERK_TOKEN_KEY")

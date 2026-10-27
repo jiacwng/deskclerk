@@ -17,7 +17,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from importlib import resources
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
@@ -48,6 +47,7 @@ from deskclerk.auth import Identity, SigningKeyLookup, discover_jwks_url, jwks_s
 from deskclerk.bodylimit import MAX_BODY_BYTES
 from deskclerk.config import Settings
 from deskclerk.connections import OAuthConnections
+from deskclerk.database import Database
 from deskclerk.instructions import system_prompt
 from deskclerk.jev import PRICE_PER_INPUT_TOKEN, Jev
 from deskclerk.screen import NOTICE
@@ -102,21 +102,22 @@ def web(
     servers: list[McpServer],
     model: BaseChatModel,
     signing_key: SigningKeyLookup,
-    path: Path,
+    database: Database,
     idp_transport: httpx.AsyncBaseTransport | None = None,
     key: str | None = None,
     jev: Jev | None = None,
     tracing: Tracing | None = None,
 ) -> Iterator[Web]:
-    tokens = TokenStore(path / "tokens.sqlite", key or Fernet.generate_key().decode())
-    sessions = SessionStore(path / "tokens.sqlite")
+    tokens = TokenStore(database, key or Fernet.generate_key().decode())
+    sessions = SessionStore(database)
     connections = OAuthConnections(tokens, REDIRECT, "deskclerk test", 600)
     app = create_app(
         settings,
+        database,
         servers,
         connections,
         tokens,
-        SpendingStore(path / "spending.sqlite"),
+        SpendingStore(database),
         sessions,
         model,
         write_check(),
@@ -230,21 +231,21 @@ def session_cookie(site: Web, user: str, sid: str | None = None, seconds: int = 
 
 
 def test_the_app_needs_a_session_key(
-    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
     settings = token_settings.model_copy(update={"session_key": None})
     with pytest.raises(MissingSessionKey):
-        with web(settings, [], script(), token_signing_key, tmp_path):
+        with web(settings, [], script(), token_signing_key, database):
             pass
 
 
 def test_the_client_metadata_document_is_served_without_sign_in(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings, public_url="https://deskclerk.example.com")
-    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [], script(), token_signing_key, database) as site:
         response = site.client.get("/oauth/client.json")
     assert response.status_code == 200
     assert response.json() == {
@@ -275,27 +276,30 @@ def test_requests_without_a_session_or_token_are_refused(
     path: str,
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
-    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [], script(), token_signing_key, database) as site:
         assert site.client.request(method, path).status_code == 401
 
 
 def test_an_oversized_body_is_refused_before_sign_in(
-    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
     settings = make_settings(token_settings)
-    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [], script(), token_signing_key, database) as site:
         response = site.client.post("/ask", content=b"x" * (MAX_BODY_BYTES + 1))
         assert response.status_code == 413
 
 
 def test_a_bad_bearer_token_is_refused_and_a_good_one_names_the_employee(
-    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
-    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [], script(), token_signing_key, database) as site:
         for authorization in ["Bearer garbage", "Basic YWRhOnB3", "Bearer"]:
             refused = site.client.get("/me", headers={"Authorization": authorization})
             assert refused.status_code == 401
@@ -307,10 +311,10 @@ def test_a_bad_bearer_token_is_refused_and_a_good_one_names_the_employee(
 
 
 def test_a_callback_without_the_sign_in_cookie_is_refused(
-    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
     settings = make_settings(token_settings)
-    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [], script(), token_signing_key, database) as site:
         response = site.client.get("/login/callback?code=x&state=y", follow_redirects=False)
         assert (response.status_code, response.headers["location"]) == (303, SIGN_IN_REFUSED)
 
@@ -320,11 +324,11 @@ def test_connecting_is_finished_by_the_employee_who_started_it(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
     ada, grace = as_user(sign_token, "ada"), as_user(sign_token, "grace")
-    with web(settings, [notes(notes_server)], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [notes(notes_server)], script(), token_signing_key, database) as site:
         started = start_connect(site, ada)
         stolen = site.client.get(
             "/oauth/callback", params=started, headers=grace, follow_redirects=False
@@ -350,12 +354,12 @@ def test_connect_errors_are_clear(
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
     open_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
     servers = [notes(notes_server), open_notes(open_server)]
     ada = as_user(sign_token, "ada")
-    with web(settings, servers, script(), token_signing_key, tmp_path) as site:
+    with web(settings, servers, script(), token_signing_key, database) as site:
         assert site.client.post("/servers/nowhere/connect", headers=ada).status_code == 404
         assert site.client.post("/servers/open/connect", headers=ada).status_code == 400
         connect(site, ada)
@@ -368,7 +372,7 @@ def test_servers_show_whether_this_employee_is_connected(
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
     open_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
     servers = [notes(notes_server), open_notes(open_server)]
@@ -378,7 +382,7 @@ def test_servers_show_whether_this_employee_is_connected(
         listing = site.client.get("/servers", headers=headers).json()
         return {entry["name"]: entry["connected"] for entry in listing}
 
-    with web(settings, servers, script(), token_signing_key, tmp_path) as site:
+    with web(settings, servers, script(), token_signing_key, database) as site:
         assert connected(ada) == {"notes": False, "open": True}
         connect(site, ada)
         assert connected(ada) == {"notes": True, "open": True}
@@ -393,14 +397,14 @@ def test_an_ask_runs_the_agent_and_the_server_sees_the_write_under_that_employee
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
     model = script(
         calls(("notes__write_note", {"text": "hi"})), answer("saved"), answer("nothing to do")
     )
     ada, grace = as_user(sign_token, "ada"), as_user(sign_token, "grace")
-    with web(settings, [notes(notes_server)], model, token_signing_key, tmp_path) as site:
+    with web(settings, [notes(notes_server)], model, token_signing_key, database) as site:
         connect(site, ada)
         response = ask_and_approve(site, ada)
         assert response.status_code == 200
@@ -424,12 +428,12 @@ def test_a_connection_whose_refresh_fails_shows_as_not_connected_and_is_named_to
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
     model = script(answer("connect notes first"))
     ada = as_user(sign_token, "ada")
-    with web(settings, [notes(notes_server)], model, token_signing_key, tmp_path) as site:
+    with web(settings, [notes(notes_server)], model, token_signing_key, database) as site:
         connect(site, ada)
         stored = json.loads(site.tokens.get("ada", "notes", "tokens") or "")
         stored["token"]["access_token"] = "revoked"
@@ -447,13 +451,16 @@ def test_a_connection_whose_refresh_fails_shows_as_not_connected_and_is_named_to
 
 
 def test_an_ask_gives_the_model_the_instructions_with_today_s_utc_date(
-    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
     model = script(answer("ok"))
     ada = as_user(sign_token, "ada")
     days_around_the_call = {datetime.now(UTC).date()}
-    with web(settings, [], model, token_signing_key, tmp_path) as site:
+    with web(settings, [], model, token_signing_key, database) as site:
         assert ask(site, ada).status_code == 200
     days_around_the_call.add(datetime.now(UTC).date())
     sent = model.seen[0][0]
@@ -478,25 +485,31 @@ class RecordingTracing(Tracing):
 
 
 def test_an_ask_is_traced_under_the_employee_with_the_flagged_count(
-    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
     tracing = RecordingTracing()
     ada = as_user(sign_token, "ada")
     with web(
-        settings, [], script(answer("ok")), token_signing_key, tmp_path, tracing=tracing
+        settings, [], script(answer("ok")), token_signing_key, database, tracing=tracing
     ) as site:
         assert ask(site, ada).status_code == 200
     assert (tracing.users, tracing.flagged) == (["ada"], [0])
 
 
 def test_an_employee_is_told_when_the_reply_was_cut_off_at_the_output_limit(
-    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
     cut = AIMessage(content="The meeting is at", response_metadata={"stop_reason": "max_tokens"})
     ada = as_user(sign_token, "ada")
-    with web(settings, [], script(cut), token_signing_key, tmp_path) as site:
+    with web(settings, [], script(cut), token_signing_key, database) as site:
         body = ask(site, ada).json()
         page = site.client.get("/").text
     assert (body["answer"], body["cut_off"]) == ("The meeting is at", True)
@@ -504,21 +517,24 @@ def test_an_employee_is_told_when_the_reply_was_cut_off_at_the_output_limit(
 
 
 def test_the_page_tells_an_employee_when_a_tool_result_was_flagged(
-    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
     settings = make_settings(token_settings)
-    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [], script(), token_signing_key, database) as site:
         page = site.client.get("/").text
     assert "flagged by the injection screen" in page
 
 
 def test_asks_beyond_the_per_minute_quota_get_429_for_that_employee_only(
-    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings, requests_per_minute=2)
     model = ScriptedModel(messages=itertools.repeat(answer("ok")))
     ada, grace = as_user(sign_token, "ada"), as_user(sign_token, "grace")
-    with web(settings, [], model, token_signing_key, tmp_path) as site:
+    with web(settings, [], model, token_signing_key, database) as site:
         assert [ask(site, ada).status_code for _ in range(2)] == [200, 200]
         refused = ask(site, ada)
         assert refused.status_code == 429
@@ -527,7 +543,10 @@ def test_asks_beyond_the_per_minute_quota_get_429_for_that_employee_only(
 
 
 def test_an_employee_who_spent_the_cap_is_stopped_with_402_and_others_are_not(
-    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings, budget_usd=0.005)
     ninety_thousand_tokens = UsageMetadata(
@@ -535,7 +554,7 @@ def test_an_employee_who_spent_the_cap_is_stopped_with_402_and_others_are_not(
     )
     model = ScriptedModel(messages=itertools.repeat(answer("ok", usage=ninety_thousand_tokens)))
     ada, grace = as_user(sign_token, "ada"), as_user(sign_token, "grace")
-    with web(settings, [], model, token_signing_key, tmp_path) as site:
+    with web(settings, [], model, token_signing_key, database) as site:
         first = ask(site, ada)
         assert first.status_code == 200
         assert first.json()["cost_usd"] == pytest.approx(0.009)
@@ -550,7 +569,7 @@ def test_tokens_billed_before_a_provider_failure_count_against_the_cap(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger="deskclerk.audit")
@@ -562,7 +581,7 @@ def test_tokens_billed_before_a_provider_failure_count_against_the_cap(
         messages=iter([calls(("notes__read_note", {}), usage=ninety_thousand_tokens)])
     )
     ada = as_user(sign_token, "ada")
-    with web(settings, [notes(notes_server)], model, token_signing_key, tmp_path) as site:
+    with web(settings, [notes(notes_server)], model, token_signing_key, database) as site:
         connect(site, ada)
         failed = ask(site, ada)
         stopped = ask(site, ada)
@@ -577,7 +596,7 @@ def test_a_flagged_result_is_reported_and_jev_tokens_count_against_the_cap(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger="deskclerk.audit")
@@ -588,7 +607,7 @@ def test_a_flagged_result_is_reported_and_jev_tokens_count_against_the_cap(
     jev = FakeJev(0.9, tokens=1_000_000)
     ada = as_user(sign_token, "ada")
     with web(
-        settings, [notes(notes_server)], model, token_signing_key, tmp_path, jev=as_jev(jev)
+        settings, [notes(notes_server)], model, token_signing_key, database, jev=as_jev(jev)
     ) as site:
         connect(site, ada)
         first = ask(site, ada)
@@ -607,14 +626,14 @@ def test_a_changed_tool_is_withheld_reported_and_audited_until_the_server_is_rec
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger="deskclerk.audit")
     settings = make_settings(token_settings)
     model = ScriptedModel(messages=itertools.cycle([answer("done")]))
     ada = as_user(sign_token, "ada")
-    with web(settings, [notes(notes_server)], model, token_signing_key, tmp_path) as site:
+    with web(settings, [notes(notes_server)], model, token_signing_key, database) as site:
         connect(site, ada)
         pinned = ask(site, ada)
         assert site.tokens.get("ada", "notes", "tool_pins") is not None
@@ -636,12 +655,12 @@ def test_a_write_that_fails_the_write_check_never_reaches_the_server(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
     model = script(calls(("notes__write_note", {})), answer("I could not save it"))
     ada = as_user(sign_token, "ada")
-    with web(settings, [notes(notes_server)], model, token_signing_key, tmp_path) as site:
+    with web(settings, [notes(notes_server)], model, token_signing_key, database) as site:
         connect(site, ada)
         body = ask(site, ada).json()
     assert notes_server.notes == []
@@ -653,12 +672,15 @@ def test_a_write_that_fails_the_write_check_never_reaches_the_server(
 
 
 def test_a_request_must_be_between_1_and_4000_characters(
-    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
     model = ScriptedModel(messages=itertools.repeat(answer("ok")))
     ada = as_user(sign_token, "ada")
-    with web(settings, [], model, token_signing_key, tmp_path) as site:
+    with web(settings, [], model, token_signing_key, database) as site:
         assert ask(site, ada, "").status_code == 422
         assert ask(site, ada, "x" * 4001).status_code == 422
         assert ask(site, ada, "x" * 4000).status_code == 200
@@ -669,14 +691,14 @@ def test_the_audit_log_holds_no_argument_values_unless_audit_text_is_set(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger="deskclerk.audit")
     settings = make_settings(token_settings, audit_key=SecretStr(AUDIT_KEY))
     model = script(calls(("notes__write_note", {"text": "secret-text"})), answer("saved"))
     ada = as_user(sign_token, "ada")
-    with web(settings, [notes(notes_server)], model, token_signing_key, tmp_path) as site:
+    with web(settings, [notes(notes_server)], model, token_signing_key, database) as site:
         connect(site, ada)
         ask_and_approve(site, ada, "my private request")
         site.client.post("/servers/notes/disconnect", headers=ada)
@@ -699,14 +721,14 @@ def test_the_audit_log_holds_arguments_and_results_when_audit_text_is_set(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger="deskclerk.audit")
     settings = make_settings(token_settings, audit_text=True)
     model = script(calls(("notes__write_note", {"text": "secret-text"})), answer("saved"))
     ada = as_user(sign_token, "ada")
-    with web(settings, [notes(notes_server)], model, token_signing_key, tmp_path) as site:
+    with web(settings, [notes(notes_server)], model, token_signing_key, database) as site:
         connect(site, ada)
         ask_and_approve(site, ada, "my private request")
 
@@ -727,25 +749,28 @@ def test_a_refused_ask_is_audited_with_its_outcome(
     sign_token: Sign,
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger="deskclerk.audit")
     settings = make_settings(token_settings, requests_per_minute=1)
     model = ScriptedModel(messages=itertools.repeat(answer("ok")))
     ada = as_user(sign_token, "ada")
-    with web(settings, [], model, token_signing_key, tmp_path) as site:
+    with web(settings, [], model, token_signing_key, database) as site:
         ask(site, ada)
         ask(site, ada)
     assert [line["outcome"] for line in audit_lines(caplog)] == ["answered", "rate_limited"]
 
 
 def test_a_cookie_post_needs_the_custom_header_and_a_bearer_post_does_not(
-    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
     model = ScriptedModel(messages=itertools.repeat(answer("ok")))
-    with web(settings, [], model, token_signing_key, tmp_path) as site:
+    with web(settings, [], model, token_signing_key, database) as site:
         site.client.cookies.set(SESSION_COOKIE, session_cookie(site, "ada"))
         assert site.client.get("/me").json() == {"user": "ada", "name": "ada"}
         assert ask(site, {}).status_code == 403
@@ -758,10 +783,10 @@ def test_a_cookie_post_needs_the_custom_header_and_a_bearer_post_does_not(
 
 
 def test_an_unknown_or_expired_session_id_is_not_a_session(
-    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
     settings = make_settings(token_settings)
-    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [], script(), token_signing_key, database) as site:
         refused = ["", "made-up", session_cookie(site, "ada", seconds=-10)]
         for value in refused:
             site.client.cookies.set(SESSION_COOKIE, value)
@@ -771,10 +796,10 @@ def test_an_unknown_or_expired_session_id_is_not_a_session(
 
 
 def test_a_copied_cookie_stops_working_after_logout(
-    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
     settings = make_settings(token_settings)
-    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [], script(), token_signing_key, database) as site:
         copied = session_cookie(site, "ada")
         site.client.cookies.set(SESSION_COOKIE, copied)
         assert site.client.post("/logout", headers={CSRF_HEADER: CSRF_VALUE}).status_code == 204
@@ -789,11 +814,14 @@ def logout_token(sign_token: Sign, **claims: object) -> str:
 
 
 def test_a_logout_token_ends_a_browser_sign_in_by_the_sid_of_its_id_token(
-    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
     idp = FakeIdp(settings.issuer)
-    with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
+    with web(settings, [], script(), token_signing_key, database, idp.transport) as site:
         state, _, _ = begin_sign_in(site)
         finish_sign_in(site, idp, sign_token, state, {"sid": "from-keycloak"})
         assert site.client.get("/me").status_code == 200
@@ -803,11 +831,14 @@ def test_a_logout_token_ends_a_browser_sign_in_by_the_sid_of_its_id_token(
 
 
 def test_a_sub_only_logout_token_ends_a_session_when_users_are_named_by_another_claim(
-    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings, user_claim="preferred_username")
     idp = FakeIdp(settings.issuer)
-    with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
+    with web(settings, [], script(), token_signing_key, database, idp.transport) as site:
         state, _, _ = begin_sign_in(site)
         claims: dict[str, object] = {"sub": "uuid-1", "preferred_username": "ada"}
         finish_sign_in(site, idp, sign_token, state, claims)
@@ -818,10 +849,13 @@ def test_a_sub_only_logout_token_ends_a_session_when_users_are_named_by_another_
 
 
 def test_a_logout_token_ends_the_sessions_it_names(
-    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
-    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [], script(), token_signing_key, database) as site:
         by_sid = session_cookie(site, "ada", sid="s1")
         other_sid = session_cookie(site, "ada", sid="s2")
         by_user = session_cookie(site, "bob", sid="s3")
@@ -852,10 +886,10 @@ def test_a_bad_logout_token_is_refused_and_ends_nothing(
     sign_token: Sign,
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
-    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [], script(), token_signing_key, database) as site:
         value = session_cookie(site, "ada", sid="s1")
         form = {"logout_token": logout_token(sign_token, **claims)}
         assert site.client.post("/logout/backchannel", data=form).status_code == 400
@@ -867,10 +901,10 @@ def test_a_bad_logout_token_is_refused_and_ends_nothing(
 
 
 def test_the_page_is_served_with_a_policy_that_allows_only_its_own_script(
-    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
     settings = make_settings(token_settings)
-    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [], script(), token_signing_key, database) as site:
         response = site.client.get("/")
     assert response.status_code == 200
     script_block = re.search(r"<script>(.*?)</script>", response.text, re.DOTALL)
@@ -889,10 +923,10 @@ def vendor_file(name: str) -> bytes:
 
 
 def test_the_policy_allows_the_inline_script_and_the_two_vendored_scripts_by_hash_only(
-    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
     settings = make_settings(token_settings)
-    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [], script(), token_signing_key, database) as site:
         response = site.client.get("/")
     inline = re.search(r"<script>(.*?)</script>", response.text, re.DOTALL)
     assert inline is not None
@@ -911,10 +945,10 @@ def test_the_policy_allows_the_inline_script_and_the_two_vendored_scripts_by_has
 
 
 def test_the_vendored_scripts_are_served_as_javascript_and_nothing_else_is(
-    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
     settings = make_settings(token_settings)
-    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [], script(), token_signing_key, database) as site:
         served = [site.client.get(f"/vendor/{name}") for name in VENDOR_SCRIPTS]
         missing = site.client.get("/vendor/LICENSE-marked")
         escaped = site.client.get("/vendor/..%2f..%2fapi.py")
@@ -933,10 +967,10 @@ def test_the_policy_refuses_a_page_whose_vendored_script_does_not_match_its_file
 
 
 def test_the_page_shows_the_calls_that_ran_before_a_failure(
-    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
     settings = make_settings(token_settings)
-    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [], script(), token_signing_key, database) as site:
         page = site.client.get("/").text
     assert "These calls ran before the error" in page
     assert "body?.calls" in page
@@ -944,10 +978,10 @@ def test_the_page_shows_the_calls_that_ran_before_a_failure(
 
 
 def test_the_page_renders_answers_as_cleaned_markdown_and_hides_not_connected_notes(
-    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
     settings = make_settings(token_settings)
-    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [], script(), token_signing_key, database) as site:
         page = site.client.get("/").text
     assert "RETURN_DOM_FRAGMENT: true" in page
     assert "ALLOWED_URI_REGEXP: /^(?:https?:|mailto:)/i" in page
@@ -957,22 +991,22 @@ def test_the_page_renders_answers_as_cleaned_markdown_and_hides_not_connected_no
 
 
 def test_the_page_names_each_server_in_its_connect_and_disconnect_buttons(
-    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
     settings = make_settings(token_settings)
-    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [], script(), token_signing_key, database) as site:
         page = site.client.get("/").text
     assert 'toggle.setAttribute("aria-label", toggle.textContent + " " + server.name)' in page
     assert '<summary id="rail-summary"' in page
 
 
 @pytest.mark.keycloak
-def test_an_employee_signs_in_through_keycloak_and_asks(tmp_path: Path) -> None:
+def test_an_employee_signs_in_through_keycloak_and_asks(database: Database) -> None:
     settings = Settings(session_key=SecretStr(SESSION_KEY))
     with httpx.Client() as discovery:
         signing_key = jwks_signing_key(discover_jwks_url(settings, discovery))
     model = script(answer("hello analyst"))
-    with web(settings, [], model, signing_key, tmp_path) as site:
+    with web(settings, [], model, signing_key, database) as site:
         site.client.follow_redirects = False
         start = site.client.get("/login")
         assert start.status_code == 302
@@ -1009,11 +1043,14 @@ def test_an_employee_signs_in_through_keycloak_and_asks(tmp_path: Path) -> None:
 
 
 def test_a_wrong_state_with_a_valid_login_cookie_never_reaches_the_token_endpoint(
-    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
     idp = FakeIdp(settings.issuer)
-    with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
+    with web(settings, [], script(), token_signing_key, database, idp.transport) as site:
         begin_sign_in(site)
         forged = site.client.get("/login/callback?code=c&state=forged", follow_redirects=False)
         assert (forged.status_code, forged.headers["location"]) == (303, SIGN_IN_REFUSED)
@@ -1022,11 +1059,14 @@ def test_a_wrong_state_with_a_valid_login_cookie_never_reaches_the_token_endpoin
 
 
 def test_the_code_verifier_sent_to_the_token_endpoint_is_the_one_in_the_login_cookie(
-    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
     idp = FakeIdp(settings.issuer)
-    with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
+    with web(settings, [], script(), token_signing_key, database, idp.transport) as site:
         state, verifier, challenge = begin_sign_in(site)
         assert finish_sign_in(site, idp, sign_token, state, {}).status_code == 303
     assert len(idp.token_calls) == 1
@@ -1040,12 +1080,12 @@ def test_the_session_lasts_the_session_hours_after_the_id_token_expires(
     sign_token: Sign,
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
-    tmp_path: Path,
+    database: Database,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = make_settings(token_settings, session_hours=8)
     idp = FakeIdp(settings.issuer)
-    with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
+    with web(settings, [], script(), token_signing_key, database, idp.transport) as site:
         state, _, _ = begin_sign_in(site)
         finish_sign_in(site, idp, sign_token, state, {"exp": int(time.time()) + 5})
         assert site.client.get("/me").json() == {"user": "district-1", "name": "district-1"}
@@ -1058,11 +1098,14 @@ def test_the_session_lasts_the_session_hours_after_the_id_token_expires(
 
 
 def test_sign_in_works_when_the_access_token_is_opaque(
-    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
     idp = FakeIdp(settings.issuer)
-    with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
+    with web(settings, [], script(), token_signing_key, database, idp.transport) as site:
         state, _, _ = begin_sign_in(site)
         done = finish_sign_in(site, idp, sign_token, state, {"scope": None, "typ": "ID"})
         assert (done.status_code, done.headers["location"]) == (303, "/")
@@ -1070,11 +1113,11 @@ def test_sign_in_works_when_the_access_token_is_opaque(
 
 
 def test_the_authorize_url_carries_the_nonce_and_the_three_scopes(
-    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
     settings = make_settings(token_settings)
     with web(
-        settings, [], script(), token_signing_key, tmp_path, FakeIdp(settings.issuer).transport
+        settings, [], script(), token_signing_key, database, FakeIdp(settings.issuer).transport
     ) as site:
         start = site.client.get("/login", follow_redirects=False)
         query = parse_qs(urlparse(start.headers["location"]).query)
@@ -1098,11 +1141,11 @@ def test_a_refused_id_token_gives_a_fixed_message_on_the_browser_path(
     sign_token: Sign,
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
     idp = FakeIdp(settings.issuer)
-    with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
+    with web(settings, [], script(), token_signing_key, database, idp.transport) as site:
         state, _, _ = begin_sign_in(site)
         refused = finish_sign_in(site, idp, sign_token, state, claims)
         assert site.client.get("/me").status_code == 401
@@ -1110,11 +1153,11 @@ def test_a_refused_id_token_gives_a_fixed_message_on_the_browser_path(
 
 
 def test_a_token_response_without_an_id_token_is_refused(
-    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
     settings = make_settings(token_settings)
     idp = FakeIdp(settings.issuer)
-    with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
+    with web(settings, [], script(), token_signing_key, database, idp.transport) as site:
         state, _, _ = begin_sign_in(site)
         refused = site.client.get(f"/login/callback?code=c&state={state}", follow_redirects=False)
         assert (refused.status_code, refused.headers["location"]) == (303, SIGN_IN_REFUSED)
@@ -1134,11 +1177,11 @@ def test_the_client_secret_is_sent_to_the_token_endpoint_only_when_set(
     sign_token: Sign,
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings, client_secret=secret)
     idp = FakeIdp(settings.issuer)
-    with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
+    with web(settings, [], script(), token_signing_key, database, idp.transport) as site:
         state, _, _ = begin_sign_in(site)
         finish_sign_in(site, idp, sign_token, state, {})
     assert idp.token_calls[0].get("client_secret") == expected
@@ -1146,11 +1189,14 @@ def test_the_client_secret_is_sent_to_the_token_endpoint_only_when_set(
 
 
 def test_the_discovery_document_is_fetched_once_per_process(
-    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
     idp = FakeIdp(settings.issuer)
-    with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
+    with web(settings, [], script(), token_signing_key, database, idp.transport) as site:
         state, _, _ = begin_sign_in(site)
         begin_sign_in(site)
         site.client.get(f"/login/callback?code=c&state={state}", follow_redirects=False)
@@ -1158,14 +1204,17 @@ def test_the_discovery_document_is_fetched_once_per_process(
 
 
 def test_one_ask_at_a_time_per_employee_so_the_cap_cannot_be_raced(
-    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings, budget_usd=0.05)
     million_tokens = UsageMetadata(input_tokens=1_000_000, output_tokens=0, total_tokens=1_000_000)
     model = SlowModel(messages=itertools.repeat(answer("ok", usage=million_tokens)))
     ada = as_user(sign_token, "ada")
     statuses: list[int] = []
-    with web(settings, [], model, token_signing_key, tmp_path) as site:
+    with web(settings, [], model, token_signing_key, database) as site:
         threads = [
             threading.Thread(target=lambda: statuses.append(ask(site, ada).status_code))
             for _ in range(2)
@@ -1181,7 +1230,7 @@ def test_an_mcp_server_that_stopped_gives_502_and_an_upstream_error_line(
     sign_token: Sign,
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger="deskclerk.audit")
@@ -1190,12 +1239,12 @@ def test_an_mcp_server_that_stopped_gives_502_and_an_upstream_error_line(
     key = Fernet.generate_key().decode()
     with running_mcp_server(REDIRECT) as running:
         with web(
-            settings, [notes(running)], script(), token_signing_key, tmp_path, key=key
+            settings, [notes(running)], script(), token_signing_key, database, key=key
         ) as site:
             connect(site, ada)
         stopped = notes(running)
     model = script(answer("x"))
-    with web(settings, [stopped], model, token_signing_key, tmp_path, key=key) as site:
+    with web(settings, [stopped], model, token_signing_key, database, key=key) as site:
         response = ask(site, ada)
     assert response.status_code == 502
     detail = response.json()["detail"]
@@ -1209,7 +1258,7 @@ def test_an_ask_survives_a_server_that_stopped_and_reports_and_audits_it(
     sign_token: Sign,
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger="deskclerk.audit")
@@ -1218,14 +1267,14 @@ def test_an_ask_survives_a_server_that_stopped_and_reports_and_audits_it(
     key = Fernet.generate_key().decode()
     with running_mcp_server(REDIRECT) as running:
         with web(
-            settings, [notes(running)], script(), token_signing_key, tmp_path, key=key
+            settings, [notes(running)], script(), token_signing_key, database, key=key
         ) as site:
             connect(site, ada)
         stopped = notes(running)
     with running_mcp_server(REDIRECT, oauth=False) as healthy:
         model = script(calls(("open__read_note", {})), answer("notes is down"))
         servers = [stopped, open_notes(healthy)]
-        with web(settings, servers, model, token_signing_key, tmp_path, key=key) as site:
+        with web(settings, servers, model, token_signing_key, database, key=key) as site:
             response = ask(site, ada)
     assert response.status_code == 200
     body = response.json()
@@ -1239,7 +1288,7 @@ def test_an_ask_past_the_deadline_gives_504_and_the_conversation_still_works(
     sign_token: Sign,
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger="deskclerk.audit")
@@ -1247,7 +1296,7 @@ def test_an_ask_past_the_deadline_gives_504_and_the_conversation_still_works(
     model = script(answer("hello"), calls(("notes__pause", {"seconds": 5})), answer("recovered"))
     ada = as_user(sign_token, "ada")
     with running_mcp_server(REDIRECT, heavy_tools=True) as running:
-        with web(settings, [notes(running)], model, token_signing_key, tmp_path) as site:
+        with web(settings, [notes(running)], model, token_signing_key, database) as site:
             connect(site, ada)
             conversation = ask(site, ada, "hi").json()["conversation"]
             slow = ask_in(site, ada, conversation, "rest a while")
@@ -1263,13 +1312,13 @@ def test_a_model_that_fails_gives_502_naming_the_model_and_the_audit_cause(
     sign_token: Sign,
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger="deskclerk.audit")
     settings = make_settings(token_settings)
     model = ProviderGoneAfterScript(messages=iter([]))
-    with web(settings, [], model, token_signing_key, tmp_path) as site:
+    with web(settings, [], model, token_signing_key, database) as site:
         response = ask(site, as_user(sign_token, "ada"))
     assert response.status_code == 502
     assert response.json()["detail"] == "the model did not answer (APIConnectionError)"
@@ -1291,14 +1340,14 @@ def test_a_write_that_ran_before_the_model_failed_is_in_the_audit_line(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger="deskclerk.audit")
     model = ProviderGoneAfterScript(messages=iter([calls(("notes__write_note", {"text": "hi"}))]))
     ada = as_user(sign_token, "ada")
     with web(
-        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, tmp_path
+        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, database
     ) as site:
         connect(site, ada)
         response = ask_and_approve(site, ada)
@@ -1322,14 +1371,14 @@ def test_a_write_that_ran_before_the_deadline_is_in_the_audit_line(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger="deskclerk.audit")
     settings = make_settings(token_settings, ask_seconds=2)
     model = BlocksAfterScript(messages=iter([calls(("notes__write_note", {"text": "hi"}))]))
     ada = as_user(sign_token, "ada")
-    with web(settings, [notes(notes_server)], model, token_signing_key, tmp_path) as site:
+    with web(settings, [notes(notes_server)], model, token_signing_key, database) as site:
         connect(site, ada)
         response = ask_and_approve(site, ada)
     assert response.status_code == 504
@@ -1354,10 +1403,13 @@ class OpenAiGone(ScriptedModel):
 
 
 def test_an_openai_failure_gives_502_like_an_anthropic_one(
-    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
-    with web(settings, [], OpenAiGone(messages=iter([])), token_signing_key, tmp_path) as site:
+    with web(settings, [], OpenAiGone(messages=iter([])), token_signing_key, database) as site:
         response = ask(site, as_user(sign_token, "ada"))
     assert response.status_code == 502
     assert response.json()["detail"] == "the model did not answer (APIConnectionError)"
@@ -1392,11 +1444,11 @@ def test_a_pending_connection_that_is_cancelled_cannot_be_finished(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
     ada = as_user(sign_token, "ada")
-    with web(settings, [notes(notes_server)], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [notes(notes_server)], script(), token_signing_key, database) as site:
         started = start_connect(site, ada)
         assert cancel(site, started, ada) == expected_status
         late = site.client.get(
@@ -1408,10 +1460,10 @@ def test_a_pending_connection_that_is_cancelled_cannot_be_finished(
 
 @pytest.mark.parametrize("path", ["/servers/notes/connect", "/servers/notes/disconnect"])
 def test_a_cookie_caller_needs_the_custom_header_to_connect_or_disconnect(
-    path: str, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    path: str, token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
     settings = make_settings(token_settings)
-    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [], script(), token_signing_key, database) as site:
         site.client.cookies.set(SESSION_COOKIE, session_cookie(site, "ada"))
         assert site.client.post(path).status_code == 403
         assert site.client.post(path, headers={CSRF_HEADER: "something else"}).status_code == 403
@@ -1419,10 +1471,10 @@ def test_a_cookie_caller_needs_the_custom_header_to_connect_or_disconnect(
 
 
 def test_logging_out_clears_the_session_cookie(
-    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
     settings = make_settings(token_settings)
-    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [], script(), token_signing_key, database) as site:
         site.client.cookies.set(SESSION_COOKIE, session_cookie(site, "ada"))
         assert site.client.get("/me").json() == {"user": "ada", "name": "ada"}
         loggedout = site.client.post("/logout", headers={CSRF_HEADER: CSRF_VALUE})
@@ -1436,14 +1488,14 @@ def test_logging_out_clears_the_session_cookie(
 
 
 def test_an_unreachable_login_server_gives_503_and_no_session(
-    sign_token: Sign, token_settings: Settings, tmp_path: Path
+    sign_token: Sign, token_settings: Settings, database: Database
 ) -> None:
     settings = make_settings(token_settings)
     unreachable = jwks_signing_key(
         "http://127.0.0.1:9/realms/deskclerk/protocol/openid-connect/certs"
     )
     idp = FakeIdp(settings.issuer)
-    with web(settings, [], script(), unreachable, tmp_path, idp.transport) as site:
+    with web(settings, [], script(), unreachable, database, idp.transport) as site:
         bearer = site.client.get("/me", headers=as_user(sign_token, "ada"))
         assert bearer.status_code == 503
 
@@ -1459,11 +1511,11 @@ def test_a_server_that_names_its_issuer_on_the_redirect_connects_when_the_callba
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     issuing_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
     ada = as_user(sign_token, "ada")
-    with web(settings, [notes(issuing_server)], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [notes(issuing_server)], script(), token_signing_key, database) as site:
         started = start_connect(site, ada)
         assert started["iss"] == issuing_server.url.removesuffix("/mcp")
         finished = site.client.get(
@@ -1480,11 +1532,11 @@ def test_a_callback_with_the_wrong_or_missing_issuer_gives_502_and_connects_noth
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     issuing_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
     ada = as_user(sign_token, "ada")
-    with web(settings, [notes(issuing_server)], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [notes(issuing_server)], script(), token_signing_key, database) as site:
         started = start_connect(site, ada)
         started.pop("iss")
         if iss is not None:
@@ -1508,14 +1560,14 @@ def test_a_follow_up_in_the_same_conversation_sees_the_earlier_turn(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     settings = make_settings(token_settings)
     model = script(answer("first answer"), answer("second answer"), answer("fresh"))
     ada = as_user(sign_token, "ada")
     caplog.set_level(logging.INFO, logger="deskclerk.audit")
-    with web(settings, [notes(notes_server)], model, token_signing_key, tmp_path) as site:
+    with web(settings, [notes(notes_server)], model, token_signing_key, database) as site:
         first = ask(site, ada, "find the login bug").json()
         second = ask_in(site, ada, first["conversation"]).json()
         fresh = ask(site, ada, "something else").json()
@@ -1538,14 +1590,14 @@ def test_another_employees_or_an_unknown_conversation_gives_404_and_runs_nothing
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     settings = make_settings(token_settings)
     model = script(answer("ada's answer"), answer("ada follow-up"))
     ada, grace = as_user(sign_token, "ada"), as_user(sign_token, "grace")
     caplog.set_level(logging.INFO, logger="deskclerk.audit")
-    with web(settings, [notes(notes_server)], model, token_signing_key, tmp_path) as site:
+    with web(settings, [notes(notes_server)], model, token_signing_key, database) as site:
         conversation = ask(site, ada).json()["conversation"]
         taken = ask_in(site, grace, conversation)
         unknown = ask_in(site, grace, "0d6b2c3e-9d5e-4c27-8f3e-3c1d2b4a5e6f")
@@ -1568,14 +1620,14 @@ def test_the_owner_reloads_the_turns_and_a_waiting_confirmation_and_others_get_4
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     model = script(
         answer("first answer"), calls(("notes__write_note", {"text": "hi"})), answer("ok")
     )
     ada, grace = as_user(sign_token, "ada"), as_user(sign_token, "grace")
     with web(
-        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, tmp_path
+        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, database
     ) as site:
         connect(site, ada)
         first = ask(site, ada, "hello").json()
@@ -1609,13 +1661,13 @@ def test_a_renamed_employee_keeps_the_same_conversation(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
     model = script(answer("first answer"), answer("second answer"))
     before = {"Authorization": f"Bearer {sign_token({'sub': 'u-1', 'preferred_username': 'ada'})}"}
     after = {"Authorization": f"Bearer {sign_token({'sub': 'u-1', 'preferred_username': 'ada-l'})}"}
-    with web(settings, [notes(notes_server)], model, token_signing_key, tmp_path) as site:
+    with web(settings, [notes(notes_server)], model, token_signing_key, database) as site:
         first = ask(site, before).json()
         second = ask_in(site, after, first["conversation"])
         me = site.client.get("/me", headers=after).json()
@@ -1646,12 +1698,12 @@ def test_a_write_waits_for_the_employee_and_runs_once_when_approved(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     model = script(calls(("notes__write_note", {"text": "hi"})), answer("saved"))
     ada = as_user(sign_token, "ada")
     with web(
-        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, tmp_path
+        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, database
     ) as site:
         connect(site, ada)
         paused = ask(site, ada).json()
@@ -1677,12 +1729,12 @@ def test_a_rejected_write_never_runs_and_the_model_reads_that_it_was_declined(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     model = script(calls(("notes__write_note", {"text": "hi"})), answer("understood"))
     ada = as_user(sign_token, "ada")
     with web(
-        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, tmp_path
+        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, database
     ) as site:
         connect(site, ada)
         paused = ask(site, ada).json()
@@ -1703,7 +1755,7 @@ def test_two_writes_in_one_turn_are_decided_one_by_one(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     model = script(
         calls(("notes__write_note", {"text": "one"}), ("notes__write_note", {"text": "two"})),
@@ -1711,7 +1763,7 @@ def test_two_writes_in_one_turn_are_decided_one_by_one(
     )
     ada = as_user(sign_token, "ada")
     with web(
-        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, tmp_path
+        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, database
     ) as site:
         connect(site, ada)
         paused = ask(site, ada).json()
@@ -1728,18 +1780,18 @@ def test_a_new_app_on_the_same_token_file_resumes_a_pause(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
     key = Fernet.generate_key().decode()
     ada = as_user(sign_token, "ada")
     model = script(calls(("notes__write_note", {"text": "hi"})))
     servers = [notes(notes_server)]
-    with web(settings, servers, model, token_signing_key, tmp_path, key=key) as before:
+    with web(settings, servers, model, token_signing_key, database, key=key) as before:
         connect(before, ada)
         paused = ask(before, ada).json()
     with web(
-        settings, servers, script(answer("saved")), token_signing_key, tmp_path, key=key
+        settings, servers, script(answer("saved")), token_signing_key, database, key=key
     ) as after:
         decisions = {paused["pending"][0]["id"]: "approve"}
         done = confirm(after, ada, paused["conversation"], decisions).json()
@@ -1752,12 +1804,12 @@ def test_a_conversation_that_waits_refuses_a_new_ask_and_a_wrong_confirmation(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     model = script(calls(("notes__write_note", {"text": "hi"})), answer("saved"))
     ada, grace = as_user(sign_token, "ada"), as_user(sign_token, "grace")
     with web(
-        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, tmp_path
+        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, database
     ) as site:
         connect(site, ada)
         paused = ask(site, ada).json()
@@ -1790,14 +1842,14 @@ def test_a_write_the_check_refuses_and_a_read_tool_never_wait_for_the_employee(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     model = script(
         calls(("notes__write_note", {}), ("notes__read_note", {})), answer("could not save")
     )
     ada = as_user(sign_token, "ada")
     with web(
-        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, tmp_path
+        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, database
     ) as site:
         connect(site, ada)
         body = ask(site, ada).json()
@@ -1812,14 +1864,14 @@ def test_a_pause_and_its_confirmation_are_audited(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger="deskclerk.audit")
     model = script(calls(("notes__write_note", {"text": "secret-text"})), answer("saved"))
     ada = as_user(sign_token, "ada")
     with web(
-        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, tmp_path
+        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, database
     ) as site:
         connect(site, ada)
         paused = ask(site, ada, "my private request").json()
@@ -1843,14 +1895,14 @@ def test_an_edited_confirmation_runs_the_edited_arguments_and_is_audited_as_an_e
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger="deskclerk.audit")
     model = script(calls(("notes__write_note", {"text": "hi"})), answer("saved"))
     ada = as_user(sign_token, "ada")
     with web(
-        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, tmp_path
+        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, database
     ) as site:
         connect(site, ada)
         paused = ask(site, ada, "save a note").json()
@@ -1867,12 +1919,12 @@ def test_a_malformed_edit_is_refused_and_the_client_cannot_name_another_tool(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     model = script(calls(("notes__write_note", {"text": "hi"})), answer("saved"))
     ada = as_user(sign_token, "ada")
     with web(
-        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, tmp_path
+        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, database
     ) as site:
         connect(site, ada)
         paused = ask(site, ada, "save a note").json()
@@ -1905,7 +1957,7 @@ def test_a_destructive_call_cannot_be_always_allowed_and_a_non_destructive_one_c
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     append_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger="deskclerk.audit")
@@ -1920,7 +1972,7 @@ def test_a_destructive_call_cannot_be_always_allowed_and_a_non_destructive_one_c
     )
     ada = as_user(sign_token, "ada")
     with web(
-        make_settings(token_settings), [notes(append_server)], model, token_signing_key, tmp_path
+        make_settings(token_settings), [notes(append_server)], model, token_signing_key, database
     ) as site:
         connect(site, ada)
         paused = ask(site, ada, "delete note n-1").json()
@@ -1956,13 +2008,13 @@ def test_the_page_payload_hides_always_allow_for_a_server_that_forbids_it(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     append_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     forbidding = replace(notes(append_server), always_allow=False)
     model = script(calls(("notes__append_note", {"text": "one"})), answer("appended"))
     ada = as_user(sign_token, "ada")
     with web(
-        make_settings(token_settings), [forbidding], model, token_signing_key, tmp_path
+        make_settings(token_settings), [forbidding], model, token_signing_key, database
     ) as site:
         connect(site, ada)
         paused = ask(site, ada, "append one").json()
@@ -1975,16 +2027,16 @@ def test_the_page_payload_hides_always_allow_for_a_server_that_forbids_it(
 
 
 def test_livez_answers_without_a_sign_in(
-    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
     settings = make_settings(token_settings)
-    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [], script(), token_signing_key, database) as site:
         response = site.client.get("/livez")
     assert response.status_code == 200
 
 
 def test_readyz_is_503_until_the_login_server_has_been_read_and_then_200(
-    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
     settings = make_settings(token_settings)
     idp = FakeIdp(settings.issuer)
@@ -1996,7 +2048,7 @@ def test_readyz_is_503_until_the_login_server_has_been_read_and_then_200(
         return idp.handle(request)
 
     transport = httpx.MockTransport(handle)
-    with web(settings, [], script(), token_signing_key, tmp_path, idp_transport=transport) as site:
+    with web(settings, [], script(), token_signing_key, database, idp_transport=transport) as site:
         before = site.client.get("/readyz")
         reachable = True
         after = site.client.get("/readyz")
@@ -2006,15 +2058,16 @@ def test_readyz_is_503_until_the_login_server_has_been_read_and_then_200(
 
 
 def test_readyz_names_the_token_store_when_it_cannot_be_read(
-    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
     settings = make_settings(token_settings)
     idp = FakeIdp(settings.issuer)
     with web(
-        settings, [], script(), token_signing_key, tmp_path, idp_transport=idp.transport
+        settings, [], script(), token_signing_key, database, idp_transport=idp.transport
     ) as site:
         assert site.client.get("/readyz").status_code == 200
-        site.tokens.path.write_bytes(b"this is not a database" * 100)
+        with database.pool.connection() as connection:
+            connection.execute("DROP TABLE key_check")
         response = site.client.get("/readyz")
     assert response.status_code == 503
     assert "token store" in response.json()["not_ready"]
@@ -2023,7 +2076,7 @@ def test_readyz_names_the_token_store_when_it_cannot_be_read(
 def test_a_token_exchange_the_login_server_refuses_logs_its_reason_and_redirects(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.WARNING, logger="deskclerk.api")
@@ -2037,7 +2090,7 @@ def test_a_token_exchange_the_login_server_refuses_logs_its_reason_and_redirects
         return idp.handle(request)
 
     with web(
-        settings, [], script(), token_signing_key, tmp_path, httpx.MockTransport(handle)
+        settings, [], script(), token_signing_key, database, httpx.MockTransport(handle)
     ) as site:
         state, _, _ = begin_sign_in(site)
         refused = site.client.get(
@@ -2053,13 +2106,13 @@ def test_a_refused_id_token_logs_the_check_that_failed(
     sign_token: Sign,
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.WARNING, logger="deskclerk.api")
     settings = make_settings(token_settings)
     idp = FakeIdp(settings.issuer)
-    with web(settings, [], script(), token_signing_key, tmp_path, idp.transport) as site:
+    with web(settings, [], script(), token_signing_key, database, idp.transport) as site:
         state, _, _ = begin_sign_in(site)
         refused = finish_sign_in(site, idp, sign_token, state, {"nonce": "another-nonce"})
     assert refused.headers["location"] == SIGN_IN_REFUSED
@@ -2069,12 +2122,12 @@ def test_a_refused_id_token_logs_the_check_that_failed(
 def test_an_error_from_the_login_server_on_the_callback_is_logged_and_redirects(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.WARNING, logger="deskclerk.api")
     settings = make_settings(token_settings)
-    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [], script(), token_signing_key, database) as site:
         refused = site.client.get(
             "/login/callback?error=access_denied&error_description=no+consent",
             follow_redirects=False,
@@ -2087,7 +2140,7 @@ def test_an_error_from_the_login_server_on_the_callback_is_logged_and_redirects(
 def test_starting_a_sign_in_when_the_login_server_is_down_redirects_and_logs_why(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.WARNING, logger="deskclerk.api")
@@ -2097,7 +2150,7 @@ def test_starting_a_sign_in_when_the_login_server_is_down_redirects_and_logs_why
         return httpx.Response(503)
 
     with web(
-        settings, [], script(), token_signing_key, tmp_path, httpx.MockTransport(down)
+        settings, [], script(), token_signing_key, database, httpx.MockTransport(down)
     ) as site:
         response = site.client.get("/login", follow_redirects=False)
     assert (response.status_code, response.headers["location"]) == (303, LOGIN_UNREACHABLE)
@@ -2109,23 +2162,23 @@ def test_a_failed_connect_logs_why(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.WARNING, logger="deskclerk.api")
     settings = make_settings(token_settings)
     ada, grace = as_user(sign_token, "ada"), as_user(sign_token, "grace")
-    with web(settings, [notes(notes_server)], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [notes(notes_server)], script(), token_signing_key, database) as site:
         started = start_connect(site, ada)
         site.client.get("/oauth/callback", params=started, headers=grace, follow_redirects=False)
     assert "connect failed" in caplog.text
 
 
 def test_the_page_shows_a_sentence_for_each_error_code_and_clears_it_from_the_address(
-    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
     settings = make_settings(token_settings)
-    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+    with web(settings, [], script(), token_signing_key, database) as site:
         page = site.client.get("/").text
     for code in ("sign_in_refused", "login_unreachable", "connect_expired", "connect_failed"):
         assert f"{code}:" in page

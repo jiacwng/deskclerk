@@ -3,7 +3,6 @@
 
 import logging
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -11,6 +10,7 @@ import pytest
 from deskclerk.api import CSRF_HEADER, CSRF_VALUE, SESSION_COOKIE
 from deskclerk.auth import Identity, SigningKeyLookup
 from deskclerk.config import Settings
+from deskclerk.database import Database
 from deskclerk.servers import McpServer
 from mcp_server import RunningServer
 from test_agent import answer, script
@@ -66,12 +66,12 @@ def test_a_server_outside_the_employee_s_groups_is_hidden_refused_and_never_offe
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,  # noqa: F811
     open_server: RunningServer,  # noqa: F811
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     model = script(answer("ok"))
     settings = make_settings(token_settings)
     with web(
-        settings, servers_for(open_server, notes_server), model, token_signing_key, tmp_path
+        settings, servers_for(open_server, notes_server), model, token_signing_key, database
     ) as site:
         outsider = caller(site, ["hr"])
         assert names(site, outsider) == ["public"]
@@ -88,12 +88,12 @@ def test_a_server_is_offered_to_a_member_of_one_of_its_groups(
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,  # noqa: F811
     open_server: RunningServer,  # noqa: F811
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     model = script(answer("ok"))
     settings = make_settings(token_settings)
     with web(
-        settings, servers_for(open_server, notes_server), model, token_signing_key, tmp_path
+        settings, servers_for(open_server, notes_server), model, token_signing_key, database
     ) as site:
         member = caller(site, ["hr", "finance"])
         assert names(site, member) == ["public", "ledger", "vault"]
@@ -108,11 +108,11 @@ def test_an_employee_with_no_groups_claim_sees_only_the_servers_without_groups(
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,  # noqa: F811
     open_server: RunningServer,  # noqa: F811
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
     with web(
-        settings, servers_for(open_server, notes_server), script(), token_signing_key, tmp_path
+        settings, servers_for(open_server, notes_server), script(), token_signing_key, database
     ) as site:
         assert names(site, caller(site, None)) == ["public"]
 
@@ -123,13 +123,13 @@ def test_the_claim_that_lists_the_groups_is_set_by_the_groups_claim_setting(
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,  # noqa: F811
     open_server: RunningServer,  # noqa: F811
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings, groups_claim="roles")
     claims: dict[str, object] = {"roles": ["finance"], "groups": None}
     headers = {"Authorization": f"Bearer {sign_token(claims)}"}
     with web(
-        settings, servers_for(open_server, notes_server), script(), token_signing_key, tmp_path
+        settings, servers_for(open_server, notes_server), script(), token_signing_key, database
     ) as site:
         assert names(site, headers) == ["public", "ledger", "vault"]
 
@@ -144,7 +144,7 @@ def test_a_bearer_token_with_group_overage_gives_no_groups_and_one_warning(
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,  # noqa: F811
     open_server: RunningServer,  # noqa: F811
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.WARNING, logger="deskclerk.auth")
@@ -152,7 +152,7 @@ def test_a_bearer_token_with_group_overage_gives_no_groups_and_one_warning(
     claims: dict[str, object] = {"_claim_names": {"groups": "src1"}}
     headers = {"Authorization": f"Bearer {sign_token(claims)}"}
     with web(
-        settings, servers_for(open_server, notes_server), script(), token_signing_key, tmp_path
+        settings, servers_for(open_server, notes_server), script(), token_signing_key, database
     ) as site:
         assert names(site, headers) == ["public"]
     assert len(overage_warnings(caplog)) == 1
@@ -164,14 +164,14 @@ def test_a_browser_sign_in_with_group_overage_gives_no_groups_and_one_warning(
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,  # noqa: F811
     open_server: RunningServer,  # noqa: F811
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.WARNING, logger="deskclerk.auth")
     settings = make_settings(token_settings)
     idp = FakeIdp(settings.issuer)
     servers = servers_for(open_server, notes_server)
-    with web(settings, servers, script(), token_signing_key, tmp_path, idp.transport) as site:
+    with web(settings, servers, script(), token_signing_key, database, idp.transport) as site:
         state, _, _ = begin_sign_in(site)
         claims: dict[str, object] = {"_claim_names": {"groups": "src1"}}
         finish_sign_in(site, idp, sign_token, state, claims)
@@ -185,12 +185,12 @@ def test_the_groups_of_a_browser_sign_in_are_kept_with_its_session(
     token_signing_key: SigningKeyLookup,
     notes_server: RunningServer,  # noqa: F811
     open_server: RunningServer,  # noqa: F811
-    tmp_path: Path,
+    database: Database,
 ) -> None:
     settings = make_settings(token_settings)
     idp = FakeIdp(settings.issuer)
     servers = servers_for(open_server, notes_server)
-    with web(settings, servers, script(), token_signing_key, tmp_path, idp.transport) as site:
+    with web(settings, servers, script(), token_signing_key, database, idp.transport) as site:
         state, _, _ = begin_sign_in(site)
         finish_sign_in(site, idp, sign_token, state, {"groups": ["finance"]})
         assert names(site, {}) == ["public", "ledger", "vault"]

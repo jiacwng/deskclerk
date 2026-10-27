@@ -1,21 +1,17 @@
-# Conversation memory: each conversation is a LangGraph thread whose checkpoints live in the
-# token file, encrypted with the token key. A thread id starts with the employee's id, so one
+# Conversation memory: each conversation is a LangGraph thread whose checkpoints live in
+# Postgres, encrypted with the token key. A thread id starts with the employee's id, so one
 # employee can never load another's. Erasing an employee deletes every thread with their prefix.
 
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-import aiosqlite
 from cryptography.fernet import Fernet
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.serde.encrypted import EncryptedSerializer
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-from deskclerk.database import BUSY_TIMEOUT_SECONDS, connect
+from deskclerk.database import Database
 
 CIPHER_NAME = "fernet"
 UUID_LENGTH = 36
@@ -34,43 +30,46 @@ class FernetCipher:
         return self._fernet.decrypt(ciphertext)
 
 
-@asynccontextmanager
-async def open_checkpointer(path: Path, fernet: Fernet) -> AsyncIterator[AsyncSqliteSaver]:
-    async with aiosqlite.connect(path, timeout=BUSY_TIMEOUT_SECONDS) as connection:
-        await connection.execute("PRAGMA journal_mode=WAL")
-        yield AsyncSqliteSaver(connection, serde=EncryptedSerializer(FernetCipher(fernet)))
+async def open_checkpointer(database: Database, fernet: Fernet) -> AsyncPostgresSaver:
+    checkpointer = AsyncPostgresSaver(
+        database.async_pool, serde=EncryptedSerializer(FernetCipher(fernet))
+    )
+    async with database.schema_lock():
+        await checkpointer.setup()
+    return checkpointer
 
 
 def thread_id(user_id: str, conversation: UUID) -> str:
     return f"{user_id}/{conversation}"
 
 
-def delete_user_threads(path: Path, user_id: str) -> int:
+def delete_user_threads(database: Database, user_id: str) -> int:
     prefix = f"{user_id}/"
-    database = connect(path)
-    try:
-        with database:
-            tables = {row[0] for row in database.execute("SELECT name FROM sqlite_master")}
-            if "checkpoints" not in tables:
-                return 0
-            arguments = (len(prefix) + UUID_LENGTH, len(prefix), prefix)
-            threads = database.execute(
-                "SELECT COUNT(DISTINCT thread_id) FROM checkpoints "
-                "WHERE length(thread_id) = ? AND substr(thread_id, 1, ?) = ?",
-                arguments,
-            ).fetchone()[0]
-            database.execute(
-                "DELETE FROM checkpoints "
-                "WHERE length(thread_id) = ? AND substr(thread_id, 1, ?) = ?",
-                arguments,
-            )
-            database.execute(
-                "DELETE FROM writes WHERE length(thread_id) = ? AND substr(thread_id, 1, ?) = ?",
-                arguments,
-            )
-    finally:
-        database.close()
-    return int(threads)
+    arguments = (len(prefix) + UUID_LENGTH, prefix)
+    with database.pool.connection() as connection:
+        found = connection.execute("SELECT to_regclass('checkpoints')").fetchone()
+        if found is None or found[0] is None:
+            return 0
+        threads = connection.execute(
+            "SELECT COUNT(DISTINCT thread_id) FROM checkpoints "
+            "WHERE length(thread_id) = %s AND starts_with(thread_id, %s)",
+            arguments,
+        ).fetchone()
+        connection.execute(
+            "DELETE FROM checkpoints WHERE length(thread_id) = %s AND starts_with(thread_id, %s)",
+            arguments,
+        )
+        connection.execute(
+            "DELETE FROM checkpoint_writes "
+            "WHERE length(thread_id) = %s AND starts_with(thread_id, %s)",
+            arguments,
+        )
+        connection.execute(
+            "DELETE FROM checkpoint_blobs "
+            "WHERE length(thread_id) = %s AND starts_with(thread_id, %s)",
+            arguments,
+        )
+    return int(threads[0]) if threads else 0
 
 
 def _config(thread: str) -> Any:

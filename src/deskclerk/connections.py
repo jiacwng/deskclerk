@@ -1,16 +1,23 @@
 # Connects an employee's own account to an MCP server through OAuth, then lists and calls that
 # server's tools as the employee. The flow is two requests: begin gives the authorization URL,
-# complete takes the code the server sent the browser back with.
+# complete takes the code the server sent the browser back with. A flow in progress holds a live
+# task inside the MCP SDK, so the copy of the app that began it keeps it. Every copy records the
+# flow in Postgres and listens for NOTIFY: the copy that receives the browser's callback writes
+# the code to a table, the copy that holds the flow completes it and reports the outcome.
 
 import asyncio
+import json
+import logging
 import ssl
+import time
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import httpx2
+import psycopg
 from mcp.client import Client
 from mcp.client.auth import OAuthClientProvider, OAuthFlowError
 from mcp.client.auth.utils import is_valid_client_metadata_url
@@ -18,20 +25,34 @@ from mcp.client.streamable_http import StreamableHTTPError, streamable_http_clie
 from mcp.shared.auth import AuthorizationCodeResult, OAuthClientMetadata
 from mcp.shared.exceptions import MCPError
 from mcp.types import ContentBlock, EmbeddedResource, ResourceLink, TextContent, Tool
+from psycopg import AsyncConnection
 
 from deskclerk.servers import McpServer
 from deskclerk.tokens import ServerTokenStorage, TokenStore
 
 PUBLIC_CLIENT = "none"
 HTTP_TIMEOUT = httpx2.Timeout(30, read=300)
+CALLBACK_CHANNEL = "oauth_callback"
+OUTCOME_CHANNEL = "oauth_outcome"
+LISTEN_START_SECONDS = 10
+RECONNECT_SECONDS = 1
+MAX_FAILURE_CHARS = 500
+STALE_CALLBACK_SECONDS = 3600
+
+_log = logging.getLogger(__name__)
 
 
 class NotConnected(Exception):
     pass
 
 
+class FlowFailed(Exception):
+    pass
+
+
 UPSTREAM_ERRORS = (
     NotConnected,
+    FlowFailed,
     MCPError,
     StreamableHTTPError,
     OAuthFlowError,
@@ -80,12 +101,17 @@ class ToolResult:
     is_error: bool
 
 
-@dataclass
+@dataclass(frozen=True)
 class _PendingFlow:
-    user_id: str
-    server_name: str
     code: asyncio.Future[AuthorizationCodeResult]
     task: asyncio.Task[None]
+    deadline: float
+
+
+@dataclass(frozen=True)
+class _RecordedFlow:
+    user_id: str
+    server_name: str
     deadline: float
 
 
@@ -99,6 +125,7 @@ class OAuthConnections:
         client_metadata_url: str | None = None,
     ) -> None:
         self.tokens = tokens
+        self._database = tokens.database
         self._client_metadata_url = (
             client_metadata_url if is_valid_client_metadata_url(client_metadata_url) else None
         )
@@ -106,6 +133,17 @@ class OAuthConnections:
         self._client_name = client_name
         self._flow_timeout_seconds = flow_timeout_seconds
         self._pending: dict[str, _PendingFlow] = {}
+        self._outcomes: dict[str, asyncio.Future[str | None]] = {}
+        self._handlers: set[asyncio.Task[None]] = set()
+        self._listening = asyncio.Event()
+        self._database.create_tables(
+            "CREATE TABLE IF NOT EXISTS oauth_flows ("
+            "state TEXT PRIMARY KEY, user_id TEXT NOT NULL, server_name TEXT NOT NULL, "
+            "deadline DOUBLE PRECISION NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS oauth_callbacks ("
+            "state TEXT PRIMARY KEY, code TEXT, iss TEXT, error TEXT, "
+            "created_at DOUBLE PRECISION NOT NULL)",
+        )
 
     def client_metadata(self) -> OAuthClientMetadata:
         return OAuthClientMetadata(
@@ -139,6 +177,82 @@ class OAuthConnections:
             async with Client(transport) as client:
                 yield client
 
+    @asynccontextmanager
+    async def listening(self) -> AsyncIterator[None]:
+        listener = asyncio.create_task(self._listen())
+        try:
+            await asyncio.wait_for(self._listening.wait(), LISTEN_START_SECONDS)
+            yield
+        finally:
+            listener.cancel()
+            for handler in list(self._handlers):
+                handler.cancel()
+            await asyncio.gather(listener, *self._handlers, return_exceptions=True)
+
+    async def _listen(self) -> None:
+        while True:
+            try:
+                async with await AsyncConnection.connect(
+                    self._database.url, autocommit=True
+                ) as listener:
+                    await listener.execute("LISTEN oauth_callback")
+                    await listener.execute("LISTEN oauth_outcome")
+                    for state in list(self._pending):
+                        self._handle(state)
+                    self._listening.set()
+                    async for notice in listener.notifies():
+                        if notice.channel == CALLBACK_CHANNEL:
+                            self._handle(notice.payload)
+                        else:
+                            self._report_outcome(notice.payload)
+            except psycopg.Error:
+                _log.exception("the OAuth listener lost its database connection")
+                self._listening.clear()
+                await asyncio.sleep(RECONNECT_SECONDS)
+
+    def _handle(self, state: str) -> None:
+        handler = asyncio.create_task(self._finish_flow(state))
+        self._handlers.add(handler)
+        handler.add_done_callback(self._handlers.discard)
+
+    def _report_outcome(self, payload: str) -> None:
+        outcome = json.loads(payload)
+        waiting = self._outcomes.get(outcome["state"])
+        if waiting is not None and not waiting.done():
+            waiting.set_result(outcome["failure"])
+
+    async def _finish_flow(self, state: str) -> None:
+        flow = self._pending.get(state)
+        if flow is None:
+            return
+        async with self._database.async_pool.connection() as connection:
+            cursor = await connection.execute(
+                "DELETE FROM oauth_callbacks WHERE state = %s RETURNING code, iss, error",
+                (state,),
+            )
+            callback = await cursor.fetchone()
+            if callback is None:
+                return
+            await connection.execute("DELETE FROM oauth_flows WHERE state = %s", (state,))
+        del self._pending[state]
+        if callback["error"] is not None:
+            flow.task.cancel()
+            return
+        flow.code.set_result(
+            AuthorizationCodeResult(code=callback["code"], state=state, iss=callback["iss"])
+        )
+        failure = None
+        try:
+            await _outcome(flow.task)
+        except Exception as error:
+            _log.warning("connect failed to complete: %s", type(error).__name__)
+            failure = f"{type(error).__name__}: {error}"[:MAX_FAILURE_CHARS]
+        async with self._database.async_pool.connection() as connection:
+            await connection.execute(
+                "SELECT pg_notify(%s, %s)",
+                (OUTCOME_CHANNEL, json.dumps({"state": state, "failure": failure})),
+            )
+
     async def begin(self, user_id: str, server: McpServer) -> str:
         if server.auth == "none":
             raise NoSignInNeeded(f"{server.name} needs no sign-in")
@@ -149,9 +263,14 @@ class OAuthConnections:
 
         async def redirect_handler(url: str) -> None:
             state = parse_qs(urlparse(url).query)["state"][0]
-            self._pending[state] = _PendingFlow(
-                user_id, server.name, code, task, loop.time() + self._flow_timeout_seconds
-            )
+            deadline = time.time() + self._flow_timeout_seconds
+            self._pending[state] = _PendingFlow(code, task, deadline)
+            async with self._database.async_pool.connection() as connection:
+                await connection.execute(
+                    "INSERT INTO oauth_flows (state, user_id, server_name, deadline) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (state, user_id, server.name, deadline),
+                )
             authorization_url.set_result(url)
 
         async def callback_handler() -> AuthorizationCodeResult:
@@ -167,7 +286,7 @@ class OAuthConnections:
             async with self._client(provider, server) as client:
                 await client.list_tools()
 
-        self._drop_expired_flows(loop.time())
+        await self._drop_expired_flows(time.time())
         task = asyncio.create_task(authenticate())
         task.add_done_callback(_consume_exception)
         waiting: set[asyncio.Future[Any]] = {authorization_url, task}
@@ -178,45 +297,104 @@ class OAuthConnections:
         raise AlreadyConnected(f"{user_id} is already connected to {server.name}")
 
     async def complete(self, user_id: str, state: str, code: str, iss: str | None = None) -> str:
-        flow = self._pending.get(state)
-        if flow is None:
-            raise UnknownState("no connection is waiting for this state")
-        if flow.user_id != user_id:
-            raise WrongUser("this connection was started by another employee")
-        del self._pending[state]
-        if asyncio.get_running_loop().time() > flow.deadline:
-            flow.task.cancel()
+        flow = await self._recorded_flow(user_id, state)
+        if time.time() > flow.deadline:
+            await self._cancel(state)
             raise FlowExpired("the connection was not finished in time")
-        flow.code.set_result(AuthorizationCodeResult(code=code, state=state, iss=iss))
-        await _outcome(flow.task)
+        waiting: asyncio.Future[str | None] = asyncio.get_running_loop().create_future()
+        self._outcomes[state] = waiting
+        try:
+            await self._send_callback(state, code=code, iss=iss)
+            try:
+                failure = await asyncio.wait_for(waiting, max(flow.deadline - time.time(), 0))
+            except TimeoutError:
+                raise FlowExpired("the connection was not finished in time") from None
+        finally:
+            del self._outcomes[state]
+        if failure is not None:
+            raise FlowFailed(failure)
         return flow.server_name
 
-    def cancel(self, user_id: str, state: str) -> None:
-        flow = self._pending.get(state)
-        if flow is None:
+    async def cancel(self, user_id: str, state: str) -> None:
+        await self._recorded_flow(user_id, state)
+        await self._cancel(state)
+
+    async def cancel_for(self, user_id: str, server_name: str) -> None:
+        async with self._database.async_pool.connection() as connection:
+            cursor = await connection.execute(
+                "DELETE FROM oauth_flows WHERE user_id = %s AND server_name = %s RETURNING state",
+                (user_id, server_name),
+            )
+            states = [row["state"] for row in await cursor.fetchall()]
+        for state in states:
+            await self._stop(state)
+
+    async def cancel_all_for(self, user_id: str) -> None:
+        async with self._database.async_pool.connection() as connection:
+            cursor = await connection.execute(
+                "DELETE FROM oauth_flows WHERE user_id = %s RETURNING state", (user_id,)
+            )
+            states = [row["state"] for row in await cursor.fetchall()]
+        for state in states:
+            await self._stop(state)
+
+    async def _recorded_flow(self, user_id: str, state: str) -> _RecordedFlow:
+        async with self._database.async_pool.connection() as connection:
+            cursor = await connection.execute(
+                "SELECT user_id, server_name, deadline FROM oauth_flows WHERE state = %s",
+                (state,),
+            )
+            row = await cursor.fetchone()
+        if row is None:
             raise UnknownState("no connection is waiting for this state")
-        if flow.user_id != user_id:
+        if row["user_id"] != user_id:
             raise WrongUser("this connection was started by another employee")
-        del self._pending[state]
-        flow.task.cancel()
+        return _RecordedFlow(row["user_id"], row["server_name"], row["deadline"])
 
-    def cancel_for(self, user_id: str, server_name: str) -> None:
-        for state, flow in list(self._pending.items()):
-            if flow.user_id == user_id and flow.server_name == server_name:
-                del self._pending[state]
-                flow.task.cancel()
+    async def _cancel(self, state: str) -> None:
+        async with self._database.async_pool.connection() as connection:
+            await connection.execute("DELETE FROM oauth_flows WHERE state = %s", (state,))
+        await self._stop(state)
 
-    def cancel_all_for(self, user_id: str) -> None:
-        for state, flow in list(self._pending.items()):
-            if flow.user_id == user_id:
-                del self._pending[state]
-                flow.task.cancel()
+    async def _stop(self, state: str) -> None:
+        flow = self._pending.pop(state, None)
+        if flow is not None:
+            flow.task.cancel()
+        else:
+            with suppress(UnknownState):
+                await self._send_callback(state, error="cancelled")
 
-    def _drop_expired_flows(self, now: float) -> None:
+    async def _send_callback(
+        self,
+        state: str,
+        code: str | None = None,
+        iss: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        async with (
+            self._database.async_pool.connection() as connection,
+            connection.transaction(),
+        ):
+            cursor = await connection.execute(
+                "INSERT INTO oauth_callbacks (state, code, iss, error, created_at) "
+                "VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING RETURNING state",
+                (state, code, iss, error, time.time()),
+            )
+            if await cursor.fetchone() is None:
+                raise UnknownState("no connection is waiting for this state")
+            await connection.execute("SELECT pg_notify(%s, %s)", (CALLBACK_CHANNEL, state))
+
+    async def _drop_expired_flows(self, now: float) -> None:
         for state, flow in list(self._pending.items()):
             if now > flow.deadline:
                 flow.task.cancel()
                 del self._pending[state]
+        async with self._database.async_pool.connection() as connection:
+            await connection.execute("DELETE FROM oauth_flows WHERE deadline < %s", (now,))
+            await connection.execute(
+                "DELETE FROM oauth_callbacks WHERE created_at < %s",
+                (now - STALE_CALLBACK_SECONDS,),
+            )
 
     @asynccontextmanager
     async def _connected_client(self, user_id: str, server: McpServer) -> AsyncIterator[Client]:

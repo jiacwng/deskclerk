@@ -12,6 +12,7 @@ services:
       - "127.0.0.1:8080:8080"
       - "127.0.0.1:8000:8000"
       - "127.0.0.1:8100:8100"
+      - "127.0.0.1:5432:5432"
     volumes:
       - ./keycloak:/opt/keycloak/data/import:ro
     healthcheck:
@@ -26,6 +27,21 @@ services:
       interval: 2s
       timeout: 5s
       retries: 60
+
+  # The database that holds all deskclerk state, on postgresql://deskclerk:deskclerk@127.0.0.1:5432/
+  # deskclerk. It shares keycloak's network like demo, which publishes port 5432 for it.
+  postgres:
+    image: postgres:17-alpine
+    network_mode: "service:keycloak"
+    environment:
+      POSTGRES_USER: deskclerk
+      POSTGRES_PASSWORD: deskclerk
+      POSTGRES_DB: deskclerk
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "deskclerk", "-d", "deskclerk"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
 
   # A small task list server on http://localhost:8100/mcp with no sign-in, for trying deskclerk
   # without an account. It starts empty and keeps its tasks in memory.
@@ -54,6 +70,7 @@ services:
     env_file: .env
     environment:
       DESKCLERK_HOST: 0.0.0.0
+      DESKCLERK_DATABASE_URL: postgresql://deskclerk:deskclerk@127.0.0.1:5432/deskclerk
     volumes:
       - type: bind
         source: ./servers.toml
@@ -61,12 +78,10 @@ services:
         read_only: true
         bind:
           create_host_path: false
-      - deskclerk-data:/app/data
     depends_on:
       keycloak:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
       demo:
         condition: service_healthy
-
-volumes:
-  deskclerk-data:

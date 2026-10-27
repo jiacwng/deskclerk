@@ -1,13 +1,10 @@
-# The token file keeps tokens encrypted, keyed by employee and server, readable only with the key.
-
-import sqlite3
-from contextlib import closing
-from pathlib import Path
+# The token table keeps tokens encrypted, keyed by employee and server, readable only with the key.
 
 import pytest
 from cryptography.fernet import Fernet
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
+from deskclerk.database import Database
 from deskclerk.servers import McpServer
 from deskclerk.tokens import TokenKeyError, TokenStore
 
@@ -22,11 +19,11 @@ def key() -> str:
 
 
 @pytest.mark.anyio
-async def test_tokens_are_not_readable_in_the_file(tmp_path: Path, key: str) -> None:
-    path = tmp_path / "tokens.sqlite"
-    storage = TokenStore(path, key).storage_for("ada", SERVER, REDIRECT)
+async def test_tokens_are_not_readable_in_the_table(database: Database, key: str) -> None:
+    storage = TokenStore(database, key).storage_for("ada", SERVER, REDIRECT)
     await storage.set_tokens(OAuthToken(access_token=ACCESS, refresh_token="refresh-value-9876"))
-    raw = path.read_bytes()
+    with database.pool.connection() as connection:
+        raw = b"".join(bytes(row[0]) for row in connection.execute("SELECT value FROM secrets"))
     assert ACCESS.encode() not in raw
     assert b"refresh-value-9876" not in raw
     stored = await storage.get_tokens()
@@ -34,21 +31,20 @@ async def test_tokens_are_not_readable_in_the_file(tmp_path: Path, key: str) -> 
     assert stored.access_token == ACCESS
 
 
-def test_another_key_cannot_open_the_file(tmp_path: Path, key: str) -> None:
-    path = tmp_path / "tokens.sqlite"
-    TokenStore(path, key)
+def test_another_key_cannot_open_the_table(database: Database, key: str) -> None:
+    TokenStore(database, key)
     with pytest.raises(TokenKeyError, match="not encrypted with this token key"):
-        TokenStore(path, Fernet.generate_key().decode())
+        TokenStore(database, Fernet.generate_key().decode())
 
 
-def test_a_key_that_is_not_a_fernet_key_is_refused(tmp_path: Path) -> None:
+def test_a_key_that_is_not_a_fernet_key_is_refused(database: Database) -> None:
     with pytest.raises(TokenKeyError, match="not a Fernet key"):
-        TokenStore(tmp_path / "tokens.sqlite", "short")
+        TokenStore(database, "short")
 
 
 @pytest.mark.anyio
-async def test_each_employee_and_server_has_their_own_tokens(tmp_path: Path, key: str) -> None:
-    store = TokenStore(tmp_path / "tokens.sqlite", key)
+async def test_each_employee_and_server_has_their_own_tokens(database: Database, key: str) -> None:
+    store = TokenStore(database, key)
     other = McpServer("other", "https://other.test/mcp", None, None)
     await store.storage_for("ada", SERVER, REDIRECT).set_tokens(OAuthToken(access_token=ACCESS))
     assert await store.storage_for("grace", SERVER, REDIRECT).get_tokens() is None
@@ -56,8 +52,10 @@ async def test_each_employee_and_server_has_their_own_tokens(tmp_path: Path, key
 
 
 @pytest.mark.anyio
-async def test_deleting_tokens_removes_only_that_employees_tokens(tmp_path: Path, key: str) -> None:
-    store = TokenStore(tmp_path / "tokens.sqlite", key)
+async def test_deleting_tokens_removes_only_that_employees_tokens(
+    database: Database, key: str
+) -> None:
+    store = TokenStore(database, key)
     for user in ("ada", "grace"):
         await store.storage_for(user, SERVER, REDIRECT).set_tokens(OAuthToken(access_token=user))
     store.delete_connection("ada", SERVER.name)
@@ -66,8 +64,8 @@ async def test_deleting_tokens_removes_only_that_employees_tokens(tmp_path: Path
 
 
 @pytest.mark.anyio
-async def test_a_registered_client_is_stored_for_one_employee(tmp_path: Path, key: str) -> None:
-    store = TokenStore(tmp_path / "tokens.sqlite", key)
+async def test_a_registered_client_is_stored_for_one_employee(database: Database, key: str) -> None:
+    store = TokenStore(database, key)
     info = OAuthClientInformationFull(client_id="dynamic", redirect_uris=[REDIRECT])
     await store.storage_for("ada", SERVER, REDIRECT).set_client_info(info)
     stored = await store.storage_for("ada", SERVER, REDIRECT).get_client_info()
@@ -78,9 +76,9 @@ async def test_a_registered_client_is_stored_for_one_employee(tmp_path: Path, ke
 
 @pytest.mark.anyio
 async def test_an_admin_registered_client_is_returned_and_never_stored(
-    tmp_path: Path, key: str
+    database: Database, key: str
 ) -> None:
-    store = TokenStore(tmp_path / "tokens.sqlite", key)
+    store = TokenStore(database, key)
     server = McpServer("notes", "https://notes.test/mcp", "preset", "preset-secret")
     storage = store.storage_for("ada", server, REDIRECT)
     await storage.set_client_info(OAuthClientInformationFull(client_id="other"))
@@ -92,9 +90,9 @@ async def test_an_admin_registered_client_is_returned_and_never_stored(
 
 
 def test_deleting_a_connection_removes_its_pins_and_keeps_the_registered_client(
-    tmp_path: Path, key: str
+    database: Database, key: str
 ) -> None:
-    store = TokenStore(tmp_path / "tokens.sqlite", key)
+    store = TokenStore(database, key)
     other = McpServer("other", "https://other.test/mcp", None, None)
     store.put("ada", SERVER.name, "tool_pins", "{}")
     store.put("ada", SERVER.name, "client", "{}")
@@ -103,10 +101,3 @@ def test_deleting_a_connection_removes_its_pins_and_keeps_the_registered_client(
     assert store.get("ada", SERVER.name, "tool_pins") is None
     assert store.get("ada", SERVER.name, "client") == "{}"
     assert store.get("ada", other.name, "tool_pins") == "{}"
-
-
-def test_the_token_file_uses_a_write_ahead_log(tmp_path: Path, key: str) -> None:
-    path = tmp_path / "tokens.sqlite"
-    TokenStore(path, key)
-    with closing(sqlite3.connect(path)) as database:
-        assert database.execute("PRAGMA journal_mode").fetchone() == ("wal",)

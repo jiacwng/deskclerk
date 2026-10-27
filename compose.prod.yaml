@@ -1,11 +1,28 @@
-# The web app alone for a company deploy, reachable from this machine only. Point .env at your
-# own login server.
+# The web app and its database for a company deploy, reachable from this machine only. Point .env at
+# your own login server and set POSTGRES_PASSWORD there, without characters that need escaping in a
+# URL. Several copies of the app can share the one database.
 services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: deskclerk
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: deskclerk
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "deskclerk", "-d", "deskclerk"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
   deskclerk:
     build: .
     env_file: .env
     environment:
       DESKCLERK_HOST: 0.0.0.0
+      DESKCLERK_DATABASE_URL: postgresql://deskclerk:${POSTGRES_PASSWORD}@postgres:5432/deskclerk
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
@@ -15,7 +32,9 @@ services:
         read_only: true
         bind:
           create_host_path: false
-      - deskclerk-data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     logging:
       driver: json-file
@@ -24,4 +43,4 @@ services:
         max-file: "5"
 
 volumes:
-  deskclerk-data:
+  postgres-data:

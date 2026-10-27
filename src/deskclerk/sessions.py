@@ -1,17 +1,13 @@
-# An SQLite table of the browser sessions that are open. The cookie holds a random id, the table
+# A Postgres table of the browser sessions that are open. The cookie holds a random id, the table
 # holds only its SHA-256, and deleting a row ends the session at once.
 
 import hashlib
 import json
 import secrets
-import sqlite3
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
-from pathlib import Path
 
 from deskclerk.auth import Identity
-from deskclerk.database import connect
+from deskclerk.database import Database
 
 
 def _digest(session_id: str) -> str:
@@ -19,33 +15,22 @@ def _digest(session_id: str) -> str:
 
 
 class SessionStore:
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with self._database() as database:
-            database.execute(
-                "CREATE TABLE IF NOT EXISTS sessions ("
-                "id_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, client_id TEXT NOT NULL, "
-                "name TEXT NOT NULL, sid TEXT, subject TEXT, groups TEXT NOT NULL, "
-                "expires_at REAL NOT NULL)"
-            )
-
-    @contextmanager
-    def _database(self) -> Iterator[sqlite3.Connection]:
-        database = connect(self.path)
-        try:
-            with database:
-                yield database
-        finally:
-            database.close()
+    def __init__(self, database: Database) -> None:
+        self._pool = database.pool
+        database.create_tables(
+            "CREATE TABLE IF NOT EXISTS sessions ("
+            "id_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, client_id TEXT NOT NULL, "
+            "name TEXT NOT NULL, sid TEXT, subject TEXT, groups TEXT NOT NULL, "
+            "expires_at DOUBLE PRECISION NOT NULL)"
+        )
 
     def create(self, identity: Identity, lifetime_seconds: int) -> str:
         session_id = secrets.token_urlsafe(32)
-        with self._database() as database:
-            database.execute(
+        with self._pool.connection() as connection:
+            connection.execute(
                 "INSERT INTO sessions "
                 "(id_hash, user_id, client_id, name, sid, subject, groups, expires_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     _digest(session_id),
                     identity.user_id,
@@ -60,16 +45,18 @@ class SessionStore:
         return session_id
 
     def lookup(self, session_id: str) -> Identity | None:
-        with self._database() as database:
-            row = database.execute(
+        with self._pool.connection() as connection:
+            row = connection.execute(
                 "SELECT user_id, client_id, name, groups, expires_at "
-                "FROM sessions WHERE id_hash = ?",
+                "FROM sessions WHERE id_hash = %s",
                 (_digest(session_id),),
             ).fetchone()
             if row is None:
                 return None
             if row[4] < time.time():
-                database.execute("DELETE FROM sessions WHERE id_hash = ?", (_digest(session_id),))
+                connection.execute(
+                    "DELETE FROM sessions WHERE id_hash = %s", (_digest(session_id),)
+                )
                 return None
         return Identity(
             user_id=row[0],
@@ -79,17 +66,19 @@ class SessionStore:
         )
 
     def end(self, session_id: str) -> None:
-        with self._database() as database:
-            database.execute("DELETE FROM sessions WHERE id_hash = ?", (_digest(session_id),))
+        with self._pool.connection() as connection:
+            connection.execute("DELETE FROM sessions WHERE id_hash = %s", (_digest(session_id),))
 
     def delete_user(self, user_id: str) -> int:
-        with self._database() as database:
-            return database.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,)).rowcount
+        with self._pool.connection() as connection:
+            return connection.execute(
+                "DELETE FROM sessions WHERE user_id = %s", (user_id,)
+            ).rowcount
 
     def end_by_sid(self, sid: str) -> None:
-        with self._database() as database:
-            database.execute("DELETE FROM sessions WHERE sid = ?", (sid,))
+        with self._pool.connection() as connection:
+            connection.execute("DELETE FROM sessions WHERE sid = %s", (sid,))
 
     def end_by_subject(self, subject: str) -> None:
-        with self._database() as database:
-            database.execute("DELETE FROM sessions WHERE subject = ?", (subject,))
+        with self._pool.connection() as connection:
+            connection.execute("DELETE FROM sessions WHERE subject = %s", (subject,))

@@ -5,7 +5,6 @@ import logging
 import threading
 import time
 from contextlib import AbstractContextManager
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -15,6 +14,7 @@ from pydantic import SecretStr
 from deskclerk.api import SESSION_COOKIE
 from deskclerk.auth import Identity, SigningKeyLookup
 from deskclerk.config import Settings
+from deskclerk.database import Database
 from test_agent import ScriptedModel, answer, script
 from test_api import (
     FakeIdp,
@@ -40,12 +40,12 @@ ERASED = (0, 0, 0, 0)
 def scim_site(
     token_settings: Settings,
     signing_key: SigningKeyLookup,
-    path: Path,
+    database: Database,
     token: str | None = TOKEN,
 ) -> AbstractContextManager[Web]:
     secret = None if token is None else SecretStr(token)
     settings = make_settings(token_settings, scim_token=secret)
-    return web(settings, [], script(), signing_key, path, key=KEY)
+    return web(settings, [], script(), signing_key, database, key=KEY)
 
 
 def provision(client: TestClient, user_name: str = "ana", external_id: str = "ana") -> str:
@@ -58,13 +58,12 @@ def provision(client: TestClient, user_name: str = "ana", external_id: str = "an
     return str(created.json()["id"])
 
 
-def employee_rows(path: Path, user: str) -> tuple[int, int, int, int]:
-    tokens = path / "tokens.sqlite"
+def employee_rows(database: Database, user: str) -> tuple[int, int, int, int]:
     return (
-        len(rows(tokens, f"SELECT 1 FROM secrets WHERE user_id = '{user}'")),  # noqa: S608
-        len(rows(tokens, f"SELECT 1 FROM sessions WHERE user_id = '{user}'")),  # noqa: S608
-        len(rows(tokens, f"SELECT 1 FROM checkpoints WHERE thread_id LIKE '{user}/%'")),  # noqa: S608
-        len(rows(path / "spending.sqlite", f"SELECT 1 FROM costs WHERE user_id = '{user}'")),  # noqa: S608
+        len(rows(database, f"SELECT 1 FROM secrets WHERE user_id = '{user}'")),  # noqa: S608
+        len(rows(database, f"SELECT 1 FROM sessions WHERE user_id = '{user}'")),  # noqa: S608
+        len(rows(database, f"SELECT 1 FROM checkpoints WHERE thread_id LIKE '{user}/%'")),  # noqa: S608
+        len(rows(database, f"SELECT 1 FROM costs WHERE user_id = '{user}'")),  # noqa: S608
     )
 
 
@@ -75,9 +74,9 @@ def patch_active(client: TestClient, user_id: str, value: object) -> None:
 
 
 def test_the_endpoints_are_absent_without_the_setting(
-    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
-    with scim_site(token_settings, token_signing_key, tmp_path, None) as site:
+    with scim_site(token_settings, token_signing_key, database, None) as site:
         assert site.client.get(USERS, headers=AUTH).status_code == 404
 
 
@@ -94,9 +93,9 @@ def test_a_missing_or_wrong_token_is_refused_in_the_scim_error_format(
     headers: dict[str, str],
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
-    with scim_site(token_settings, token_signing_key, tmp_path) as site:
+    with scim_site(token_settings, token_signing_key, database) as site:
         for method, path in [("GET", USERS), ("POST", USERS), ("GET", "/scim/v2/Schemas")]:
             response = site.client.request(method, path, headers=headers, json={})
             assert response.status_code == 401
@@ -109,9 +108,9 @@ def test_a_missing_or_wrong_token_is_refused_in_the_scim_error_format(
 
 
 def test_users_are_created_found_by_filter_and_fetched(
-    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
-    with scim_site(token_settings, token_signing_key, tmp_path) as site:
+    with scim_site(token_settings, token_signing_key, database) as site:
         client = site.client
         user_id = provision(client, "Ana@Example.com", "oid-1")
         provision(client, "bob@example.com", "oid-2")
@@ -139,9 +138,9 @@ def test_users_are_created_found_by_filter_and_fetched(
 
 
 def test_a_second_user_with_the_same_name_or_external_id_is_a_conflict(
-    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
-    with scim_site(token_settings, token_signing_key, tmp_path) as site:
+    with scim_site(token_settings, token_signing_key, database) as site:
         provision(site.client, "ana", "oid-1")
         same_name = site.client.post(
             USERS, headers=AUTH, json={"userName": "ANA", "externalId": "oid-2"}
@@ -168,11 +167,11 @@ def test_deactivating_through_patch_erases_only_that_employee(
     operation: dict[str, Any],
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
-    seed(tmp_path)
-    assert employee_rows(tmp_path, "ana") == SEEDED
-    with scim_site(token_settings, token_signing_key, tmp_path) as site:
+    seed(database)
+    assert employee_rows(database, "ana") == SEEDED
+    with scim_site(token_settings, token_signing_key, database) as site:
         user_id = provision(site.client)
         response = site.client.patch(
             f"{USERS}/{user_id}",
@@ -183,20 +182,20 @@ def test_deactivating_through_patch_erases_only_that_employee(
         assert response.json()["active"] is False
         assert site.client.get(f"{USERS}/{user_id}", headers=AUTH).json()["active"] is False
 
-    assert employee_rows(tmp_path, "ana") == ERASED
-    assert employee_rows(tmp_path, "anabel") == SEEDED
+    assert employee_rows(database, "ana") == ERASED
+    assert employee_rows(database, "anabel") == SEEDED
 
 
 def test_deactivating_through_put_erases_the_employee(
-    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
-    seed(tmp_path)
-    with scim_site(token_settings, token_signing_key, tmp_path) as site:
+    seed(database)
+    with scim_site(token_settings, token_signing_key, database) as site:
         user_id = provision(site.client)
         other_id = site.client.put(
             f"{USERS}/{user_id}", headers=AUTH, json={"userName": "ana", "externalId": "other"}
         )
-        assert employee_rows(tmp_path, "ana") == SEEDED
+        assert employee_rows(database, "ana") == SEEDED
         response = site.client.put(
             f"{USERS}/{user_id}",
             headers=AUTH,
@@ -204,37 +203,37 @@ def test_deactivating_through_put_erases_the_employee(
         )
     assert other_id.status_code == 400
     assert response.json()["active"] is False
-    assert employee_rows(tmp_path, "ana") == ERASED
-    assert employee_rows(tmp_path, "anabel") == SEEDED
+    assert employee_rows(database, "ana") == ERASED
+    assert employee_rows(database, "anabel") == SEEDED
 
 
 def test_delete_erases_the_employee_and_removes_the_user(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger="deskclerk.audit")
-    seed(tmp_path)
-    with scim_site(token_settings, token_signing_key, tmp_path) as site:
+    seed(database)
+    with scim_site(token_settings, token_signing_key, database) as site:
         user_id = provision(site.client)
         deleted = site.client.delete(f"{USERS}/{user_id}", headers=AUTH)
         again = site.client.get(f"{USERS}/{user_id}", headers=AUTH)
 
     assert deleted.status_code == 204
     assert again.status_code == 404
-    assert employee_rows(tmp_path, "ana") == ERASED
-    assert employee_rows(tmp_path, "anabel") == SEEDED
+    assert employee_rows(database, "ana") == ERASED
+    assert employee_rows(database, "anabel") == SEEDED
     lines = [r.getMessage() for r in caplog.records if r.name == "deskclerk.audit"]
     assert len(lines) == 1
     assert '"entry": "erase"' in lines[0]
 
 
 def test_a_reactivated_user_can_sign_in_again(
-    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
-    seed(tmp_path)
-    with scim_site(token_settings, token_signing_key, tmp_path) as site:
+    seed(database)
+    with scim_site(token_settings, token_signing_key, database) as site:
         user_id = provision(site.client)
         patch_active(site.client, user_id, "False")
         patch_active(site.client, user_id, "True")
@@ -245,9 +244,9 @@ def test_a_reactivated_user_can_sign_in_again(
 
 
 def test_discovery_endpoints_describe_the_user_resource_only(
-    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
-    with scim_site(token_settings, token_signing_key, tmp_path) as site:
+    with scim_site(token_settings, token_signing_key, database) as site:
         config = site.client.get("/scim/v2/ServiceProviderConfig", headers=AUTH).json()
         types = site.client.get("/scim/v2/ResourceTypes", headers=AUTH).json()
         schemas = site.client.get("/scim/v2/Schemas", headers=AUTH).json()
@@ -271,9 +270,9 @@ def test_a_deactivated_employee_is_refused_by_bearer_and_by_session_until_reacti
     sign_token: Sign,
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
-    tmp_path: Path,
+    database: Database,
 ) -> None:
-    with scim_site(token_settings, token_signing_key, tmp_path) as site:
+    with scim_site(token_settings, token_signing_key, database) as site:
         user_id = provision(site.client)
         bearer = as_user(sign_token, "ana")
         assert site.client.get("/me", headers=bearer).status_code == 200
@@ -295,12 +294,12 @@ def test_a_deactivated_employee_cannot_sign_in(
     sign_token: Sign,
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
-    tmp_path: Path,
+    database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     settings = make_settings(token_settings, scim_token=SecretStr(TOKEN))
     idp = FakeIdp(settings.issuer)
-    with web(settings, [], script(), token_signing_key, tmp_path, idp.transport, KEY) as site:
+    with web(settings, [], script(), token_signing_key, database, idp.transport, KEY) as site:
         user_id = provision(site.client)
         patch_active(site.client, user_id, False)
         state, _, _ = begin_sign_in(site)
@@ -311,16 +310,19 @@ def test_a_deactivated_employee_cannot_sign_in(
         )
         assert SESSION_COOKIE not in site.client.cookies
     assert "account deactivated" in caplog.text
-    assert rows(tmp_path / "tokens.sqlite", "SELECT 1 FROM sessions WHERE user_id = 'ana'") == []
+    assert rows(database, "SELECT 1 FROM sessions WHERE user_id = 'ana'") == []
 
 
 def test_deactivating_waits_for_an_ask_in_flight_and_nothing_is_left_behind(
-    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
 ) -> None:
     held = HeldModel(messages=iter([answer("done")]))
     held.entered, held.release = threading.Event(), threading.Event()
     settings = make_settings(token_settings, scim_token=SecretStr(TOKEN))
-    with web(settings, [], held, token_signing_key, tmp_path, key=KEY) as site:
+    with web(settings, [], held, token_signing_key, database, key=KEY) as site:
         user_id = provision(site.client)
         asking = threading.Thread(target=ask, args=(site, as_user(sign_token, "ana")))
         asking.start()
@@ -333,4 +335,4 @@ def test_deactivating_waits_for_an_ask_in_flight_and_nothing_is_left_behind(
         asking.join(10)
         deactivating.join(10)
     assert still_waiting
-    assert employee_rows(tmp_path, "ana") == ERASED
+    assert employee_rows(database, "ana") == ERASED
