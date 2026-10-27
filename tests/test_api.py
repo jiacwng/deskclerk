@@ -46,6 +46,7 @@ from deskclerk.api import (
     create_app,
 )
 from deskclerk.auth import Identity, SigningKeyLookup, discover_jwks_url, jwks_signing_key
+from deskclerk.bodylimit import MAX_BODY_BYTES
 from deskclerk.config import Settings
 from deskclerk.connections import OAuthConnections
 from deskclerk.instructions import system_prompt
@@ -274,6 +275,15 @@ def test_requests_without_a_session_or_token_are_refused(
     settings = make_settings(token_settings)
     with web(settings, [], script(), token_signing_key, tmp_path) as site:
         assert site.client.request(method, path).status_code == 401
+
+
+def test_an_oversized_body_is_refused_before_sign_in(
+    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings)
+    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+        response = site.client.post("/ask", content=b"x" * (MAX_BODY_BYTES + 1))
+        assert response.status_code == 413
 
 
 def test_a_bad_bearer_token_is_refused_and_a_good_one_names_the_employee(
@@ -890,6 +900,17 @@ def test_the_policy_refuses_a_page_whose_vendored_script_does_not_match_its_file
         _content_security_policy(page, {"marked.js": b"code"})
 
 
+def test_the_page_shows_the_calls_that_ran_before_a_failure(
+    token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    settings = make_settings(token_settings)
+    with web(settings, [], script(), token_signing_key, tmp_path) as site:
+        page = site.client.get("/").text
+    assert "These calls ran before the error" in page
+    assert "body?.calls" in page
+    assert "if (!kept) discardTurn" in page
+
+
 def test_the_page_renders_answers_as_cleaned_markdown_and_hides_not_connected_notes(
     token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
 ) -> None:
@@ -1251,6 +1272,14 @@ def test_a_write_that_ran_before_the_model_failed_is_in_the_audit_line(
         response = ask_and_approve(site, ada)
     assert response.status_code == 502
     assert [note[1] for note in notes_server.notes] == ["hi"]
+    [shown] = response.json()["calls"]
+    assert (shown["server"], shown["tool"], shown["arguments"]) == (
+        "notes",
+        "write_note",
+        {"text": "hi"},
+    )
+    assert shown["is_error"] is False
+    assert response.json()["detail"]
     [line] = [line for line in audit_lines(caplog) if line["entry"] == "confirm"]
     assert line["outcome"] == "upstream_error"
     assert line["executed"] == [{"server": "notes", "tool": "write_note", "is_error": False}]
@@ -1273,6 +1302,14 @@ def test_a_write_that_ran_before_the_deadline_is_in_the_audit_line(
         response = ask_and_approve(site, ada)
     assert response.status_code == 504
     assert [note[1] for note in notes_server.notes] == ["hi"]
+    [shown] = response.json()["calls"]
+    assert (shown["server"], shown["tool"], shown["arguments"]) == (
+        "notes",
+        "write_note",
+        {"text": "hi"},
+    )
+    assert shown["is_error"] is False
+    assert response.json()["detail"]
     [line] = [line for line in audit_lines(caplog) if line["entry"] == "confirm"]
     assert line["outcome"] == "timed_out"
     assert line["executed"] == [{"server": "notes", "tool": "write_note", "is_error": False}]

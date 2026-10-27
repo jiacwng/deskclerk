@@ -27,7 +27,7 @@ def served(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
     monkeypatch.setattr(entry, "chat_model", lambda settings: object())
     monkeypatch.setattr(entry, "create_app", lambda *args: "the app")
     monkeypatch.setattr(entry, "log_to_stdout", lambda: None)
-    monkeypatch.setattr(uvicorn, "run", lambda app, host, port: started.append(app))
+    monkeypatch.setattr(uvicorn, "run", lambda app, host, port, access_log: started.append(app))
     return started
 
 
@@ -85,3 +85,14 @@ def test_a_missing_secret_file_exits_with_the_reason(
         entry.main()
     assert "absent" in str(stopped.value.code)
     assert served == []
+
+
+@pytest.mark.usefixtures("environment")
+def test_the_server_runs_with_the_access_log_off(
+    monkeypatch: pytest.MonkeyPatch, served: list[Any]
+) -> None:
+    runs: list[dict[str, Any]] = []
+    monkeypatch.setenv("DESKCLERK_ALLOW_UNSCREENED", "true")
+    monkeypatch.setattr(uvicorn, "run", lambda app, **options: runs.append(options))
+    entry.main()
+    assert runs[0]["access_log"] is False
