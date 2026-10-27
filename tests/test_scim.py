@@ -2,6 +2,8 @@
 # deactivating or deleting a user erases that employee's data and nobody else's.
 
 import logging
+import threading
+import time
 from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
@@ -13,8 +15,18 @@ from pydantic import SecretStr
 from deskclerk.api import SESSION_COOKIE
 from deskclerk.auth import Identity, SigningKeyLookup
 from deskclerk.config import Settings
-from test_agent import script
-from test_api import Web, make_settings, web
+from test_agent import ScriptedModel, answer, script
+from test_api import (
+    FakeIdp,
+    Sign,
+    Web,
+    as_user,
+    ask,
+    begin_sign_in,
+    finish_sign_in,
+    make_settings,
+    web,
+)
 from test_erase import KEY, rows, seed
 
 TOKEN = "a-scim-token-from-the-identity-provider"
@@ -243,3 +255,82 @@ def test_discovery_endpoints_describe_the_user_resource_only(
     assert config["bulk"]["supported"] is False
     assert [t["id"] for t in types["Resources"]] == ["User"]
     assert [s["id"] for s in schemas["Resources"]] == ["urn:ietf:params:scim:schemas:core:2.0:User"]
+
+
+class HeldModel(ScriptedModel):
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+
+    def _generate(self, *args: Any, **kwargs: Any) -> Any:
+        self.entered.set()
+        self.release.wait(10)
+        return super()._generate(*args, **kwargs)
+
+
+def test_a_deactivated_employee_is_refused_by_bearer_and_by_session_until_reactivated(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    tmp_path: Path,
+) -> None:
+    with scim_site(token_settings, token_signing_key, tmp_path) as site:
+        user_id = provision(site.client)
+        bearer = as_user(sign_token, "ana")
+        assert site.client.get("/me", headers=bearer).status_code == 200
+        patch_active(site.client, user_id, False)
+        refused_bearer = site.client.get("/me", headers=bearer)
+        site.client.cookies.set(
+            SESSION_COOKIE, site.sessions.create(Identity("ana", "deskclerk-api", "ana"), 3600)
+        )
+        refused_cookie = site.client.get("/me")
+        site.client.cookies.clear()
+        other = site.client.get("/me", headers=as_user(sign_token, "anabel"))
+        patch_active(site.client, user_id, True)
+        allowed = site.client.get("/me", headers=bearer)
+    assert (refused_bearer.status_code, refused_cookie.status_code) == (403, 403)
+    assert (other.status_code, allowed.status_code) == (200, 200)
+
+
+def test_a_deactivated_employee_cannot_sign_in(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings = make_settings(token_settings, scim_token=SecretStr(TOKEN))
+    idp = FakeIdp(settings.issuer)
+    with web(settings, [], script(), token_signing_key, tmp_path, idp.transport, KEY) as site:
+        user_id = provision(site.client)
+        patch_active(site.client, user_id, False)
+        state, _, _ = begin_sign_in(site)
+        response = finish_sign_in(site, idp, sign_token, state, {"sub": "ana"})
+        assert (response.status_code, response.headers["location"]) == (
+            303,
+            "/?error=sign_in_refused",
+        )
+        assert SESSION_COOKIE not in site.client.cookies
+    assert "account deactivated" in caplog.text
+    assert rows(tmp_path / "tokens.sqlite", "SELECT 1 FROM sessions WHERE user_id = 'ana'") == []
+
+
+def test_deactivating_waits_for_an_ask_in_flight_and_nothing_is_left_behind(
+    sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
+) -> None:
+    held = HeldModel(messages=iter([answer("done")]))
+    held.entered, held.release = threading.Event(), threading.Event()
+    settings = make_settings(token_settings, scim_token=SecretStr(TOKEN))
+    with web(settings, [], held, token_signing_key, tmp_path, key=KEY) as site:
+        user_id = provision(site.client)
+        asking = threading.Thread(target=ask, args=(site, as_user(sign_token, "ana")))
+        asking.start()
+        assert held.entered.wait(10)
+        deactivating = threading.Thread(target=patch_active, args=(site.client, user_id, False))
+        deactivating.start()
+        time.sleep(0.5)
+        still_waiting = deactivating.is_alive()
+        held.release.set()
+        asking.join(10)
+        deactivating.join(10)
+    assert still_waiting
+    assert employee_rows(tmp_path, "ana") == ERASED

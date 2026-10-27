@@ -42,6 +42,7 @@ class McpServer:
     client_key: str | None = None
     groups: tuple[str, ...] | None = None
     always_allow: bool = True
+    confirm_tools: tuple[str, ...] = ()
 
     def open_to(self, groups: frozenset[str]) -> bool:
         return self.groups is None or not groups.isdisjoint(self.groups)
@@ -62,6 +63,7 @@ class _ServerEntry(BaseModel):
     client_key: str | None = None
     groups: list[str] | None = None
     always_allow: bool = True
+    confirm_tools: list[str] = []
 
     @field_validator("name")
     @classmethod
@@ -73,7 +75,7 @@ class _ServerEntry(BaseModel):
             )
         return value
 
-    @field_validator("tools")
+    @field_validator("tools", "confirm_tools")
     @classmethod
     def _tool_names_are_named_and_unique(cls, names: list[str] | None) -> list[str] | None:
         seen: set[str] = set()
@@ -243,6 +245,7 @@ def load_servers(path: Path, environ: Mapping[str, str] = os.environ) -> list[Mc
                 entry.client_key,
                 None if entry.groups is None else tuple(entry.groups),
                 entry.always_allow,
+                tuple(entry.confirm_tools),
             )
         )
     return servers

@@ -91,3 +91,12 @@ def test_the_groups_claim_defaults_to_groups_and_is_set_by_the_environment(
 def test_scim_is_off_unless_a_token_is_set() -> None:
     assert Settings().scim_token is None
     assert Settings(scim_token=SecretStr("t")).scim_token is not None
+
+
+@pytest.mark.parametrize(
+    ("ask_seconds", "listing_seconds"), [(180, 18), (30, 5), (1, 5), (600, 60)]
+)
+def test_the_listing_bound_is_a_tenth_of_the_ask_deadline_but_at_least_five_seconds(
+    ask_seconds: int, listing_seconds: float
+) -> None:
+    assert Settings.model_validate({"ask_seconds": ask_seconds}).listing_seconds == listing_seconds
