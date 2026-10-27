@@ -4,6 +4,7 @@
 import asyncio
 import itertools
 import json
+import re
 import time
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from dataclasses import replace
@@ -16,8 +17,16 @@ from cryptography.fernet import Fernet, InvalidToken
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.messages.ai import UsageMetadata
+from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -73,6 +82,27 @@ class ScriptedModel(GenericFakeChatModel):
     def _generate(self, messages: list[BaseMessage], *args: Any, **kwargs: Any) -> Any:
         self.seen.append(list(messages))
         return super()._generate(messages, *args, **kwargs)
+
+    def _stream(
+        self, messages: list[BaseMessage], *args: Any, **kwargs: Any
+    ) -> Iterator[ChatGenerationChunk]:
+        message = self._generate(messages, *args, **kwargs).generations[0].message
+        for word in re.split(r"(\s)", message.text):
+            if word:
+                yield ChatGenerationChunk(message=AIMessageChunk(content=word, id=message.id))
+        tool_call_chunks: list[Any] = [
+            {"name": call["name"], "args": json.dumps(call["args"]), "id": call["id"], "index": i}
+            for i, call in enumerate(message.tool_calls)
+        ]
+        last = AIMessageChunk(
+            content="",
+            id=message.id,
+            tool_call_chunks=tool_call_chunks,
+            usage_metadata=message.usage_metadata,
+            response_metadata=message.response_metadata,
+            chunk_position="last",
+        )
+        yield ChatGenerationChunk(message=last)
 
 
 class ProviderGoneAfterScript(ScriptedModel):

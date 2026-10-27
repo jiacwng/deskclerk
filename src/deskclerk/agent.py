@@ -86,6 +86,34 @@ Gate = Callable[[ProposedCall], Awaitable[Verdict]]
 
 
 @dataclass(frozen=True)
+class CallStarted:
+    id: str
+    server: str
+    tool: str
+
+
+@dataclass(frozen=True)
+class CallEnded:
+    id: str
+    server: str
+    tool: str
+    is_error: bool
+
+
+@dataclass(frozen=True)
+class AnswerDelta:
+    text: str
+
+
+RunEvent = CallStarted | CallEnded | AnswerDelta
+Emit = Callable[[RunEvent], None]
+
+
+def ignore_events(event: RunEvent) -> None:
+    pass
+
+
+@dataclass(frozen=True)
 class ExecutedCall:
     server: str
     tool: str
@@ -281,6 +309,7 @@ class _Shared:
     record_usage: Callable[[Usage], None]
     tool_output_chars: int
     history_tokens: int
+    emit: Emit = ignore_events
     one_call_at_a_time: asyncio.Lock = field(default_factory=asyncio.Lock)
     executed: list[ExecutedCall] = field(default_factory=list)
     blocked: list[BlockedCall] = field(default_factory=list)
@@ -412,6 +441,7 @@ class _Run(AgentMiddleware[AgentState[Any], None, Any]):
             refusal = await _refusal(shared, tool, call_id, arguments, _typed_texts(arguments))
             if refusal is not None:
                 return refusal
+        shared.emit(CallStarted(call_id, server_name, tool_name))
         try:
             with shared.tool_span(server_name, tool_name, arguments) as record_output:
                 try:
@@ -436,6 +466,7 @@ class _Run(AgentMiddleware[AgentState[Any], None, Any]):
         shared.executed.append(
             ExecutedCall(server_name, tool_name, arguments, result_text, is_error)
         )
+        shared.emit(CallEnded(call_id, server_name, tool_name, is_error))
         return ToolMessage(
             result_text, tool_call_id=call["id"] or "", status="error" if is_error else "success"
         )
@@ -533,6 +564,8 @@ async def run_agent(
     confirm_writes: bool,
     decisions: dict[str, Decision] | None = None,
     executed: list[ExecutedCall] | None = None,
+    emit: Emit = ignore_events,
+    running: Callable[[], None] = lambda: None,
 ) -> AgentResult:
     offer = await _offer(user_id, servers, connections, tokens, listing_seconds)
     tools, always = offer.tools, offer.always
@@ -552,6 +585,7 @@ async def run_agent(
         record_usage,
         tool_output_chars,
         history_tokens,
+        emit=emit,
         executed=[] if executed is None else executed,
     )
     confirmation = _confirmation(tools, frozenset(always), shared)
@@ -612,14 +646,27 @@ async def run_agent(
                 for interrupt_id, choice in decisions.items()
             }
         )
+    final: Any = {}
+    interrupts: list[Interrupt] = []
+    running()
     try:
-        output = await agent.ainvoke(start, config=config, version="v2")
+        async for part in agent.astream(
+            start, config=config, stream_mode=["messages", "values"], version="v2"
+        ):
+            if part["type"] == "values":
+                final = part["data"]
+                interrupts.extend(part["interrupts"])
+            elif part["type"] == "messages":
+                message, metadata = part["data"]
+                if isinstance(message, AIMessage) and metadata.get("langgraph_node") == "model":
+                    if message.text:
+                        emit(AnswerDelta(message.text))
     except BaseException:
-        await _end_pause(agent, config)
+        await _close_open_calls(agent, config)
         raise
-    pending = tuple(_pending_call(interrupt, tools) for interrupt in output.interrupts)
+    pending = tuple(_pending_call(interrupt, tools) for interrupt in interrupts)
     before = len(saved.values.get("messages", []))
-    decided = _decided_calls(output.value["messages"][before:], waiting, tools, decisions or {})
+    decided = _decided_calls(final["messages"][before:], waiting, tools, decisions or {})
     for call, outcome in decided:
         if outcome == "reject":
             shared.blocked.append(
@@ -758,10 +805,10 @@ def _decided_calls(
     return decided
 
 
-async def _end_pause(agent: Any, config: RunnableConfig) -> None:
+async def _close_open_calls(agent: Any, config: RunnableConfig) -> None:
     saved = await agent.aget_state(config)
-    if saved.interrupts:
-        closing = close_unanswered_calls(saved.values["messages"])
+    closing = close_unanswered_calls(saved.values.get("messages", []))
+    if closing:
         await agent.aupdate_state(config, {"messages": closing}, as_node="tools")
 
 
