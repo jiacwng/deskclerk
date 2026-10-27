@@ -14,6 +14,7 @@ auth = "none"
 # Without them, and with an https DESKCLERK_PUBLIC_URL, deskclerk signs in as the client document
 # it serves at /oauth/client.json, or registers a client per employee when the login does not
 # support that.
+# Register https://<your deskclerk>/oauth/callback as the app's redirect URI.
 # client_id = "..."
 # client_secret_env = "LINEAR_CLIENT_SECRET"
 # The only tools the agent may use from this server.
