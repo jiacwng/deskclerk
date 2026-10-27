@@ -252,7 +252,7 @@ button.choice[aria-pressed="true"].reject { background: var(--bad); border-color
 }
 .main:has(.confirm:not([hidden])) .composer { position: static; }
 textarea {
-  width: 100%; min-height: 4rem; resize: vertical; font: inherit;
+  width: 100%; min-height: 4rem; max-height: 40vh; resize: vertical; font: inherit;
   padding: 0.5rem 0.625rem; border-radius: 4px;
   border: 1px solid var(--edge); background: var(--surface); color: var(--fg);
 }
@@ -314,11 +314,11 @@ textarea::placeholder { color: var(--muted); }
     <section id="confirm" class="confirm" aria-labelledby="confirm-title" hidden>
       <div class="confirm-head">
         <h2 id="confirm-title" class="confirm-title" tabindex="-1">Confirm calls</h2>
-        <p class="small">Each call below needs your approval before it runs. Approve or reject each one, then press Send.</p>
+        <p class="small">Each call below needs your approval before it runs. Approve or reject each one, then press Run decisions.</p>
       </div>
       <div id="pending" class="pending"></div>
       <div class="confirm-foot">
-        <button id="send" class="primary" type="button" disabled>Send</button>
+        <button id="send" class="primary" type="button" disabled>Run decisions</button>
         <span id="decided" class="muted small"></span>
       </div>
     </section>
@@ -329,9 +329,9 @@ textarea::placeholder { color: var(--muted); }
       <p id="error" class="error" role="alert" hidden></p>
       <p id="working" class="sr-only" role="status"></p>
       <div class="composer-row">
-        <button id="ask" class="primary" type="submit">Ask</button>
+        <button id="ask" class="primary" type="submit">Send <span aria-hidden="true">&#8593;</span></button>
         <button id="new-conversation" type="button">New conversation</button>
-        <span class="muted small hint">Ctrl+Enter or Cmd+Enter sends</span>
+        <span class="muted small hint">Enter to send, Shift+Enter for a new line</span>
       </div>
     </form>
   </main>
@@ -369,6 +369,7 @@ let currentTurn = null;
 let decisions = {};
 let waiting = 0;
 let busy = false;
+let lastRequest = "";
 
 function make(tag, className, text) {
   const node = document.createElement(tag);
@@ -451,7 +452,13 @@ async function reportFailure(response, turn) {
 function updateControls() {
   el("ask").disabled = busy || waiting > 0;
   el("new-conversation").disabled = busy;
-  el("request").disabled = busy;
+  el("request").placeholder = waiting > 0 ? "Decide the calls above to continue" : "What do you need?";
+}
+
+function fitRequest() {
+  const box = el("request");
+  box.style.height = "auto";
+  box.style.height = box.scrollHeight + box.offsetHeight - box.clientHeight + "px";
 }
 
 function setBusy(on, text) {
@@ -525,7 +532,7 @@ function argumentList(args) {
   return list;
 }
 
-function argumentEditor(args, changed) {
+function argumentEditor(args, changed, cancelled) {
   const box = make("div", "args");
   const fields = [];
   for (const name of Object.keys(args)) {
@@ -572,6 +579,9 @@ function argumentEditor(args, changed) {
     fields.push({ name, control, problem, read });
   }
   box.addEventListener("input", changed);
+  box.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") cancelled();
+  });
   const collect = () => {
     const edited = {};
     let valid = true;
@@ -742,7 +752,7 @@ function showPending(pending) {
     const edit = button("Edit", () => decide("edit"), "choice edit");
     edit.setAttribute("aria-pressed", "false");
     const verdict = make("span", "badge info", "Not decided");
-    const editor = argumentEditor(call.arguments, () => decide("edit"));
+    const editor = argumentEditor(call.arguments, () => decide("edit"), () => undecide());
     editor.box.hidden = true;
     const shown = argumentList(call.arguments);
     const raw = rawArguments(call.arguments);
@@ -763,6 +773,18 @@ function showPending(pending) {
         ? "Fix the marked values"
         : { approve: "Approved", approve_always: "Always allowed", edit: "Edited", reject: "Rejected" }[choice];
       verdict.className = choice === "reject" || (editing && edited === null) ? "badge bad" : "badge ok";
+      updateDecided(pending.length);
+    };
+    const undecide = () => {
+      delete decisions[call.id];
+      delete card.dataset.choice;
+      editor.box.hidden = true;
+      shown.hidden = false;
+      raw.hidden = false;
+      for (const choice of [approve, reject, edit, always]) if (choice) choice.setAttribute("aria-pressed", "false");
+      verdict.textContent = "Not decided";
+      verdict.className = "badge info";
+      edit.focus();
       updateDecided(pending.length);
     };
     group.append(approve, ...(always ? [always] : []), edit, reject, verdict);
@@ -799,18 +821,22 @@ function discardTurn(turn, previous, request) {
   turn.node.remove();
   currentTurn = previous;
   if (el("turns").childElementCount === 0) el("empty").hidden = false;
-  el("request").value = request;
+  const draft = el("request").value;
+  el("request").value = draft === "" ? request : request + "\n" + draft;
+  fitRequest();
 }
 
 async function ask() {
   showError("");
   const request = el("request").value;
   if (request.trim() === "") return el("request").focus();
+  lastRequest = request;
   setBusy(true, "Working on it…");
   const previous = currentTurn;
   currentTurn = newTurn(request);
   const turn = currentTurn;
   el("request").value = "";
+  fitRequest();
   const stop = startWorking(turn.node, "Working on it…");
   try {
     const response = await post("/ask", { request, conversation });
@@ -849,6 +875,7 @@ async function send() {
   } finally {
     stop();
     setBusy(false);
+    if (waiting === 0) el("request").focus();
   }
 }
 
@@ -864,6 +891,7 @@ async function replay() {
     const past = await response.json();
     conversation = past.conversation;
     for (const item of past.turns) {
+      lastRequest = item.request;
       currentTurn = newTurn(item.request);
       currentTurn.answer.replaceChildren(renderAnswer(item.answer));
       currentTurn.reply.hidden = item.answer === "";
@@ -892,11 +920,16 @@ async function start() {
     if (!el("ask").disabled) ask();
   });
   el("request").addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
       el("composer").requestSubmit();
+    } else if (event.key === "ArrowUp" && el("request").value === "" && lastRequest !== "") {
+      event.preventDefault();
+      el("request").value = lastRequest;
+      fitRequest();
     }
   });
+  el("request").addEventListener("input", fitRequest);
   el("send").addEventListener("click", send);
   el("new-conversation").addEventListener("click", newConversation);
   el("logout").addEventListener("click", logout);
