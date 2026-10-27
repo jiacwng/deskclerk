@@ -1558,6 +1558,47 @@ def test_another_employees_or_an_unknown_conversation_gives_404_and_runs_nothing
     ]
 
 
+def test_the_owner_reloads_the_turns_and_a_waiting_confirmation_and_others_get_404(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    tmp_path: Path,
+) -> None:
+    model = script(
+        answer("first answer"), calls(("notes__write_note", {"text": "hi"})), answer("ok")
+    )
+    ada, grace = as_user(sign_token, "ada"), as_user(sign_token, "grace")
+    with web(
+        make_settings(token_settings), [notes(notes_server)], model, token_signing_key, tmp_path
+    ) as site:
+        connect(site, ada)
+        first = ask(site, ada, "hello").json()
+        conversation = first["conversation"]
+        paused = ask_in(site, ada, conversation, "save a note").json()
+        reloaded = site.client.get(f"/conversations/{conversation}", headers=ada)
+        stranger = site.client.get(f"/conversations/{conversation}", headers=grace)
+        unknown = site.client.get(
+            "/conversations/0d6b2c3e-9d5e-4c27-8f3e-3c1d2b4a5e6f", headers=ada
+        )
+        malformed = site.client.get("/conversations/not-an-id", headers=ada)
+        confirm(site, ada, conversation, {paused["pending"][0]["id"]: "approve"})
+        finished = site.client.get(f"/conversations/{conversation}", headers=ada).json()
+    body = reloaded.json()
+    assert body["conversation"] == conversation
+    assert [(t["request"], t["answer"]) for t in body["turns"]] == [
+        ("hello", "first answer"),
+        ("save a note", ""),
+    ]
+    assert body["pending"] == paused["pending"]
+    assert body["pending"][0]["server"] == "notes"
+    assert (stranger.status_code, unknown.status_code) == (404, 404)
+    assert stranger.json() == unknown.json() == {"detail": "no such conversation"}
+    assert malformed.status_code == 422
+    assert finished["pending"] == []
+    assert finished["turns"][-1] == {"request": "save a note", "answer": "ok"}
+
+
 def test_a_renamed_employee_keeps_the_same_conversation(
     sign_token: Sign,
     token_settings: Settings,

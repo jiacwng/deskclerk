@@ -108,3 +108,13 @@ def close_unanswered_calls(messages: list[BaseMessage]) -> list[ToolMessage]:
         for call in message.tool_calls
         if call["id"] not in answered
     ]
+
+
+def past_turns(messages: list[BaseMessage]) -> list[tuple[str, str]]:
+    turns: list[tuple[str, str]] = []
+    for message in messages:
+        if isinstance(message, HumanMessage):
+            turns.append((message.text, ""))
+        elif isinstance(message, AIMessage) and not message.tool_calls and turns:
+            turns[-1] = (turns[-1][0], message.text)
+    return turns
