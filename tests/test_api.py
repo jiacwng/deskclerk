@@ -998,7 +998,7 @@ def test_the_page_names_each_server_in_its_connect_and_disconnect_buttons(
     with web(settings, [], script(), token_signing_key, database) as site:
         page = site.client.get("/").text
     assert 'toggle.setAttribute("aria-label", toggle.textContent + " " + server.name)' in page
-    assert '<summary id="rail-summary"' in page
+    assert '<h2 id="rail-summary"' in page
 
 
 @pytest.mark.keycloak

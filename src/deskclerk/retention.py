@@ -1,5 +1,6 @@
 # Conversation retention: a thread whose newest checkpoint is older than the retention period is
-# deleted. A checkpoint id is a uuid6, so its age is read from the id without decrypting anything.
+# deleted with its row in the conversations table. A checkpoint id is a uuid6, so its age is read
+# from the id without decrypting anything.
 
 import asyncio
 import logging
@@ -34,6 +35,11 @@ async def delete_old_threads(
     old = [row["thread_id"] for row in newest if checkpoint_unix_time(row["newest"]) < cutoff]
     for thread in old:
         await checkpointer.adelete_thread(thread)
+    if old:
+        async with database.async_pool.connection() as connection:
+            await connection.execute(
+                "DELETE FROM conversations WHERE user_id || '/' || id::text = ANY(%s)", (old,)
+            )
     return len(old)
 
 

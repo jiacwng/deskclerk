@@ -13,7 +13,7 @@ from langgraph.checkpoint.base.id import UUID
 from deskclerk import retention
 from deskclerk.auth import SigningKeyLookup
 from deskclerk.config import Settings
-from deskclerk.conversations import open_checkpointer
+from deskclerk.conversations import open_checkpointer, record_turn
 from deskclerk.database import Database
 from deskclerk.retention import (
     TICKS_PER_SECOND,
@@ -52,6 +52,26 @@ def test_an_old_thread_is_deleted_and_a_new_one_is_kept(database: Database) -> N
 
     assert rows(database, "SELECT DISTINCT thread_id FROM checkpoints") == [(threads[1],)]
     assert rows(database, "SELECT DISTINCT thread_id FROM checkpoint_writes") == [(threads[1],)]
+
+
+def test_an_old_thread_loses_its_conversation_row_and_a_new_one_keeps_it(
+    database: Database,
+) -> None:
+    async def run() -> list[str]:
+        async with database.serving():
+            saver = await open_checkpointer(database, Fernet(KEY))
+            threads = [
+                await save_thread(saver, "ana", checkpoint_id_aged(40)),
+                await save_thread(saver, "ana"),
+            ]
+            for thread in threads:
+                await record_turn(database, "ana", UUID(thread.split("/")[1]), "hello")
+            await delete_old_threads(database, saver, 30)
+        return threads
+
+    threads = asyncio.run(run())
+
+    assert rows(database, "SELECT id::text FROM conversations") == [(threads[1].split("/")[1],)]
 
 
 def test_a_younger_thread_survives(database: Database) -> None:

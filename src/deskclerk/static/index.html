@@ -106,24 +106,25 @@ textarea { caret-color: var(--accent); }
 .brand { font-size: 0.9375rem; font-weight: 700; letter-spacing: -0.01em; margin-right: auto; }
 .who { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
 
-.rail-summary {
-  display: none; align-items: center; justify-content: space-between; gap: 0.5rem;
-  min-height: 2.5rem; cursor: pointer; list-style: none; font-size: 0.875rem; font-weight: 600;
-}
-.rail-summary::-webkit-details-marker { display: none; }
-.rail-summary::after { content: "Show"; font-size: 0.75rem; font-weight: 400; color: var(--muted); }
-.rail-details[open] .rail-summary::after { content: "Hide"; }
-.rail-details[open] .rail-summary { margin-bottom: 0.5rem; }
 .rail { padding-block: 1rem; min-height: 0; overflow-y: auto; }
+.rail-toggle { display: none; }
+.scrim { position: fixed; inset: 0; z-index: 10; background: rgb(0 0 0 / 0.45); }
 .shell { display: grid; flex: 1; width: 100%; min-height: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
 @media (min-width: 52rem) {
   .shell { grid-template-columns: 15rem minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); column-gap: 2rem; }
   .rail { border-right: 1px solid var(--line-soft); padding-right: 1rem; }
 }
 @media (max-width: 51.99rem) {
-  .rail { border-bottom: 1px solid var(--line-soft); padding-block: 0.5rem; max-height: 50vh; max-height: 50dvh; }
-  .rail .heading { display: none; }
-  .rail-summary { display: flex; }
+  .shell { grid-template-rows: minmax(0, 1fr); }
+  .rail {
+    position: fixed; inset-block: 0; left: 0; z-index: 20; width: min(20rem, 86vw);
+    padding: 1rem 16px; background: var(--rail); border-right: 1px solid var(--line);
+    translate: -100% 0; visibility: hidden;
+  }
+  .rail[data-open] { translate: 0 0; visibility: visible; }
+  .rail-toggle { display: inline-flex; flex: none; white-space: nowrap; }
+  .brand { white-space: nowrap; }
+  #status { display: none; }
 }
 .heading { font-size: 0.8125rem; font-weight: 600; color: var(--muted); margin-bottom: 0.5rem; }
 
@@ -144,6 +145,20 @@ button.primary:disabled { background: transparent; border-color: var(--line); co
 button.quiet { background: transparent; border-color: transparent; color: var(--muted); }
 button.quiet:hover:not(:disabled) { color: var(--fg); }
 button.small { min-height: 1.875rem; padding: 0.2rem 0.6rem; font-size: 0.8125rem; }
+
+.conv-new { width: 100%; margin-bottom: 0.5rem; }
+.conv-list { display: grid; gap: 0.125rem; margin-bottom: 1.25rem; }
+.conv { display: flex; align-items: stretch; border-radius: 4px; }
+.conv:hover { background: var(--sunk); }
+button.conv-open { flex: 1; min-width: 0; flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 0; padding: 0.3rem 0.5rem; background: transparent; border-color: transparent; font-weight: 500; text-align: left; }
+button.conv-open[aria-current="true"] { background: var(--sunk); border-color: var(--edge); }
+.conv-title { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-time { font-size: 0.75rem; font-weight: 400; color: var(--muted); }
+button.conv-delete { flex: none; min-height: 0; padding: 0.2rem 0.5rem; font-size: 0.75rem; background: transparent; border-color: transparent; color: var(--muted); }
+button.conv-delete:hover:not(:disabled) { color: var(--bad); }
+.conv-confirm { flex: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem; padding: 0.3rem 0.5rem; border: 1px solid var(--bad); border-radius: 4px; }
+.conv-confirm .small { flex-basis: 100%; }
+.conv-empty { padding-block: 0.25rem; }
 
 .servers { display: grid; }
 .server { padding-block: 0.625rem; border-top: 1px solid var(--line-soft); display: grid; gap: 0.25rem; }
@@ -295,6 +310,7 @@ textarea::placeholder { color: var(--muted); }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+@keyframes fade { from { opacity: 0; } }
 @keyframes pulse { 50% { opacity: 0.45; } }
 @media (prefers-reduced-motion: no-preference) {
   :root { interpolate-size: allow-keywords; }
@@ -303,11 +319,16 @@ textarea::placeholder { color: var(--muted); }
   .turn, .confirm, .working-row, .error, .jump, .empty, .turn-error { animation: rise 0.2s ease-out backwards; }
   button, .link-button { transition: background-color 0.15s, border-color 0.15s, color 0.15s; }
   @supports selector(::details-content) {
-    .call::details-content, .raw::details-content, .rail-details::details-content {
+    .call::details-content, .raw::details-content {
       block-size: 0; overflow-y: clip;
       transition: block-size 0.2s ease-out, content-visibility 0.2s allow-discrete;
     }
-    .call[open]::details-content, .raw[open]::details-content, .rail-details[open]::details-content { block-size: auto; }
+    .call[open]::details-content, .raw[open]::details-content { block-size: auto; }
+  }
+  @media (max-width: 51.99rem) {
+    .rail { transition: translate 0.2s ease-out, visibility 0s 0.2s; }
+    .rail[data-open] { transition: translate 0.2s ease-out; }
+    .scrim { animation: fade 0.2s ease-out backwards; }
   }
 }
 </style>
@@ -315,6 +336,7 @@ textarea::placeholder { color: var(--muted); }
 <body>
 <header class="bar">
   <div class="bar-inner">
+    <button id="rail-toggle" class="small rail-toggle" type="button" aria-expanded="false" aria-controls="rail">Conversations</button>
     <h1 class="brand">deskclerk</h1>
     <div id="who" class="who" hidden>
       <span id="status" class="muted small"></span>
@@ -331,15 +353,20 @@ textarea::placeholder { color: var(--muted); }
 </section>
 
 <div id="app" class="shell" hidden>
-  <aside class="rail">
-    <details id="rail-details" class="rail-details" open>
-      <summary id="rail-summary" class="rail-summary">Servers</summary>
-      <h2 class="heading">Servers</h2>
+  <aside id="rail" class="rail">
+    <section aria-labelledby="conversations-title">
+      <h2 id="conversations-title" class="heading">Conversations</h2>
+      <button id="new-conversation" class="small conv-new" type="button">New conversation</button>
+      <ul id="conversation-list" class="conv-list"></ul>
+    </section>
+    <section aria-labelledby="rail-summary">
+      <h2 id="rail-summary" class="heading">Servers</h2>
       <div id="servers" class="servers"></div>
-    </details>
+    </section>
   </aside>
+  <div id="scrim" class="scrim" hidden></div>
 
-  <main class="main">
+  <main id="main" class="main">
     <div class="thread">
     <div id="messages" class="messages" tabindex="0" role="region" aria-labelledby="messages-title">
     <h2 id="messages-title" class="sr-only">Conversation</h2>
@@ -373,7 +400,6 @@ textarea::placeholder { color: var(--muted); }
       <p id="announce" class="sr-only" role="status" aria-live="polite"></p>
       <div class="composer-row">
         <button id="ask" class="primary" type="submit">Send <span aria-hidden="true">&#8593;</span></button>
-        <button id="new-conversation" type="button">New conversation</button>
         <span class="muted small hint">Enter to send, Shift+Enter for a new line</span>
       </div>
     </form>
@@ -418,15 +444,14 @@ const post = (path, body) => api(path, {
 const el = (id) => document.getElementById(id);
 
 let conversation = null;
-const STORED = "deskclerk.conversation";
+const FRAGMENT = /^#c=([0-9a-f-]{36})$/i;
 function remember(id) {
-  try {
-    if (id === null) sessionStorage.removeItem(STORED);
-    else sessionStorage.setItem(STORED, id);
-  } catch (error) {}
+  const fragment = id === null ? "" : "#c=" + id;
+  window.history.replaceState(null, "", window.location.pathname + window.location.search + fragment);
 }
 function remembered() {
-  try { return sessionStorage.getItem(STORED); } catch (error) { return null; }
+  const found = FRAGMENT.exec(window.location.hash);
+  return found === null ? null : found[1];
 }
 let currentTurn = null;
 let decisions = {};
@@ -434,6 +459,9 @@ let waiting = 0;
 let busy = false;
 let lastRequest = "";
 let following = true;
+let listed = null;
+let confirming = null;
+let loadToken = 0;
 
 function scrollBehavior() {
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
@@ -559,6 +587,7 @@ async function reportFailure(response, turn, retry) {
 function updateControls() {
   el("ask").disabled = busy || waiting > 0;
   el("new-conversation").disabled = busy;
+  for (const control of el("conversation-list").querySelectorAll("button")) control.disabled = busy;
   el("request").placeholder = waiting > 0 ? "Decide the calls above to continue" : "What do you need?";
 }
 
@@ -883,7 +912,122 @@ function newTurn(request) {
   return { node: turn, reply, answer: reply.lastChild, calls, cost };
 }
 
-function newConversation() {
+const phone = window.matchMedia("(max-width: 51.99rem)");
+
+function setDrawer(open, returnFocus) {
+  const rail = el("rail");
+  rail.toggleAttribute("data-open", open);
+  rail.inert = phone.matches && !open;
+  el("main").inert = phone.matches && open;
+  el("scrim").hidden = !(phone.matches && open);
+  el("rail-toggle").setAttribute("aria-expanded", String(open));
+  if (open) rail.querySelector("button:not(:disabled)")?.focus();
+  else if (returnFocus) el("rail-toggle").focus();
+}
+
+function drawerOpen() {
+  return el("rail").hasAttribute("data-open");
+}
+
+function closeDrawer() {
+  if (phone.matches && drawerOpen()) setDrawer(false, true);
+}
+
+const AGES = [["day", 86400], ["hour", 3600], ["minute", 60]];
+const AGE_FORMAT = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+function ageOf(iso) {
+  const seconds = Math.round((new Date(iso).getTime() - Date.now()) / 1000);
+  for (const [unit, size] of AGES) {
+    if (Math.abs(seconds) >= size) return AGE_FORMAT.format(Math.round(seconds / size), unit);
+  }
+  return "just now";
+}
+
+function conversationItem(item) {
+  const row = make("li", "conv");
+  row.dataset.id = item.id;
+  if (confirming === item.id) {
+    const box = make("div", "conv-confirm");
+    box.append(make("span", "small", "Delete this conversation?"));
+    const cancel = button("Cancel", () => cancelDelete(item.id), "small");
+    box.append(button("Delete", () => deleteConversation(item.id), "small primary"), cancel);
+    box.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      cancelDelete(item.id);
+    });
+    row.append(box);
+    return { row, focus: cancel };
+  }
+  const open = make("button", "conv-open");
+  open.type = "button";
+  open.append(make("span", "conv-title", item.title), make("span", "conv-time", ageOf(item.updated_at)));
+  open.title = new Date(item.updated_at).toLocaleString();
+  if (item.id === conversation) open.setAttribute("aria-current", "true");
+  open.addEventListener("click", () => chooseConversation(item.id));
+  const remove = button("Delete", () => askDelete(item.id), "conv-delete");
+  remove.setAttribute("aria-label", "Delete conversation " + item.title);
+  row.append(open, remove);
+  return { row, focus: null };
+}
+
+function renderConversations(focusId, focusDelete) {
+  if (listed === null) return;
+  const list = el("conversation-list");
+  if (listed.length === 0) {
+    list.replaceChildren(make("li", "conv-empty muted small", "No conversations yet"));
+    return;
+  }
+  const items = listed.map(conversationItem);
+  list.replaceChildren(...items.map((entry) => entry.row));
+  updateControls();
+  for (const entry of items) {
+    if (entry.row.dataset.id !== focusId) continue;
+    if (entry.focus) entry.focus.focus();
+    else if (focusDelete) entry.row.querySelector(".conv-delete")?.focus();
+  }
+}
+
+async function loadConversations() {
+  const response = await api("/conversations");
+  if (!response.ok) return;
+  listed = await response.json();
+  renderConversations(null, false);
+}
+
+function askDelete(id) {
+  confirming = id;
+  renderConversations(id, false);
+}
+
+function cancelDelete(id) {
+  confirming = null;
+  renderConversations(id, true);
+}
+
+async function deleteConversation(id) {
+  confirming = null;
+  showError("");
+  const response = await api("/conversations/" + encodeURIComponent(id), {
+    method: "DELETE",
+    headers: { "X-Requested-With": "deskclerk" },
+  });
+  if (!response.ok && response.status !== 404) {
+    await reportFailure(response);
+    return renderConversations(id, true);
+  }
+  if (id === conversation) resetView();
+  await loadConversations();
+  el("new-conversation").focus();
+}
+
+function chooseConversation(id) {
+  closeDrawer();
+  if (id !== conversation) openConversation(id);
+}
+
+function resetView() {
+  loadToken += 1;
   conversation = null;
   remember(null);
   currentTurn = null;
@@ -893,6 +1037,12 @@ function newConversation() {
   updateJump();
   showPending([]);
   showError("");
+  renderConversations(null, false);
+}
+
+function newConversation() {
+  resetView();
+  closeDrawer();
   el("request").focus();
 }
 
@@ -1048,6 +1198,7 @@ async function ask(resent) {
     inFlight = "";
     stop();
     setBusy(false);
+    loadConversations();
     if (waiting === 0) el("request").focus();
   }
 }
@@ -1072,21 +1223,26 @@ async function send() {
   } finally {
     stop();
     setBusy(false);
+    loadConversations();
     if (waiting === 0) el("request").focus();
   }
 }
 
-async function replay() {
-  const id = remembered();
-  if (id === null) return;
+async function openConversation(id) {
+  resetView();
+  const mine = loadToken;
   try {
     const response = await api("/conversations/" + encodeURIComponent(id));
+    if (mine !== loadToken) return;
     if (!response.ok) {
-      if (response.status === 404 || response.status === 422) remember(null);
+      if (response.status !== 404 && response.status !== 422) showError("Could not reload the conversation");
       return;
     }
     const past = await response.json();
+    if (mine !== loadToken) return;
     conversation = past.conversation;
+    remember(conversation);
+    renderConversations(null, false);
     for (const item of past.turns) {
       lastRequest = item.request;
       currentTurn = newTurn(item.request);
@@ -1097,7 +1253,7 @@ async function replay() {
     scrollToBottom("auto");
     updateJump();
   } catch (error) {
-    showError("Could not reload the conversation");
+    if (mine === loadToken) showError("Could not reload the conversation");
   }
 }
 
@@ -1145,12 +1301,22 @@ async function start() {
   el("send").addEventListener("click", send);
   el("new-conversation").addEventListener("click", newConversation);
   el("logout").addEventListener("click", logout);
-  const phone = window.matchMedia("(max-width: 51.99rem)");
-  const fitRail = () => { el("rail-details").open = !phone.matches; };
-  phone.addEventListener("change", fitRail);
-  fitRail();
+  el("rail-toggle").addEventListener("click", () => setDrawer(!drawerOpen(), true));
+  el("scrim").addEventListener("click", closeDrawer);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeDrawer();
+  });
+  phone.addEventListener("change", () => setDrawer(false, false));
+  setDrawer(false, false);
+  window.addEventListener("hashchange", () => {
+    const id = remembered();
+    if (id === null) newConversation();
+    else if (id !== conversation && !busy) openConversation(id);
+  });
   loadServers();
-  replay();
+  loadConversations();
+  const linked = remembered();
+  if (linked !== null) openConversation(linked);
   if (linkError !== "") showError(linkError);
 }
 
