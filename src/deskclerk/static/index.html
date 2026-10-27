@@ -214,6 +214,7 @@ pre {
 .pending { display: grid; }
 .pending-card { padding: 0.75rem; border-top: 1px solid var(--line); display: grid; gap: 0.5rem; }
 .pending-card[data-choice="approve"] { box-shadow: inset 3px 0 0 var(--ok); }
+.pending-card[data-choice="edit"] { box-shadow: inset 3px 0 0 var(--ok); }
 .pending-card[data-choice="reject"] { box-shadow: inset 3px 0 0 var(--bad); }
 .pending-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.25rem 0.5rem; }
 .pending-note { font-size: 0.75rem; color: var(--muted); }
@@ -221,6 +222,14 @@ pre {
 .arg { display: grid; grid-template-columns: minmax(0, 8rem) minmax(0, 1fr); column-gap: 0.75rem; }
 .arg-name { font-family: var(--mono); font-size: 0.75rem; color: var(--muted); }
 .arg-value { white-space: pre-wrap; }
+.arg-field { display: grid; gap: 0.125rem; }
+.arg-field input[type="text"], .arg-field input[type="number"] {
+  width: 100%; font: inherit; padding: 0.375rem 0.5rem; border-radius: 4px;
+  border: 1px solid var(--edge); background: var(--surface); color: var(--fg);
+}
+.arg-field textarea { min-height: 3rem; font-family: var(--mono); font-size: 0.75rem; }
+.arg-field input[aria-invalid="true"], .arg-field textarea[aria-invalid="true"] { border-color: var(--bad); }
+.edit-error { font-size: 0.75rem; color: var(--bad); }
 .raw summary { cursor: pointer; font-size: 0.75rem; font-weight: 600; color: var(--muted); }
 .raw summary:hover { color: var(--fg); }
 .raw pre { margin-top: 0.25rem; }
@@ -228,9 +237,11 @@ pre {
 .pending-actions button.choice { min-height: 2rem; }
 .pending-actions button.choice.approve { border-radius: 4px 0 0 4px; margin-right: -1px; }
 .pending-actions button.choice.always { border-radius: 0; margin-right: -1px; }
+.pending-actions button.choice.edit { border-radius: 0; margin-right: -1px; }
 .pending-actions button.choice.reject { border-radius: 0 4px 4px 0; margin-right: 0.75rem; }
 button.choice[aria-pressed="true"].approve { background: var(--ok); border-color: var(--ok); color: var(--surface); }
 button.choice[aria-pressed="true"].always { background: var(--ok); border-color: var(--ok); color: var(--surface); }
+button.choice[aria-pressed="true"].edit { background: var(--ok); border-color: var(--ok); color: var(--surface); }
 button.choice[aria-pressed="true"].reject { background: var(--bad); border-color: var(--bad); color: var(--surface); }
 .confirm-foot { display: flex; align-items: center; gap: 0.75rem; padding: 0.625rem 0.75rem; border-top: 1px solid var(--line); }
 
@@ -514,6 +525,71 @@ function argumentList(args) {
   return list;
 }
 
+function argumentEditor(args, changed) {
+  const box = make("div", "args");
+  const fields = [];
+  for (const name of Object.keys(args)) {
+    const value = args[name];
+    let control;
+    let read;
+    if (typeof value === "boolean") {
+      control = make("input");
+      control.type = "checkbox";
+      control.checked = value;
+      read = () => control.checked;
+    } else if (typeof value === "number") {
+      control = make("input");
+      control.type = "number";
+      control.step = "any";
+      control.value = String(value);
+      read = () => {
+        if (control.value === "") throw new Error("Enter a number");
+        return Number(control.value);
+      };
+    } else if (typeof value === "string") {
+      const multiline = value.includes("\n");
+      control = make(multiline ? "textarea" : "input");
+      if (!multiline) control.type = "text";
+      control.value = value;
+      read = () => control.value;
+    } else {
+      control = make("textarea");
+      control.value = JSON.stringify(value, null, 2);
+      read = () => {
+        try {
+          return JSON.parse(control.value);
+        } catch (error) {
+          throw new Error("Not valid JSON");
+        }
+      };
+    }
+    const problem = make("span", "edit-error");
+    const line = make("label", "arg");
+    const field = make("div", "arg-field");
+    field.append(control, problem);
+    line.append(make("span", "arg-name", name + ":"), field);
+    box.append(line);
+    fields.push({ name, control, problem, read });
+  }
+  box.addEventListener("input", changed);
+  const collect = () => {
+    const edited = {};
+    let valid = true;
+    for (const field of fields) {
+      try {
+        edited[field.name] = field.read();
+        field.problem.textContent = "";
+        field.control.setAttribute("aria-invalid", "false");
+      } catch (error) {
+        field.problem.textContent = error.message;
+        field.control.setAttribute("aria-invalid", "true");
+        valid = false;
+      }
+    }
+    return valid ? edited : null;
+  };
+  return { box, collect };
+}
 function rawArguments(args) {
   const box = make("details", "raw");
   box.append(make("summary", "", "Show raw"), make("pre", "", JSON.stringify(args, null, 2)));
@@ -663,21 +739,36 @@ function showPending(pending) {
     reject.setAttribute("aria-pressed", "false");
     const always = call.always_allowable ? button("Always allow", () => decide("approve_always"), "choice always") : null;
     if (always) always.setAttribute("aria-pressed", "false");
+    const edit = button("Edit", () => decide("edit"), "choice edit");
+    edit.setAttribute("aria-pressed", "false");
     const verdict = make("span", "badge info", "Not decided");
+    const editor = argumentEditor(call.arguments, () => decide("edit"));
+    editor.box.hidden = true;
+    const shown = argumentList(call.arguments);
+    const raw = rawArguments(call.arguments);
     const decide = (choice) => {
-      decisions[call.id] = choice;
+      const editing = choice === "edit";
+      const edited = editing ? editor.collect() : null;
+      if (editing && edited === null) delete decisions[call.id];
+      else decisions[call.id] = editing ? { edit: edited } : choice;
       card.dataset.choice = choice;
+      editor.box.hidden = !editing;
+      shown.hidden = editing;
+      raw.hidden = editing;
       approve.setAttribute("aria-pressed", String(choice === "approve"));
       reject.setAttribute("aria-pressed", String(choice === "reject"));
+      edit.setAttribute("aria-pressed", String(editing));
       if (always) always.setAttribute("aria-pressed", String(choice === "approve_always"));
-      verdict.textContent = { approve: "Approved", approve_always: "Always allowed", reject: "Rejected" }[choice];
-      verdict.className = choice === "reject" ? "badge bad" : "badge ok";
+      verdict.textContent = editing && edited === null
+        ? "Fix the marked values"
+        : { approve: "Approved", approve_always: "Always allowed", edit: "Edited", reject: "Rejected" }[choice];
+      verdict.className = choice === "reject" || (editing && edited === null) ? "badge bad" : "badge ok";
       updateDecided(pending.length);
     };
-    group.append(approve, ...(always ? [always] : []), reject, verdict);
+    group.append(approve, ...(always ? [always] : []), edit, reject, verdict);
     card.append(title);
     if (call.description !== "") card.append(make("p", "small", call.description));
-    card.append(argumentList(call.arguments), rawArguments(call.arguments), group);
+    card.append(shown, editor.box, raw, group);
     if (always) card.append(make("p", "pending-note", "Always allow runs this tool without asking again."));
     list.append(card);
   }
