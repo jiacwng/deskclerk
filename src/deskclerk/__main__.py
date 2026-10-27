@@ -9,14 +9,16 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 
 import httpx
+import psycopg
 import uvicorn
 from pydantic import ValidationError
 
 from deskclerk.api import MissingSessionKey, create_app
 from deskclerk.audit import Audit, log_to_stdout
 from deskclerk.auth import AuthUnavailable, discover_jwks_url, jwks_signing_key
-from deskclerk.config import load_settings
+from deskclerk.config import Settings, load_settings
 from deskclerk.connections import OAuthConnections
+from deskclerk.database import Database
 from deskclerk.erasure import erase_user
 from deskclerk.jev import jev_from_environment
 from deskclerk.providers import MissingApiKey, ProviderNotInstalled, chat_model
@@ -30,11 +32,17 @@ from deskclerk.writecheck import write_check
 
 FLOW_TIMEOUT_SECONDS = 600
 MCP_CLIENT_NAME = "deskclerk"
-SPENDING_FILE = "spending.sqlite"
 
 
 class UnscreenedRefused(Exception):
     pass
+
+
+def open_database(settings: Settings) -> Database:
+    try:
+        return Database(settings.database_url.get_secret_value())
+    except psycopg.Error as error:
+        sys.exit(f"deskclerk: cannot open the database (DESKCLERK_DATABASE_URL): {error}")
 
 
 def erase(user_id: str) -> None:
@@ -42,18 +50,19 @@ def erase(user_id: str) -> None:
         settings = load_settings()
         if settings.token_key is None:
             raise TokenKeyError("DESKCLERK_TOKEN_KEY is not set; put it in .env")
-        tokens = TokenStore(settings.token_file, settings.token_key.get_secret_value())
+        database = open_database(settings)
+        tokens = TokenStore(database, settings.token_key.get_secret_value())
     except (ValidationError, TokenKeyError) as error:
         sys.exit(f"deskclerk: {error}")
-    spending_store = SpendingStore(settings.token_file.parent / SPENDING_FILE)
     log_to_stdout()
     erased = erase_user(
         user_id,
         tokens,
-        SessionStore(settings.token_file),
-        spending_store,
+        SessionStore(database),
+        SpendingStore(database),
         Audit(settings.audit_text, settings.audit_key),
     )
+    database.close()
     print(
         f"deskclerk: erased {user_id}: {erased.secrets} secrets, {erased.sessions} sessions, "
         f"{erased.threads} conversations, {erased.costs} spending rows"
@@ -72,9 +81,9 @@ def usage(month: str | None) -> None:
         settings = load_settings()
     except ValidationError as error:
         sys.exit(f"deskclerk: {error}")
-    rows = SpendingStore(settings.token_file.parent / SPENDING_FILE).report(
-        month or month_of(datetime.now(UTC))
-    )
+    database = open_database(settings)
+    rows = SpendingStore(database).report(month or month_of(datetime.now(UTC)))
+    database.close()
     print("user_id\tmodel_usd\tjev_usd\ttotal_usd\tcalls")
     for row in rows:
         print(
@@ -122,8 +131,8 @@ def main(argv: Sequence[str] = ()) -> None:
                 file=sys.stderr,
             )
         servers = load_servers(settings.servers_file)
-        tokens = TokenStore(settings.token_file, settings.token_key.get_secret_value())
-        spending_store = SpendingStore(settings.token_file.parent / SPENDING_FILE)
+        database = open_database(settings)
+        tokens = TokenStore(database, settings.token_key.get_secret_value())
         connections = OAuthConnections(
             tokens,
             settings.redirect_url,
@@ -143,11 +152,12 @@ def main(argv: Sequence[str] = ()) -> None:
             print(f"deskclerk: tracing requests to {tracing.host}", file=sys.stderr)
         app = create_app(
             settings,
+            database,
             servers,
             connections,
             tokens,
-            spending_store,
-            SessionStore(settings.token_file),
+            SpendingStore(database),
+            SessionStore(database),
             chat_model(settings),
             write_check(),
             jev,
@@ -169,6 +179,7 @@ def main(argv: Sequence[str] = ()) -> None:
         sys.exit(f"deskclerk: {error}")
     log_to_stdout()
     uvicorn.run(app, host=settings.host, port=settings.port, access_log=False)
+    database.close()
     if tracing is not None:
         tracing.flush()
 

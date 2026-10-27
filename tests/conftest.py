@@ -1,16 +1,23 @@
 # Shared fixtures: access tokens signed with a throwaway RSA key, so tests that need one run
-# without Keycloak.
+# without Keycloak, and a Postgres database emptied before each test that asks for it.
 
+import os
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 
 import jwt
+import psycopg
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from jwt.algorithms import RSAAlgorithm
 
 from deskclerk.auth import SigningKeyLookup
 from deskclerk.config import Settings, load_settings
+from deskclerk.database import Database
+
+DATABASE_URL = os.environ.setdefault(
+    "DESKCLERK_DATABASE_URL", "postgresql://deskclerk:deskclerk@127.0.0.1:5432/deskclerk"
+)
 
 TOKEN_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
@@ -63,3 +70,19 @@ def sign_token(token_settings: Settings) -> Callable[[dict[str, object]], str]:
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
+
+
+@pytest.fixture
+def database() -> Iterator[Database]:
+    with psycopg.connect(DATABASE_URL, autocommit=True) as connection:
+        connection.execute("DROP SCHEMA public CASCADE")
+        connection.execute("CREATE SCHEMA public")
+    opened = Database(DATABASE_URL)
+    yield opened
+    opened.close()
+
+
+@pytest.fixture
+async def served_database(database: Database) -> AsyncIterator[Database]:
+    async with database.serving():
+        yield database

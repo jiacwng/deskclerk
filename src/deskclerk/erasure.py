@@ -28,7 +28,7 @@ def erase_user(
     erased = Erased(
         secrets=tokens.delete_user(user_id),
         sessions=sessions.delete_user(user_id),
-        threads=delete_user_threads(tokens.path, user_id),
+        threads=delete_user_threads(tokens.database, user_id),
         costs=spending_store.delete_user(user_id),
     )
     audit.erased(user_id, erased.secrets, erased.sessions, erased.threads, erased.costs)
