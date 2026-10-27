@@ -28,8 +28,9 @@ OpenAI or AWS Bedrock. This runs deskclerk, a development Keycloak and a demo ta
    provider's key as `.env.example` shows. Make `DESKCLERK_TOKEN_KEY` and
    `DESKCLERK_SESSION_KEY` with the two `python3` commands in the file. Without a TypeSafe key,
    also set `DESKCLERK_ALLOW_UNSCREENED=true`.
-2. Copy `servers.example.toml` to `servers.toml`. It lists the demo task server, which needs no
-   account.
+2. Copy `servers.example.toml` to `servers.toml`. It lists the demo task server, a small to-do
+   list that stands in for a tracker like Linear or Jira and needs no account. The same file shows
+   how to add Linear's hosted MCP server, which deskclerk was tested on.
 3. Start everything. The first start builds the image and takes about a minute.
 
    ```
