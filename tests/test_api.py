@@ -414,6 +414,33 @@ def test_an_ask_runs_the_agent_and_the_server_sees_the_write_under_that_employee
         assert len(notes_server.notes) == 1
 
 
+def test_a_connection_whose_refresh_fails_shows_as_not_connected_and_is_named_to_the_model(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(token_settings)
+    model = script(answer("connect notes first"))
+    ada = as_user(sign_token, "ada")
+    with web(settings, [notes(notes_server)], model, token_signing_key, tmp_path) as site:
+        connect(site, ada)
+        stored = json.loads(site.tokens.get("ada", "notes", "tokens") or "")
+        stored["token"]["access_token"] = "revoked"
+        stored["token"]["refresh_token"] = None
+        site.tokens.put("ada", "notes", "tokens", json.dumps(stored))
+        body = ask(site, ada).json()
+        assert body["not_connected"] == ["notes"]
+        listing = site.client.get("/servers", headers=ada).json()
+        assert [(entry["name"], entry["connected"]) for entry in listing] == [("notes", False)]
+    system = model.seen[0][0]
+    assert isinstance(system, SystemMessage)
+    assert "has not connected these servers, so their tools are not offered: notes." in str(
+        system.content
+    )
+
+
 def test_an_ask_gives_the_model_the_instructions_with_today_s_utc_date(
     sign_token: Sign, token_settings: Settings, token_signing_key: SigningKeyLookup, tmp_path: Path
 ) -> None:
