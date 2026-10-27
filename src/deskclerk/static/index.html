@@ -316,6 +316,8 @@ textarea::placeholder { color: var(--muted); }
   :root { interpolate-size: allow-keywords; }
   .spinner { animation: spin 0.8s linear infinite; }
   .working-label { animation: pulse 1.6s ease-in-out infinite; }
+  .note[data-state="running"] .badge { animation: pulse 1.6s ease-in-out infinite; }
+  .note[data-live] { animation: fade 0.2s ease-out backwards; }
   .turn, .confirm, .working-row, .error, .jump, .empty, .turn-error { animation: rise 0.2s ease-out backwards; }
   button, .link-button { transition: background-color 0.15s, border-color 0.15s, color 0.15s; }
   @supports selector(::details-content) {
@@ -399,7 +401,7 @@ textarea::placeholder { color: var(--muted); }
       <p id="working" class="sr-only" role="status"></p>
       <p id="announce" class="sr-only" role="status" aria-live="polite"></p>
       <div class="composer-row">
-        <button id="ask" class="primary" type="submit">Send <span aria-hidden="true">&#8593;</span></button>
+        <button id="ask" class="primary" type="submit"><span id="ask-label">Send</span> <span id="ask-mark" aria-hidden="true">&#8593;</span></button>
         <span class="muted small hint">Enter to send, Shift+Enter for a new line</span>
       </div>
     </form>
@@ -457,6 +459,7 @@ let currentTurn = null;
 let decisions = {};
 let waiting = 0;
 let busy = false;
+let running = null;
 let lastRequest = "";
 let following = true;
 let listed = null;
@@ -517,10 +520,10 @@ async function failureBody(response) {
   }
 }
 
-function detail(body, response) {
+function detail(body, statusText) {
   if (typeof body?.detail === "string") return body.detail;
   if (Array.isArray(body?.detail)) return body.detail.map(fieldProblem).join("; ");
-  return response.statusText;
+  return statusText;
 }
 
 const FAILURE_SENTENCES = {
@@ -567,16 +570,19 @@ function failTurn(turn, text, retry) {
 }
 
 async function reportFailure(response, turn, retry) {
-  const body = await failureBody(response);
-  const raw = detail(body, response);
-  const sentence = FAILURE_SENTENCES[response.status];
+  return reportProblem(response.status, await failureBody(response), response.statusText, turn, retry);
+}
+
+function reportProblem(status, body, statusText, turn, retry) {
+  const raw = detail(body, statusText);
+  const sentence = FAILURE_SENTENCES[status];
   const calls = Array.isArray(body?.calls) ? body.calls : [];
   if (retry !== undefined && calls.length === 0) {
-    failTurn(turn, sentence ?? (raw === "" ? "Something went wrong (status " + response.status + ")" : raw), retry);
+    failTurn(turn, sentence ?? (raw === "" ? "Something went wrong (status " + status + ")" : raw), retry);
     return true;
   }
   if (sentence !== undefined) showError(sentence, raw);
-  else showError(raw === "" ? "Something went wrong (status " + response.status + ")" : raw);
+  else showError(raw === "" ? "Something went wrong (status " + status + ")" : raw);
   if (turn === undefined || calls.length === 0) return false;
   const ran = { executed: calls, blocked: [], unavailable: [], changed_tools: [] };
   turn.calls.replaceChildren(noteRow("warn", "Ran", "These calls ran before the error"), ...buildCalls(ran));
@@ -585,7 +591,10 @@ async function reportFailure(response, turn, retry) {
 }
 
 function updateControls() {
-  el("ask").disabled = busy || waiting > 0;
+  const stoppable = running !== null;
+  el("ask").disabled = stoppable ? false : busy || waiting > 0;
+  el("ask-label").textContent = stoppable ? "Stop" : "Send";
+  el("ask-mark").textContent = stoppable ? "\u25A0" : "\u2191";
   el("new-conversation").disabled = busy;
   for (const control of el("conversation-list").querySelectorAll("button")) control.disabled = busy;
   el("request").placeholder = waiting > 0 ? "Decide the calls above to continue" : "What do you need?";
@@ -909,7 +918,7 @@ function newTurn(request) {
   turn.append(asked, reply, calls, cost);
   el("turns").append(turn);
   el("empty").hidden = true;
-  return { node: turn, reply, answer: reply.lastChild, calls, cost };
+  return { node: turn, reply, answer: reply.lastChild, calls, cost, text: "", frame: 0, rows: new Map(), pending: [], id: null };
 }
 
 const phone = window.matchMedia("(max-width: 51.99rem)");
@@ -1133,10 +1142,65 @@ function showPending(pending) {
   updateControls();
 }
 
+function paintAnswer(turn) {
+  turn.frame = 0;
+  turn.answer.replaceChildren(renderAnswer(turn.text));
+  turn.reply.hidden = turn.text === "";
+  if (following) scrollToBottom("auto");
+  updateJump();
+}
+
+function liveAnswer(turn, delta) {
+  turn.text += delta;
+  if (turn.frame === 0) turn.frame = requestAnimationFrame(() => paintAnswer(turn));
+}
+
+function stopPainting(turn) {
+  cancelAnimationFrame(turn.frame);
+  turn.frame = 0;
+}
+
+function liveCall(turn, call) {
+  let row = turn.rows.get(call.id);
+  if (row === undefined) {
+    if (turn.text !== "") {
+      stopPainting(turn);
+      turn.text = "";
+      paintAnswer(turn);
+    }
+    const label = make("span");
+    label.append(make("span", "call-server", call.server + " "), make("span", "call-tool", call.tool));
+    row = make("div", "note");
+    row.dataset.live = "";
+    row.append(make("span", "badge info", "Running"), label);
+    turn.rows.set(call.id, row);
+    turn.calls.append(row);
+    if (following) scrollToBottom("auto");
+    updateJump();
+  }
+  if (call.status === "running") {
+    row.dataset.state = "running";
+    return;
+  }
+  row.dataset.state = call.status;
+  row.firstChild.className = "badge " + (call.status === "error" ? "bad" : "ok");
+  row.firstChild.textContent = call.status === "error" ? "Failed" : "Done";
+}
+
+function endLiveCalls(turn, text) {
+  for (const row of turn.rows.values()) {
+    if (row.dataset.state !== "running") continue;
+    row.dataset.state = "ended";
+    row.firstChild.className = "badge warn";
+    row.firstChild.textContent = text;
+  }
+}
+
 function showResult(result) {
   conversation = result.conversation;
   remember(conversation);
   const turn = currentTurn;
+  stopPainting(turn);
   setAnswer(turn, result.answer);
   turn.calls.replaceChildren(...buildCalls(result));
   const cost = "Cost: " + result.cost_usd.toFixed(4) + " USD";
@@ -1162,6 +1226,87 @@ function discardTurn(turn, previous, request) {
   fitRequest();
 }
 
+const stream = (path, body, signal) => api(path, {
+  method: "POST",
+  headers: { "X-Requested-With": "deskclerk", "Content-Type": "application/json", Accept: "text/event-stream" },
+  body: JSON.stringify(body),
+  signal,
+});
+
+function parseEvent(block) {
+  let name = "message";
+  const lines = [];
+  for (const line of block.split("\n")) {
+    if (line.startsWith("event:")) name = line.slice(6).trim();
+    else if (line.startsWith("data:")) lines.push(line.slice(5).replace(/^ /, ""));
+  }
+  return lines.length === 0 ? null : { name, data: JSON.parse(lines.join("\n")) };
+}
+
+async function readEvents(response, handle) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return;
+    buffer += decoder.decode(value, { stream: true }).replaceAll("\r\n", "\n");
+    let end = buffer.indexOf("\n\n");
+    while (end !== -1) {
+      const event = parseEvent(buffer.slice(0, end));
+      buffer = buffer.slice(end + 2);
+      if (event !== null) handle(event);
+      end = buffer.indexOf("\n\n");
+    }
+  }
+}
+
+async function streamed(path, body, turn) {
+  const control = new AbortController();
+  running = control;
+  updateControls();
+  const response = await stream(path, body, control.signal);
+  if (!response.ok) return { response, outcome: null };
+  turn.id = response.headers.get("X-Conversation");
+  let outcome = null;
+  await readEvents(response, ({ name, data }) => {
+    if (name === "call") liveCall(turn, data);
+    else if (name === "answer") liveAnswer(turn, data.text);
+    else if (name === "pending") {
+      turn.pending.push(data);
+      showPending(turn.pending);
+    } else if (name === "done" || name === "error") outcome = { name, data };
+  });
+  return { response, outcome };
+}
+
+async function adoptConversation(id) {
+  if (conversation !== null || id === null) return;
+  try {
+    const found = await api("/conversations/" + encodeURIComponent(id));
+    if (!found.ok) return;
+    conversation = id;
+    remember(id);
+  } catch (error) {}
+}
+
+async function showStopped(turn) {
+  stopPainting(turn);
+  if (turn.text !== "") setAnswer(turn, turn.text);
+  endLiveCalls(turn, "Stopped");
+  turn.calls.append(noteRow("warn", "Stopped", "You stopped this request. A call that was already sent to a server may have run."));
+  revealTurn(turn.node);
+  announce("Stopped");
+  await adoptConversation(turn.id);
+  setTimeout(loadConversations, 1000);
+}
+
+function lostStream(turn, retry) {
+  stopPainting(turn);
+  endLiveCalls(turn, "No result");
+  failTurn(turn, "The connection ended before the answer finished", retry);
+}
+
 async function ask(resent) {
   showError("");
   const request = resent ?? el("request").value;
@@ -1185,18 +1330,28 @@ async function ask(resent) {
   inFlight = request;
   const stop = startWorking(turn.node, "Working on it…");
   try {
-    const response = await post("/ask", { request, conversation });
+    const { response, outcome } = await streamed("/ask", { request, conversation }, turn);
     if (!response.ok) {
       const kept = await reportFailure(response, turn, retryable(response.status) ? retry : undefined);
       if (!kept) discardTurn(turn, previous, request);
-      return;
+    } else if (outcome === null) {
+      lostStream(turn, retry);
+    } else if (outcome.name === "error") {
+      stopPainting(turn);
+      endLiveCalls(turn, "No result");
+      const failure = outcome.data;
+      const kept = reportProblem(failure.status, failure, "", turn, retryable(failure.status) ? retry : undefined);
+      if (!kept) discardTurn(turn, previous, request);
+    } else {
+      showResult(outcome.data);
     }
-    showResult(await response.json());
   } catch (error) {
-    failTurn(turn, "Could not reach the server", retry);
+    if (error.name === "AbortError") await showStopped(turn);
+    else lostStream(turn, retry);
   } finally {
     inFlight = "";
     stop();
+    running = null;
     setBusy(false);
     loadConversations();
     if (waiting === 0) el("request").focus();
@@ -1208,20 +1363,39 @@ async function send() {
   showError("");
   el("send").disabled = true;
   setBusy(true, "Sending your decisions…");
-  const stop = startWorking(currentTurn.node, "Sending your decisions…");
+  const turn = currentTurn;
+  turn.pending = [];
+  const stop = startWorking(turn.node, "Sending your decisions…");
   try {
-    const response = await post("/ask/confirm", { conversation, decisions });
+    const { response, outcome } = await streamed("/ask/confirm", { conversation, decisions }, turn);
     if (!response.ok) {
       if (response.status >= 500) showPending([]);
       else updateDecided(waiting);
-      return await reportFailure(response, currentTurn);
+      return await reportFailure(response, turn);
     }
-    showResult(await response.json());
+    if (outcome === null) {
+      showPending([]);
+      lostStream(turn);
+    } else if (outcome.name === "error") {
+      stopPainting(turn);
+      endLiveCalls(turn, "No result");
+      if (outcome.data.status >= 500) showPending([]);
+      else updateDecided(waiting);
+      reportProblem(outcome.data.status, outcome.data, "", turn);
+    } else {
+      showResult(outcome.data);
+    }
   } catch (error) {
-    updateDecided(waiting);
-    showError("Could not reach the server");
+    if (error.name === "AbortError") {
+      showPending([]);
+      await showStopped(turn);
+    } else {
+      updateDecided(waiting);
+      showError("Could not reach the server");
+    }
   } finally {
     stop();
+    running = null;
     setBusy(false);
     loadConversations();
     if (waiting === 0) el("request").focus();
@@ -1272,6 +1446,10 @@ async function start() {
   restoreDraft();
   el("composer").addEventListener("submit", (event) => {
     event.preventDefault();
+    if (running !== null) {
+      if (event.submitter === el("ask")) running.abort();
+      return;
+    }
     if (!el("ask").disabled) ask();
   });
   el("request").addEventListener("keydown", (event) => {
@@ -1304,7 +1482,9 @@ async function start() {
   el("rail-toggle").addEventListener("click", () => setDrawer(!drawerOpen(), true));
   el("scrim").addEventListener("click", closeDrawer);
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") closeDrawer();
+    if (event.key !== "Escape") return;
+    if (running !== null) running.abort();
+    else closeDrawer();
   });
   phone.addEventListener("change", () => setDrawer(false, false));
   setDrawer(false, false);

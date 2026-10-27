@@ -10,7 +10,7 @@ import hmac
 import logging
 import re
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -23,7 +23,8 @@ import anyio.from_thread
 import httpx
 import psycopg
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.sse import KEEPALIVE_COMMENT, format_sse_event
 from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from pydantic import BaseModel, ConfigDict, Field
@@ -32,6 +33,8 @@ from starlette.concurrency import run_in_threadpool
 from deskclerk import cookies, oidc
 from deskclerk.agent import (
     AlwaysAllowRefused,
+    CallEnded,
+    CallStarted,
     ConversationWaiting,
     Decision,
     Edit,
@@ -39,6 +42,7 @@ from deskclerk.agent import (
     Gate,
     McpServerFailed,
     NothingToConfirm,
+    RunEvent,
     WrongDecisions,
     no_tool_span,
     run_agent,
@@ -101,6 +105,7 @@ LOGIN_LIFETIME_SECONDS = 600
 SECONDS_PER_HOUR = 3600
 BEARER = {"WWW-Authenticate": "Bearer"}
 MAX_REASON_CHARS = 200
+STREAM_PING_SECONDS = 15.0
 
 _log = logging.getLogger(__name__)
 
@@ -238,6 +243,68 @@ class AskOut(BaseModel):
     flagged: int
     changed_tools: list[str]
     cost_usd: float
+
+
+class CallOut(BaseModel):
+    id: str
+    server: str
+    tool: str
+    status: Literal["running", "ok", "error"]
+
+
+class AnswerOut(BaseModel):
+    text: str
+
+
+class ErrorOut(BaseModel):
+    status: int
+    detail: str
+    calls: list[ExecutedOut]
+
+
+@dataclass(frozen=True)
+class StreamEvent:
+    name: Literal["call", "pending", "answer", "done", "error"]
+    data: BaseModel
+
+
+Emit = Callable[[StreamEvent], None]
+
+
+def _stream_event(event: RunEvent) -> StreamEvent:
+    if isinstance(event, CallStarted):
+        return StreamEvent(
+            "call", CallOut(id=event.id, server=event.server, tool=event.tool, status="running")
+        )
+    if isinstance(event, CallEnded):
+        status = "error" if event.is_error else "ok"
+        return StreamEvent(
+            "call", CallOut(id=event.id, server=event.server, tool=event.tool, status=status)
+        )
+    return StreamEvent("answer", AnswerOut(text=event.text))
+
+
+def _wire(event: StreamEvent) -> bytes:
+    return format_sse_event(data_str=event.data.model_dump_json(), event=event.name)
+
+
+async def _wire_events(
+    queue: asyncio.Queue[StreamEvent | None], producer: asyncio.Task[None]
+) -> AsyncIterator[bytes]:
+    try:
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), STREAM_PING_SECONDS)
+            except TimeoutError:
+                yield KEEPALIVE_COMMENT
+                continue
+            if event is None:
+                return
+            yield _wire(event)
+    finally:
+        producer.cancel()
+        with anyio.CancelScope(shield=True):
+            await asyncio.wait([producer])
 
 
 @dataclass(frozen=True)
@@ -681,27 +748,106 @@ def create_app(
             pending=[PendingOut(**vars(call)) for call in waiting],
         )
 
-    @app.post("/ask")
-    async def ask(body: AskBody, who: Caller = Depends(posting_caller)) -> AskOut:
-        return await take_turn(who.identity, body.conversation, body.request, None)
+    @app.post("/ask", response_model=AskOut)
+    async def ask(
+        request: Request, body: AskBody, who: Caller = Depends(posting_caller)
+    ) -> AskOut | StreamingResponse:
+        return await answer_as_asked(request, who.identity, body.conversation, body.request, None)
 
-    @app.post("/ask/confirm")
-    async def confirm(body: ConfirmBody, who: Caller = Depends(posting_caller)) -> AskOut:
+    @app.post("/ask/confirm", response_model=AskOut)
+    async def confirm(
+        request: Request, body: ConfirmBody, who: Caller = Depends(posting_caller)
+    ) -> AskOut | StreamingResponse:
         decisions: dict[str, Decision] = {
             call_id: Edit(choice.edit) if isinstance(choice, EditIn) else choice
             for call_id, choice in body.decisions.items()
         }
-        return await take_turn(who.identity, body.conversation, "", decisions)
+        return await answer_as_asked(request, who.identity, body.conversation, "", decisions)
 
-    async def take_turn(
+    async def answer_as_asked(
+        request: Request,
         identity: Identity,
         conversation_id: UUID | None,
         text: str,
         decisions: dict[str, Decision] | None,
+    ) -> AskOut | StreamingResponse:
+        conversation = conversation_id or uuid4()
+        if "text/event-stream" not in request.headers.get("accept", ""):
+            return await take_turn(
+                identity,
+                conversation_id,
+                conversation,
+                text,
+                decisions,
+                lambda event: None,
+                lambda: None,
+            )
+        queue: asyncio.Queue[StreamEvent | None] = asyncio.Queue()
+        started = asyncio.Event()
+
+        async def produce() -> None:
+            try:
+                done = await take_turn(
+                    identity,
+                    conversation_id,
+                    conversation,
+                    text,
+                    decisions,
+                    queue.put_nowait,
+                    started.set,
+                )
+                queue.put_nowait(StreamEvent("done", done))
+            except HTTPException:
+                if not started.is_set():
+                    raise
+                failure = ErrorOut(status=500, detail="the ask failed", calls=[])
+                queue.put_nowait(StreamEvent("error", failure))
+            except FailedTurn as failed:
+                calls = [ExecutedOut(**vars(call)) for call in failed.executed]
+                failure = ErrorOut(status=failed.status, detail=failed.detail, calls=calls)
+                queue.put_nowait(StreamEvent("error", failure))
+            except Exception:
+                _log.exception("an ask failed")
+                queue.put_nowait(
+                    StreamEvent("error", ErrorOut(status=500, detail="the ask failed", calls=[]))
+                )
+            finally:
+                queue.put_nowait(None)
+
+        producer = asyncio.create_task(produce())
+        waiter = asyncio.create_task(started.wait())
+        try:
+            await asyncio.wait({producer, waiter}, return_when=asyncio.FIRST_COMPLETED)
+        except asyncio.CancelledError:
+            producer.cancel()
+            with anyio.CancelScope(shield=True):
+                await asyncio.wait([producer])
+            raise
+        finally:
+            waiter.cancel()
+        if producer.done() and not started.is_set() and (refusal := producer.exception()):
+            raise refusal
+        return StreamingResponse(
+            _wire_events(queue, producer),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "X-Conversation": str(conversation),
+            },
+        )
+
+    async def take_turn(
+        identity: Identity,
+        conversation_id: UUID | None,
+        conversation: UUID,
+        text: str,
+        decisions: dict[str, Decision] | None,
+        emit: Emit,
+        running: Callable[[], None],
     ) -> AskOut:
         entry = "ask" if decisions is None else "confirm"
         started = time.monotonic()
-        conversation = conversation_id or uuid4()
 
         def refuse(
             status: int, detail: str, outcome: str, headers: dict[str, str] | None = None
@@ -762,6 +908,8 @@ def create_app(
                             confirm_writes=True,
                             decisions=decisions,
                             executed=executed,
+                            emit=lambda event: emit(_stream_event(event)),
+                            running=running,
                         )
                     if trace:
                         trace.finish(result.flagged)
@@ -777,6 +925,21 @@ def create_app(
                     "only a call that does not delete or overwrite can be always allowed",
                     "wrong_decisions",
                 )
+            except asyncio.CancelledError:
+                audit.asked(
+                    identity,
+                    conversation,
+                    text,
+                    started,
+                    "cancelled",
+                    None,
+                    spending.cost_usd - spent_before,
+                    "the client stopped the request",
+                    entry,
+                    executed,
+                )
+                await record_turn(database, identity.user_id, conversation, text)
+                raise
             except TimeoutError:
                 cost = spending.cost_usd - spent_before
                 detail = (
@@ -823,6 +986,8 @@ def create_app(
             entry=entry,
             executed=result.executed,
         )
+        for call in result.pending:
+            emit(StreamEvent("pending", PendingOut(**vars(call))))
         return AskOut(
             conversation=conversation,
             answer=result.answer,
