@@ -1,7 +1,11 @@
 # Conversation memory: each conversation is a LangGraph thread whose checkpoints live in
 # Postgres, encrypted with the token key. A thread id starts with the employee's id, so one
 # employee can never load another's. Erasing an employee deletes every thread with their prefix.
+# A conversations table beside them holds each conversation's title and last activity for the list.
 
+import asyncio
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -15,6 +19,8 @@ from deskclerk.database import Database
 
 CIPHER_NAME = "fernet"
 UUID_LENGTH = 36
+TITLE_CHARS = 60
+LIST_LIMIT = 100
 
 
 class FernetCipher:
@@ -36,7 +42,57 @@ async def open_checkpointer(database: Database, fernet: Fernet) -> AsyncPostgres
     )
     async with database.schema_lock():
         await checkpointer.setup()
+    await asyncio.to_thread(
+        database.create_tables,
+        "CREATE TABLE IF NOT EXISTS conversations ("
+        "user_id TEXT NOT NULL, id UUID NOT NULL, title TEXT NOT NULL, "
+        "updated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (user_id, id))",
+    )
     return checkpointer
+
+
+@dataclass(frozen=True)
+class ConversationSummary:
+    id: UUID
+    title: str
+    updated_at: datetime
+
+
+def title_of(request: str) -> str:
+    collapsed = " ".join(request.split())
+    if len(collapsed) <= TITLE_CHARS:
+        return collapsed
+    return collapsed[:TITLE_CHARS] + "…"
+
+
+async def record_turn(database: Database, user_id: str, conversation: UUID, request: str) -> None:
+    async with database.async_pool.connection() as connection:
+        await connection.execute(
+            "INSERT INTO conversations (user_id, id, title, updated_at) VALUES (%s, %s, %s, now()) "
+            "ON CONFLICT (user_id, id) DO UPDATE SET updated_at = now()",
+            (user_id, conversation, title_of(request)),
+        )
+
+
+async def list_conversations(database: Database, user_id: str) -> list[ConversationSummary]:
+    async with database.async_pool.connection() as connection:
+        cursor = await connection.execute(
+            "SELECT id, title, updated_at FROM conversations WHERE user_id = %s "
+            "ORDER BY updated_at DESC LIMIT %s",
+            (user_id, LIST_LIMIT),
+        )
+        found = await cursor.fetchall()
+    return [ConversationSummary(row["id"], row["title"], row["updated_at"]) for row in found]
+
+
+async def delete_conversation(
+    database: Database, checkpointer: BaseCheckpointSaver[Any], user_id: str, conversation: UUID
+) -> None:
+    await checkpointer.adelete_thread(thread_id(user_id, conversation))
+    async with database.async_pool.connection() as connection:
+        await connection.execute(
+            "DELETE FROM conversations WHERE user_id = %s AND id = %s", (user_id, conversation)
+        )
 
 
 def thread_id(user_id: str, conversation: UUID) -> str:
@@ -47,6 +103,9 @@ def delete_user_threads(database: Database, user_id: str) -> int:
     prefix = f"{user_id}/"
     arguments = (len(prefix) + UUID_LENGTH, prefix)
     with database.pool.connection() as connection:
+        listed = connection.execute("SELECT to_regclass('conversations')").fetchone()
+        if listed is not None and listed[0] is not None:
+            connection.execute("DELETE FROM conversations WHERE user_id = %s", (user_id,))
         found = connection.execute("SELECT to_regclass('checkpoints')").fetchone()
         if found is None or found[0] is None:
             return 0

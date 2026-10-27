@@ -67,9 +67,12 @@ from deskclerk.connections import (
     first_leaf,
 )
 from deskclerk.conversations import (
+    delete_conversation,
     last_request,
+    list_conversations,
     open_checkpointer,
     past_turns,
+    record_turn,
     saved_messages,
     thread_id,
 )
@@ -214,6 +217,12 @@ class ConversationOut(BaseModel):
     conversation: UUID
     turns: list[TurnOut]
     pending: list[PendingOut]
+
+
+class ConversationSummaryOut(BaseModel):
+    id: UUID
+    title: str
+    updated_at: datetime
 
 
 class AskOut(BaseModel):
@@ -629,6 +638,23 @@ def create_app(
         audit.connection(who.identity, "disconnect", server.name)
         return Response(status_code=204)
 
+    @app.get("/conversations")
+    async def conversation_list(who: Caller = Depends(caller)) -> list[ConversationSummaryOut]:
+        found = await list_conversations(database, who.identity.user_id)
+        return [ConversationSummaryOut(**vars(summary)) for summary in found]
+
+    @app.delete("/conversations/{conversation_id}", status_code=204)
+    async def remove_conversation(
+        conversation_id: UUID, who: Caller = Depends(posting_caller)
+    ) -> Response:
+        checkpointer: AsyncPostgresSaver = app.state.checkpointer
+        user_id = who.identity.user_id
+        async with database.user_lock(user_id):
+            if not await saved_messages(checkpointer, thread_id(user_id, conversation_id)):
+                raise HTTPException(404, "no such conversation")
+            await delete_conversation(database, checkpointer, user_id, conversation_id)
+        return Response(status_code=204)
+
     @app.get("/conversations/{conversation_id}")
     async def conversation_turns(
         conversation_id: UUID, who: Caller = Depends(caller)
@@ -783,6 +809,7 @@ def create_app(
                 raise upstream_failure(
                     identity, conversation, text, started, cost, first_leaf(failed), entry, executed
                 ) from None
+            await record_turn(database, identity.user_id, conversation, text)
         cost = spending.cost_usd - spent_before
         outcome = "awaiting_confirmation" if result.pending else "answered"
         audit.asked(
