@@ -77,6 +77,11 @@ body {
   font: 0.9375rem/1.5 var(--sans);
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
+  height: 100vh;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 h1, h2, p, ul { margin: 0; padding: 0; }
 ul { list-style: none; }
@@ -91,7 +96,7 @@ textarea { caret-color: var(--accent); }
 .muted { color: var(--muted); }
 .small { font-size: 0.8125rem; }
 
-.bar { border-bottom: 1px solid var(--line); }
+.bar { border-bottom: 1px solid var(--line); flex: none; }
 .bar-inner, .shell {
   max-width: 72rem;
   margin: 0 auto;
@@ -109,14 +114,14 @@ textarea { caret-color: var(--accent); }
 .rail-summary::after { content: "Show"; font-size: 0.75rem; font-weight: 400; color: var(--muted); }
 .rail-details[open] .rail-summary::after { content: "Hide"; }
 .rail-details[open] .rail-summary { margin-bottom: 0.5rem; }
-.rail { padding-block: 1rem; }
-.shell { display: grid; align-items: start; grid-template-columns: minmax(0, 1fr); }
+.rail { padding-block: 1rem; min-height: 0; overflow-y: auto; }
+.shell { display: grid; flex: 1; width: 100%; min-height: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
 @media (min-width: 52rem) {
-  .shell { grid-template-columns: 15rem minmax(0, 1fr); column-gap: 2rem; }
-  .rail { border-right: 1px solid var(--line-soft); min-height: calc(100vh - 2.75rem); padding-right: 1rem; }
+  .shell { grid-template-columns: 15rem minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); column-gap: 2rem; }
+  .rail { border-right: 1px solid var(--line-soft); padding-right: 1rem; }
 }
 @media (max-width: 51.99rem) {
-  .rail { border-bottom: 1px solid var(--line-soft); padding-block: 0.5rem; }
+  .rail { border-bottom: 1px solid var(--line-soft); padding-block: 0.5rem; max-height: 50vh; max-height: 50dvh; }
   .rail .heading { display: none; }
   .rail-summary { display: flex; }
 }
@@ -151,7 +156,14 @@ button.small { min-height: 1.875rem; padding: 0.2rem 0.6rem; font-size: 0.8125re
 .state.on { color: var(--ok); }
 .state.on::before { background: var(--ok); border-color: var(--ok); }
 
-.main { display: flex; flex-direction: column; min-width: 0; padding-top: 1rem; min-height: calc(100vh - 2.75rem); }
+.main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.thread { position: relative; flex: 1; min-height: 0; display: flex; }
+.messages { position: relative; flex: 1; min-width: 0; overflow-y: auto; padding-top: 1rem; overscroll-behavior: contain; scrollbar-color: var(--line) transparent; }
+.messages:focus-visible { outline-offset: -2px; }
+.jump {
+  position: absolute; left: 50%; bottom: 0.75rem; translate: -50% 0;
+  border-radius: 999px; padding-inline: 1rem; box-shadow: 0 1px 6px rgb(0 0 0 / 0.25);
+}
 .empty { color: var(--muted); max-width: 40ch; padding-block: 0.5rem 1.5rem; }
 .turns { display: grid; gap: 1.75rem; padding-bottom: 1.5rem; }
 .turn { display: grid; gap: 0.625rem; min-width: 0; }
@@ -246,11 +258,10 @@ button.choice[aria-pressed="true"].reject { background: var(--bad); border-color
 .confirm-foot { display: flex; align-items: center; gap: 0.75rem; padding: 0.625rem 0.75rem; border-top: 1px solid var(--line); }
 
 .composer {
-  position: sticky; bottom: 0; background: var(--bg); margin-top: auto;
+  flex: none; background: var(--bg);
   padding-block: 0.75rem max(0.75rem, env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--line); display: grid; gap: 0.5rem;
 }
-.main:has(.confirm:not([hidden])) .composer { position: static; }
 textarea {
   width: 100%; min-height: 4rem; max-height: 40vh; resize: vertical; font: inherit;
   padding: 0.5rem 0.625rem; border-radius: 4px;
@@ -273,9 +284,21 @@ textarea::placeholder { color: var(--muted); }
 .signin-title { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.01em; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+@keyframes pulse { 50% { opacity: 0.45; } }
 @media (prefers-reduced-motion: no-preference) {
+  :root { interpolate-size: allow-keywords; }
   .spinner { animation: spin 0.8s linear infinite; }
+  .working-label { animation: pulse 1.6s ease-in-out infinite; }
+  .turn, .confirm, .working-row, .error, .jump { animation: rise 0.2s ease-out backwards; }
   button, .link-button { transition: background-color 0.15s, border-color 0.15s, color 0.15s; }
+  @supports selector(::details-content) {
+    .call::details-content, .raw::details-content, .rail-details::details-content {
+      block-size: 0; overflow-y: clip;
+      transition: block-size 0.2s ease-out, content-visibility 0.2s allow-discrete;
+    }
+    .call[open]::details-content, .raw[open]::details-content, .rail-details[open]::details-content { block-size: auto; }
+  }
 }
 </style>
 </head>
@@ -307,7 +330,9 @@ textarea::placeholder { color: var(--muted); }
   </aside>
 
   <main class="main">
-    <h2 class="sr-only">Conversation</h2>
+    <div class="thread">
+    <div id="messages" class="messages" tabindex="0" role="region" aria-labelledby="messages-title">
+    <h2 id="messages-title" class="sr-only">Conversation</h2>
     <p id="empty" class="empty">Ask for something to look up or change on your connected servers.</p>
     <div id="turns" class="turns"></div>
 
@@ -322,6 +347,9 @@ textarea::placeholder { color: var(--muted); }
         <span id="decided" class="muted small"></span>
       </div>
     </section>
+    </div>
+    <button id="jump" class="jump" type="button" aria-label="Jump to latest" hidden>Jump to latest <span aria-hidden="true">&#8595;</span></button>
+    </div>
 
     <form id="composer" class="composer">
       <label for="request" class="sr-only">Your request</label>
@@ -370,6 +398,34 @@ let decisions = {};
 let waiting = 0;
 let busy = false;
 let lastRequest = "";
+let following = true;
+
+function scrollBehavior() {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+}
+
+function atBottom() {
+  const box = el("messages");
+  return box.scrollHeight - box.scrollTop - box.clientHeight <= 40;
+}
+
+function updateJump() {
+  el("jump").hidden = atBottom();
+}
+
+function scrollToBottom(behavior) {
+  const box = el("messages");
+  box.scrollTo({ top: box.scrollHeight, behavior });
+}
+
+function revealTurn(node) {
+  if (!following) return updateJump();
+  const box = el("messages");
+  const top = node.offsetTop;
+  const fits = box.scrollHeight - top <= box.clientHeight;
+  box.scrollTo({ top: fits ? box.scrollHeight : top, behavior: scrollBehavior() });
+  updateJump();
+}
 
 function make(tag, className, text) {
   const node = document.createElement(tag);
@@ -445,7 +501,7 @@ async function reportFailure(response, turn) {
   if (turn === undefined || calls.length === 0) return false;
   const ran = { executed: calls, blocked: [], unavailable: [], changed_tools: [] };
   turn.calls.replaceChildren(noteRow("warn", "Ran", "These calls ran before the error"), ...buildCalls(ran));
-  turn.node.scrollIntoView({ block: "nearest" });
+  revealTurn(turn.node);
   return true;
 }
 
@@ -686,14 +742,15 @@ function renderAnswer(text) {
 function startWorking(turn, text) {
   const row = make("div", "working-row");
   row.setAttribute("aria-hidden", "true");
-  const label = make("span");
+  const label = make("span", "working-label");
   row.append(make("span", "spinner"), label);
   const started = Date.now();
   const tick = () => { label.textContent = text + " " + Math.floor((Date.now() - started) / 1000) + " s"; };
   tick();
   const timer = setInterval(tick, 1000);
   turn.append(row);
-  row.scrollIntoView({ block: "nearest" });
+  if (following) scrollToBottom("auto");
+  updateJump();
   return () => {
     clearInterval(timer);
     row.remove();
@@ -720,6 +777,8 @@ function newConversation() {
   currentTurn = null;
   el("turns").replaceChildren();
   el("empty").hidden = false;
+  following = true;
+  updateJump();
   showPending([]);
   showError("");
   el("request").focus();
@@ -810,17 +869,16 @@ function showResult(result) {
   turn.cost.textContent = "Cost: " + result.cost_usd.toFixed(4) + " USD";
   showPending(result.pending);
   if (result.pending.length > 0) {
-    el("confirm-title").focus();
-    el("confirm").scrollIntoView({ block: "nearest" });
-  } else {
-    turn.node.scrollIntoView({ block: "nearest" });
+    el("confirm-title").focus({ preventScroll: true });
   }
+  revealTurn(turn.node);
 }
 
 function discardTurn(turn, previous, request) {
   turn.node.remove();
   currentTurn = previous;
   if (el("turns").childElementCount === 0) el("empty").hidden = false;
+  updateJump();
   const draft = el("request").value;
   el("request").value = draft === "" ? request : request + "\n" + draft;
   fitRequest();
@@ -835,6 +893,7 @@ async function ask() {
   const previous = currentTurn;
   currentTurn = newTurn(request);
   const turn = currentTurn;
+  following = true;
   el("request").value = "";
   fitRequest();
   const stop = startWorking(turn.node, "Working on it…");
@@ -897,7 +956,9 @@ async function replay() {
       currentTurn.reply.hidden = item.answer === "";
     }
     showPending(past.pending);
-    if (past.pending.length > 0) el("confirm").scrollIntoView({ block: "nearest" });
+    following = true;
+    scrollToBottom("auto");
+    updateJump();
   } catch (error) {
     showError("Could not reload the conversation");
   }
@@ -930,6 +991,19 @@ async function start() {
     }
   });
   el("request").addEventListener("input", fitRequest);
+  el("messages").addEventListener("scroll", () => {
+    following = atBottom();
+    updateJump();
+  });
+  new ResizeObserver(() => {
+    if (following) scrollToBottom("auto");
+    updateJump();
+  }).observe(el("messages"));
+  el("jump").addEventListener("click", () => {
+    following = true;
+    scrollToBottom(scrollBehavior());
+    el("request").focus({ preventScroll: true });
+  });
   el("send").addEventListener("click", send);
   el("new-conversation").addEventListener("click", newConversation);
   el("logout").addEventListener("click", logout);
