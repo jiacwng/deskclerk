@@ -1,10 +1,13 @@
 {
   "realm": "deskclerk",
-  "displayName": "deskclerk (development only, every user's password is deskclerk)",
+  "displayName": "Acme Corp",
   "enabled": true,
   "groups": [
     {
-      "name": "analyst"
+      "name": "research"
+    },
+    {
+      "name": "government-affairs"
     }
   ],
   "users": [
@@ -22,6 +25,9 @@
           "value": "deskclerk",
           "temporary": false
         }
+      ],
+      "groups": [
+        "/research"
       ]
     },
     {
@@ -38,6 +44,9 @@
           "value": "deskclerk",
           "temporary": false
         }
+      ],
+      "groups": [
+        "/government-affairs"
       ]
     },
     {
@@ -48,57 +57,6 @@
       "emailVerified": true,
       "firstName": "Steven",
       "lastName": "Kean",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "deskclerk",
-          "temporary": false
-        }
-      ]
-    },
-    {
-      "id": "9b4b543d-97d6-4f35-a82f-5472175aea9c",
-      "username": "district-1",
-      "enabled": true,
-      "email": "district-1@deskclerk.example",
-      "emailVerified": true,
-      "firstName": "Hl.m. Praha",
-      "lastName": "District",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "deskclerk",
-          "temporary": false
-        }
-      ]
-    },
-    {
-      "id": "75ab7823-defd-4a7f-82cc-391c43ad00cc",
-      "username": "county-sierra",
-      "enabled": true,
-      "email": "county-sierra@deskclerk.example",
-      "emailVerified": true,
-      "firstName": "Sierra",
-      "lastName": "County",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "deskclerk",
-          "temporary": false
-        }
-      ]
-    },
-    {
-      "id": "d183d272-1ffc-441e-b18a-1f7636684edc",
-      "username": "analyst",
-      "enabled": true,
-      "email": "analyst@deskclerk.example",
-      "emailVerified": true,
-      "firstName": "Data",
-      "lastName": "Analyst",
-      "groups": [
-        "/analyst"
-      ],
       "credentials": [
         {
           "type": "password",
