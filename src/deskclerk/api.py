@@ -73,6 +73,7 @@ from deskclerk.connections import (
 from deskclerk.conversations import (
     NoCheckpointBefore,
     delete_conversation,
+    delete_dropped_turns,
     fork_before_request,
     last_request,
     list_conversations,
@@ -1041,6 +1042,7 @@ def create_app(
                     executed,
                     edit_of,
                 ) from None
+            await delete_dropped_turns(database, thread)
             await record_turn(database, identity.user_id, conversation, text, edit_of == 0)
         cost = spending.cost_usd - spent_before
         outcome = "awaiting_confirmation" if result.pending else "answered"
