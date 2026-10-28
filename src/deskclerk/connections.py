@@ -93,6 +93,7 @@ class ToolInfo:
     input_schema: dict[str, Any]
     read_only: bool
     destructive: bool
+    title: str = ""
 
 
 @dataclass(frozen=True)
@@ -464,7 +465,14 @@ def _tool_info(tool: Tool) -> ToolInfo:
     hints = tool.annotations
     read_only = hints is not None and hints.read_only_hint is True
     destructive = not read_only and (hints is None or hints.destructive_hint is not False)
-    return ToolInfo(tool.name, tool.description or "", tool.input_schema, read_only, destructive)
+    return ToolInfo(
+        tool.name,
+        tool.description or "",
+        tool.input_schema,
+        read_only,
+        destructive,
+        tool.title or "",
+    )
 
 
 async def _outcome(task: asyncio.Task[None]) -> None:
