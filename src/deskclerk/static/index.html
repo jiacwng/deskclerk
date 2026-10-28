@@ -187,7 +187,16 @@ button.conv-delete:hover:not(:disabled) { color: var(--bad); }
 @media (max-width: 30rem) { .empty { padding-block: 4vh 1rem; } }
 .turns { display: grid; gap: 1.75rem; padding-bottom: 1.5rem; }
 .turn { display: grid; gap: 0.625rem; min-width: 0; }
-.request { justify-self: end; max-width: min(85%, 36rem); background: var(--sunk); border-radius: 12px 12px 2px 12px; padding: 0.5rem 0.75rem; white-space: pre-wrap; font-weight: 500; }
+.asked { justify-self: end; max-width: min(90%, 40rem); display: flex; align-items: flex-start; gap: 0.25rem; }
+.asked[data-editing] { width: min(100%, 40rem); }
+.request { min-width: 0; background: var(--sunk); border-radius: 12px 12px 2px 12px; padding: 0.5rem 0.75rem; white-space: pre-wrap; font-weight: 500; overflow-wrap: anywhere; }
+.edit-request { flex: none; opacity: 0; }
+.turn:hover .edit-request, .turn:focus-within .edit-request, .edit-request:focus-visible { opacity: 1; }
+@media (hover: none) { .edit-request { opacity: 1; } }
+.request-edit { flex: 1; min-width: 0; display: grid; gap: 0.5rem; }
+.request-edit textarea { min-height: 3rem; }
+.edit-warning { font-size: 0.8125rem; color: var(--warn); }
+.edit-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
 .who-label { font-size: 0.75rem; font-weight: 600; color: var(--muted); margin-bottom: 0.125rem; }
 .answer { max-width: 68ch; line-height: 1.6; text-wrap: pretty; min-width: 0; }
 .plain { white-space: pre-wrap; }
@@ -320,6 +329,7 @@ textarea::placeholder { color: var(--muted); }
   .note[data-live] { animation: fade 0.2s ease-out backwards; }
   .turn, .confirm, .working-row, .error, .jump, .empty, .turn-error { animation: rise 0.2s ease-out backwards; }
   button, .link-button { transition: background-color 0.15s, border-color 0.15s, color 0.15s; }
+  .edit-request { transition: opacity 0.15s, background-color 0.15s, border-color 0.15s, color 0.15s; }
   @supports selector(::details-content) {
     .call::details-content, .raw::details-content {
       block-size: 0; overflow-y: clip;
@@ -465,6 +475,9 @@ let following = true;
 let listed = null;
 let confirming = null;
 let loadToken = 0;
+let recorded = 0;
+const turnOf = new WeakMap();
+const EDIT_WARNING = "Changes already made on your servers are not undone.";
 
 function scrollBehavior() {
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
@@ -597,13 +610,19 @@ function updateControls() {
   el("ask-mark").textContent = stoppable ? "\u25A0" : "\u2191";
   el("new-conversation").disabled = busy;
   for (const control of el("conversation-list").querySelectorAll("button")) control.disabled = busy;
+  for (const control of el("turns").querySelectorAll(".edit-request, .edit-send")) {
+    control.disabled = busy || waiting > 0;
+  }
   el("request").placeholder = waiting > 0 ? "Decide the calls above to continue" : "What do you need?";
 }
 
-function fitRequest() {
-  const box = el("request");
+function fitBox(box) {
   box.style.height = "auto";
   box.style.height = box.scrollHeight + box.offsetHeight - box.clientHeight + "px";
+}
+
+function fitRequest() {
+  fitBox(el("request"));
 }
 
 function setBusy(on, text) {
@@ -909,7 +928,8 @@ function startWorking(turn, text) {
 
 function newTurn(request) {
   const turn = make("article", "turn");
-  const asked = make("div", "request", request);
+  const asked = make("div", "asked");
+  asked.append(make("div", "request", request));
   const reply = make("div");
   reply.hidden = true;
   reply.append(make("div", "who-label", "deskclerk"), make("div", "answer"));
@@ -918,7 +938,90 @@ function newTurn(request) {
   turn.append(asked, reply, calls, cost);
   el("turns").append(turn);
   el("empty").hidden = true;
-  return { node: turn, reply, answer: reply.lastChild, calls, cost, text: "", frame: 0, rows: new Map(), pending: [], id: null };
+  const made = { node: turn, asked, reply, answer: reply.lastChild, calls, cost, text: "", frame: 0, rows: new Map(), pending: [], id: null, wrote: false, index: null };
+  const edit = button("Edit", () => openEditor(made), "small quiet edit-request");
+  edit.setAttribute("aria-label", "Edit this request");
+  edit.disabled = busy || waiting > 0;
+  edit.hidden = true;
+  made.edit = edit;
+  asked.prepend(edit);
+  turnOf.set(turn, made);
+  return made;
+}
+
+function positionOf(turn) {
+  return Array.prototype.indexOf.call(el("turns").children, turn.node);
+}
+
+function setRecorded(turn, index) {
+  turn.index = index;
+  turn.edit.hidden = false;
+}
+
+async function settle(turn, request, at) {
+  const id = turn.id ?? conversation;
+  if (id === null) return;
+  try {
+    const response = await api("/conversations/" + encodeURIComponent(id));
+    if (!response.ok) return;
+    const past = await response.json();
+    recorded = past.turns.length;
+    if (past.turns.length === at + 1 && past.turns[at].request === request) setRecorded(turn, at);
+  } catch (error) {}
+}
+
+function closeEditor(turn, refocus) {
+  const editor = turn.asked.querySelector(".request-edit");
+  if (editor === null) return;
+  editor.remove();
+  delete turn.asked.dataset.editing;
+  turn.asked.querySelector(".request").hidden = false;
+  const edit = turn.asked.querySelector(".edit-request");
+  edit.hidden = false;
+  if (refocus) edit.focus();
+}
+
+function openEditor(turn) {
+  for (const open of el("turns").querySelectorAll(".request-edit")) {
+    closeEditor(turnOf.get(open.closest(".turn")), false);
+  }
+  const later = Array.from(el("turns").children).slice(positionOf(turn));
+  const request = turn.asked.querySelector(".request");
+  const box = make("textarea");
+  box.maxLength = 4000;
+  box.value = request.textContent;
+  box.setAttribute("aria-label", "Edit your request");
+  const send = button("Send", () => sendEdit(turn, box.value), "small primary edit-send");
+  send.disabled = busy || waiting > 0;
+  const actions = make("div", "edit-actions");
+  actions.append(button("Cancel", () => closeEditor(turn, true), "small"), send);
+  const editor = make("div", "request-edit");
+  editor.append(box);
+  if (later.some((node) => turnOf.get(node).wrote)) editor.append(make("p", "edit-warning", EDIT_WARNING));
+  editor.append(actions);
+  editor.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      closeEditor(turn, true);
+    } else if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.target === box) {
+      event.preventDefault();
+      if (!send.disabled) sendEdit(turn, box.value);
+    }
+  });
+  box.addEventListener("input", () => fitBox(box));
+  request.hidden = true;
+  turn.asked.querySelector(".edit-request").hidden = true;
+  turn.asked.dataset.editing = "";
+  turn.asked.append(editor);
+  fitBox(box);
+  box.focus();
+  box.setSelectionRange(box.value.length, box.value.length);
+}
+
+function sendEdit(turn, text) {
+  if (busy || waiting > 0 || text.trim() === "") return;
+  closeEditor(turn, false);
+  ask(text, { index: turn.index, position: positionOf(turn) });
 }
 
 const phone = window.matchMedia("(max-width: 51.99rem)");
@@ -1038,6 +1141,7 @@ function chooseConversation(id) {
 function resetView() {
   loadToken += 1;
   conversation = null;
+  recorded = 0;
   remember(null);
   currentTurn = null;
   el("turns").replaceChildren();
@@ -1161,6 +1265,7 @@ function stopPainting(turn) {
 }
 
 function liveCall(turn, call) {
+  if (!call.read_only) turn.wrote = true;
   let row = turn.rows.get(call.id);
   if (row === undefined) {
     if (turn.text !== "") {
@@ -1214,6 +1319,13 @@ function showResult(result) {
     announce("Answer ready");
   }
   revealTurn(turn.node);
+}
+
+function restoreTurns(turn, removed, before) {
+  turn.node.remove();
+  el("turns").append(...removed);
+  currentTurn = before;
+  updateJump();
 }
 
 function discardTurn(turn, previous, request) {
@@ -1307,20 +1419,30 @@ function lostStream(turn, retry) {
   failTurn(turn, "The connection ended before the answer finished", retry);
 }
 
-async function ask(resent) {
+async function ask(resent, edit) {
   showError("");
   const request = resent ?? el("request").value;
   if (request.trim() === "") return el("request").focus();
   for (const old of el("turns").querySelectorAll(".turn-error button")) old.remove();
   lastRequest = request;
   setBusy(true, "Working on it…");
-  const previous = currentTurn;
+  const before = currentTurn;
+  const removed = edit === undefined ? [] : Array.from(el("turns").children).slice(edit.position);
+  const at = edit === undefined ? recorded : edit.index;
+  let finished = false;
+  let refused = false;
+  for (const node of removed) node.remove();
+  const previous = edit === undefined ? before : turnOf.get(el("turns").lastElementChild) ?? null;
   currentTurn = newTurn(request);
   const turn = currentTurn;
+  const drop = () => {
+    if (edit === undefined) discardTurn(turn, previous, request);
+    else restoreTurns(turn, removed, before);
+  };
   const retry = () => {
     turn.node.remove();
     currentTurn = previous;
-    ask(request);
+    ask(request, edit && { index: edit.index, position: el("turns").children.length });
   };
   following = true;
   if (resent === undefined) {
@@ -1330,10 +1452,11 @@ async function ask(resent) {
   inFlight = request;
   const stop = startWorking(turn.node, "Working on it…");
   try {
-    const { response, outcome } = await streamed("/ask", { request, conversation }, turn);
+    const { response, outcome } = await streamed("/ask", { request, conversation, edit_of: edit?.index }, turn);
     if (!response.ok) {
+      refused = true;
       const kept = await reportFailure(response, turn, retryable(response.status) ? retry : undefined);
-      if (!kept) discardTurn(turn, previous, request);
+      if (!kept) drop();
     } else if (outcome === null) {
       lostStream(turn, retry);
     } else if (outcome.name === "error") {
@@ -1341,9 +1464,12 @@ async function ask(resent) {
       endLiveCalls(turn, "No result");
       const failure = outcome.data;
       const kept = reportProblem(failure.status, failure, "", turn, retryable(failure.status) ? retry : undefined);
-      if (!kept) discardTurn(turn, previous, request);
+      if (!kept) drop();
     } else {
       showResult(outcome.data);
+      finished = true;
+      setRecorded(turn, at);
+      recorded = at + 1;
     }
   } catch (error) {
     if (error.name === "AbortError") await showStopped(turn);
@@ -1351,6 +1477,7 @@ async function ask(resent) {
   } finally {
     inFlight = "";
     stop();
+    if (!finished && !refused) await settle(turn, request, at);
     running = null;
     setBusy(false);
     loadConversations();
@@ -1417,11 +1544,13 @@ async function openConversation(id) {
     conversation = past.conversation;
     remember(conversation);
     renderConversations(null, false);
-    for (const item of past.turns) {
+    recorded = past.turns.length;
+    past.turns.forEach((item, index) => {
       lastRequest = item.request;
       currentTurn = newTurn(item.request);
+      setRecorded(currentTurn, index);
       setAnswer(currentTurn, item.answer);
-    }
+    });
     showPending(past.pending);
     following = true;
     scrollToBottom("auto");

@@ -65,12 +65,15 @@ def title_of(request: str) -> str:
     return collapsed[:TITLE_CHARS] + "…"
 
 
-async def record_turn(database: Database, user_id: str, conversation: UUID, request: str) -> None:
+async def record_turn(
+    database: Database, user_id: str, conversation: UUID, request: str, retitle: bool = False
+) -> None:
     async with database.async_pool.connection() as connection:
         await connection.execute(
             "INSERT INTO conversations (user_id, id, title, updated_at) VALUES (%s, %s, %s, now()) "
-            "ON CONFLICT (user_id, id) DO UPDATE SET updated_at = now()",
-            (user_id, conversation, title_of(request)),
+            "ON CONFLICT (user_id, id) DO UPDATE SET updated_at = now(), "
+            "title = CASE WHEN %s THEN excluded.title ELSE conversations.title END",
+            (user_id, conversation, title_of(request), retitle),
         )
 
 
@@ -141,6 +144,31 @@ async def saved_messages(checkpointer: BaseCheckpointSaver[Any], thread: str) ->
         return []
     messages: list[BaseMessage] = saved.checkpoint["channel_values"].get("messages", [])
     return messages
+
+
+@dataclass(frozen=True)
+class Fork:
+    checkpoint_id: str
+    messages: list[BaseMessage]
+
+
+class NoCheckpointBefore(Exception):
+    pass
+
+
+async def fork_before_request(
+    checkpointer: BaseCheckpointSaver[Any], thread: str, index: int
+) -> Fork:
+    found = await checkpointer.aget_tuple(_config(thread))
+    while found is not None:
+        messages: list[BaseMessage] = found.checkpoint["channel_values"].get("messages", [])
+        requests = sum(isinstance(message, HumanMessage) for message in messages)
+        if found.metadata["source"] == "input" and requests == index:
+            return Fork(found.config["configurable"]["checkpoint_id"], messages)
+        if found.parent_config is None:
+            break
+        found = await checkpointer.aget_tuple(found.parent_config)
+    raise NoCheckpointBefore
 
 
 def last_request(messages: list[BaseMessage]) -> str:

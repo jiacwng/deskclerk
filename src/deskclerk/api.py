@@ -71,7 +71,9 @@ from deskclerk.connections import (
     first_leaf,
 )
 from deskclerk.conversations import (
+    NoCheckpointBefore,
     delete_conversation,
+    fork_before_request,
     last_request,
     list_conversations,
     open_checkpointer,
@@ -162,6 +164,7 @@ class AskBody(BaseModel):
 
     request: str = Field(min_length=1, max_length=MAX_REQUEST_CHARS)
     conversation: UUID | None = None
+    edit_of: int | None = Field(default=None, ge=0)
 
 
 class EditIn(BaseModel):
@@ -249,6 +252,7 @@ class CallOut(BaseModel):
     id: str
     server: str
     tool: str
+    read_only: bool
     status: Literal["running", "ok", "error"]
 
 
@@ -274,12 +278,26 @@ Emit = Callable[[StreamEvent], None]
 def _stream_event(event: RunEvent) -> StreamEvent:
     if isinstance(event, CallStarted):
         return StreamEvent(
-            "call", CallOut(id=event.id, server=event.server, tool=event.tool, status="running")
+            "call",
+            CallOut(
+                id=event.id,
+                server=event.server,
+                tool=event.tool,
+                read_only=event.read_only,
+                status="running",
+            ),
         )
     if isinstance(event, CallEnded):
         status = "error" if event.is_error else "ok"
         return StreamEvent(
-            "call", CallOut(id=event.id, server=event.server, tool=event.tool, status=status)
+            "call",
+            CallOut(
+                id=event.id,
+                server=event.server,
+                tool=event.tool,
+                read_only=event.read_only,
+                status=status,
+            ),
         )
     return StreamEvent("answer", AnswerOut(text=event.text))
 
@@ -752,7 +770,9 @@ def create_app(
     async def ask(
         request: Request, body: AskBody, who: Caller = Depends(posting_caller)
     ) -> AskOut | StreamingResponse:
-        return await answer_as_asked(request, who.identity, body.conversation, body.request, None)
+        return await answer_as_asked(
+            request, who.identity, body.conversation, body.request, None, body.edit_of
+        )
 
     @app.post("/ask/confirm", response_model=AskOut)
     async def confirm(
@@ -762,7 +782,7 @@ def create_app(
             call_id: Edit(choice.edit) if isinstance(choice, EditIn) else choice
             for call_id, choice in body.decisions.items()
         }
-        return await answer_as_asked(request, who.identity, body.conversation, "", decisions)
+        return await answer_as_asked(request, who.identity, body.conversation, "", decisions, None)
 
     async def answer_as_asked(
         request: Request,
@@ -770,6 +790,7 @@ def create_app(
         conversation_id: UUID | None,
         text: str,
         decisions: dict[str, Decision] | None,
+        edit_of: int | None,
     ) -> AskOut | StreamingResponse:
         conversation = conversation_id or uuid4()
         if "text/event-stream" not in request.headers.get("accept", ""):
@@ -779,6 +800,7 @@ def create_app(
                 conversation,
                 text,
                 decisions,
+                edit_of,
                 lambda event: None,
                 lambda: None,
             )
@@ -793,6 +815,7 @@ def create_app(
                     conversation,
                     text,
                     decisions,
+                    edit_of,
                     queue.put_nowait,
                     started.set,
                 )
@@ -843,6 +866,7 @@ def create_app(
         conversation: UUID,
         text: str,
         decisions: dict[str, Decision] | None,
+        edit_of: int | None,
         emit: Emit,
         running: Callable[[], None],
     ) -> AskOut:
@@ -852,7 +876,17 @@ def create_app(
         def refuse(
             status: int, detail: str, outcome: str, headers: dict[str, str] | None = None
         ) -> NoReturn:
-            audit.asked(identity, conversation_id, text, started, outcome, None, 0.0, entry=entry)
+            audit.asked(
+                identity,
+                conversation_id,
+                text,
+                started,
+                outcome,
+                None,
+                0.0,
+                entry=entry,
+                edit_of=edit_of,
+            )
             raise HTTPException(status, detail, headers)
 
         if not await quota.allows(identity.user_id):
@@ -867,8 +901,17 @@ def create_app(
         async with database.user_lock(identity.user_id):
             await refuse_deactivated(identity.user_id)
             history = await saved_messages(checkpointer, thread)
-            if conversation_id is not None and not history:
+            if (conversation_id is not None or edit_of is not None) and not history:
                 refuse(404, "no such conversation", "unknown_conversation")
+            fork_from = None
+            if edit_of is not None:
+                if edit_of >= len(past_turns(history)):
+                    refuse(422, "no such request to edit", "wrong_edit")
+                try:
+                    fork = await fork_before_request(checkpointer, thread, edit_of)
+                except NoCheckpointBefore:
+                    refuse(422, "that request can no longer be edited", "wrong_edit")
+                fork_from, history = fork.checkpoint_id, fork.messages
             if decisions is not None:
                 text = last_request(history)
             month = month_of(datetime.now(UTC))
@@ -910,6 +953,7 @@ def create_app(
                             executed=executed,
                             emit=lambda event: emit(_stream_event(event)),
                             running=running,
+                            fork_from=fork_from,
                         )
                     if trace:
                         trace.finish(result.flagged)
@@ -937,8 +981,9 @@ def create_app(
                     "the client stopped the request",
                     entry,
                     executed,
+                    edit_of,
                 )
-                await record_turn(database, identity.user_id, conversation, text)
+                await record_turn(database, identity.user_id, conversation, text, edit_of == 0)
                 raise
             except TimeoutError:
                 cost = spending.cost_usd - spent_before
@@ -957,12 +1002,13 @@ def create_app(
                     detail,
                     entry,
                     executed,
+                    edit_of,
                 )
                 raise FailedTurn(504, detail, executed) from None
             except ask_failures as error:
                 cost = spending.cost_usd - spent_before
                 raise upstream_failure(
-                    identity, conversation, text, started, cost, error, entry, executed
+                    identity, conversation, text, started, cost, error, entry, executed, edit_of
                 ) from None
             except BaseExceptionGroup as group:
                 failed = group.subgroup(ask_failures)
@@ -970,9 +1016,17 @@ def create_app(
                     raise
                 cost = spending.cost_usd - spent_before
                 raise upstream_failure(
-                    identity, conversation, text, started, cost, first_leaf(failed), entry, executed
+                    identity,
+                    conversation,
+                    text,
+                    started,
+                    cost,
+                    first_leaf(failed),
+                    entry,
+                    executed,
+                    edit_of,
                 ) from None
-            await record_turn(database, identity.user_id, conversation, text)
+            await record_turn(database, identity.user_id, conversation, text, edit_of == 0)
         cost = spending.cost_usd - spent_before
         outcome = "awaiting_confirmation" if result.pending else "answered"
         audit.asked(
@@ -985,6 +1039,7 @@ def create_app(
             cost,
             entry=entry,
             executed=result.executed,
+            edit_of=edit_of,
         )
         for call in result.pending:
             emit(StreamEvent("pending", PendingOut(**vars(call))))
@@ -1012,6 +1067,7 @@ def create_app(
         error: BaseException,
         entry: str,
         executed: list[ExecutedCall],
+        edit_of: int | None,
     ) -> FailedTurn:
         detail = _upstream_detail(error)
         audit.asked(
@@ -1025,6 +1081,7 @@ def create_app(
             detail,
             entry,
             executed,
+            edit_of,
         )
         return FailedTurn(502, detail, executed)
 

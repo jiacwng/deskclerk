@@ -90,6 +90,7 @@ class CallStarted:
     id: str
     server: str
     tool: str
+    read_only: bool
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,7 @@ class CallEnded:
     id: str
     server: str
     tool: str
+    read_only: bool
     is_error: bool
 
 
@@ -441,7 +443,7 @@ class _Run(AgentMiddleware[AgentState[Any], None, Any]):
             refusal = await _refusal(shared, tool, call_id, arguments, _typed_texts(arguments))
             if refusal is not None:
                 return refusal
-        shared.emit(CallStarted(call_id, server_name, tool_name))
+        shared.emit(CallStarted(call_id, server_name, tool_name, tool.info.read_only))
         try:
             with shared.tool_span(server_name, tool_name, arguments) as record_output:
                 try:
@@ -466,7 +468,7 @@ class _Run(AgentMiddleware[AgentState[Any], None, Any]):
         shared.executed.append(
             ExecutedCall(server_name, tool_name, arguments, result_text, is_error)
         )
-        shared.emit(CallEnded(call_id, server_name, tool_name, is_error))
+        shared.emit(CallEnded(call_id, server_name, tool_name, tool.info.read_only, is_error))
         return ToolMessage(
             result_text, tool_call_id=call["id"] or "", status="error" if is_error else "success"
         )
@@ -566,6 +568,7 @@ async def run_agent(
     executed: list[ExecutedCall] | None = None,
     emit: Emit = ignore_events,
     running: Callable[[], None] = lambda: None,
+    fork_from: str | None = None,
 ) -> AgentResult:
     offer = await _offer(user_id, servers, connections, tokens, listing_seconds)
     tools, always = offer.tools, offer.always
@@ -615,6 +618,9 @@ async def run_agent(
     }
     saved = await agent.aget_state(config)
     waiting = {interrupt.id: interrupt for interrupt in saved.interrupts}
+    if fork_from is not None:
+        config = {**config, "configurable": {"thread_id": thread, "checkpoint_id": fork_from}}
+        saved = await agent.aget_state(config)
     if decisions is None:
         if waiting:
             raise ConversationWaiting
@@ -662,7 +668,7 @@ async def run_agent(
                     if message.text:
                         emit(AnswerDelta(message.text))
     except BaseException:
-        await _close_open_calls(agent, config)
+        await _close_open_calls(agent, {"configurable": {"thread_id": thread}})
         raise
     pending = tuple(_pending_call(interrupt, tools) for interrupt in interrupts)
     before = len(saved.values.get("messages", []))
