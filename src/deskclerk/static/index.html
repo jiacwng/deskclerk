@@ -126,6 +126,8 @@ textarea { caret-color: var(--accent); }
   .brand { white-space: nowrap; }
   #status { display: none; }
 }
+.budget { font-size: 0.8125rem; margin-bottom: 1rem; }
+.budget[data-level="warn"] { color: var(--warn); font-weight: 600; }
 .heading { font-size: 0.8125rem; font-weight: 600; color: var(--muted); margin-bottom: 0.5rem; }
 
 button, .link-button {
@@ -366,6 +368,7 @@ textarea::placeholder { color: var(--muted); }
 
 <div id="app" class="shell" hidden>
   <aside id="rail" class="rail">
+    <p id="budget" class="budget muted" hidden></p>
     <section aria-labelledby="conversations-title">
       <h2 id="conversations-title" class="heading">Conversations</h2>
       <button id="new-conversation" class="small conv-new" type="button">New conversation</button>
@@ -657,14 +660,59 @@ const PROMPTS = [
   (name) => "Give me an example of using " + name,
 ];
 
-function showChips(names) {
-  const prompts = [];
-  for (const template of PROMPTS) for (const name of names) prompts.push(template(name));
+function requestFromTool(tool) {
+  const words = (tool.title || tool.name).split(/[^A-Za-z0-9]+/).filter(Boolean).map((word) => word.toLowerCase());
+  if (words.length === 0) return "";
+  const verb = words[0].charAt(0).toUpperCase() + words[0].slice(1);
+  if (words.length === 1) return verb;
+  const noun = words.slice(1).join(" ");
+  return tool.read_only ? verb + " my " + noun : verb + " a " + noun.replace(/s$/, "");
+}
+
+function toolPrompts(servers) {
+  const picked = [];
+  for (let round = 0; picked.length < 4 && round < 4; round++) {
+    for (const server of servers) {
+      const reads = server.tools.filter((tool) => tool.read_only);
+      const writes = server.tools.filter((tool) => !tool.read_only);
+      for (const tool of [reads[round], writes[round]]) if (tool && picked.length < 4) picked.push(tool);
+    }
+  }
+  return picked.map(requestFromTool).filter(Boolean);
+}
+
+function showChips(servers) {
+  let prompts = toolPrompts(servers);
+  if (prompts.length === 0) {
+    prompts = [];
+    for (const template of PROMPTS) for (const server of servers) prompts.push(template(server.name));
+  }
   el("chips").replaceChildren(...prompts.slice(0, 4).map((text) => button(text, () => {
     el("request").value = text;
     fitRequest();
     el("request").focus();
   }, "chip")));
+}
+
+function showBudget(spent, budget) {
+  const line = el("budget");
+  if (typeof budget !== "number" || typeof spent !== "number") {
+    line.hidden = true;
+    return;
+  }
+  const used = budget > 0 ? spent / budget : 1;
+  line.dataset.level = used >= 0.8 ? "warn" : "ok";
+  line.textContent = used >= 1
+    ? "Budget used: asks are refused until next month"
+    : "This month: $" + spent.toFixed(2) + " of $" + budget.toFixed(2);
+  line.hidden = false;
+}
+
+async function refreshBudget() {
+  const response = await api("/me").catch(() => null);
+  if (response === null || !response.ok) return;
+  const me = await response.json();
+  showBudget(me.spent_usd, me.budget_usd);
 }
 
 async function loadServers() {
@@ -675,7 +723,7 @@ async function loadServers() {
   const servers = await response.json();
   const connected = servers.filter((server) => server.connected).length;
   el("rail-summary").textContent = "Servers: " + connected + " of " + servers.length + " connected";
-  showChips(servers.filter((server) => server.connected).map((server) => server.name));
+  showChips(servers.filter((server) => server.connected));
   for (const server of servers) {
     const card = make("div", "server");
     card.append(make("div", "server-name", server.name), make("div", "server-url", server.url));
@@ -1481,6 +1529,7 @@ async function ask(resent, edit) {
     running = null;
     setBusy(false);
     loadConversations();
+    refreshBudget();
     if (waiting === 0) el("request").focus();
   }
 }
@@ -1525,6 +1574,7 @@ async function send() {
     running = null;
     setBusy(false);
     loadConversations();
+    refreshBudget();
     if (waiting === 0) el("request").focus();
   }
 }
@@ -1569,7 +1619,9 @@ async function start() {
     el("signin-error").hidden = linkError === "";
     return;
   }
-  el("status").textContent = "Signed in as " + (await response.json()).name;
+  const me = await response.json();
+  el("status").textContent = "Signed in as " + me.name;
+  showBudget(me.spent_usd, me.budget_usd);
   el("who").hidden = false;
   el("app").hidden = false;
   restoreDraft();

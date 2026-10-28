@@ -307,7 +307,12 @@ def test_a_bad_bearer_token_is_refused_and_a_good_one_names_the_employee(
         refused = site.client.get("/me", headers={"Authorization": f"Bearer {other_service}"})
         assert refused.status_code == 401
         accepted = site.client.get("/me", headers=as_user(sign_token, "ada"))
-        assert accepted.json() == {"user": "ada", "name": "ada"}
+        assert accepted.json() == {
+            "user": "ada",
+            "name": "ada",
+            "spent_usd": 0.0,
+            "budget_usd": 2.0,
+        }
 
 
 def test_a_callback_without_the_sign_in_cookie_is_refused(
@@ -390,6 +395,32 @@ def test_servers_show_whether_this_employee_is_connected(
 
         assert site.client.post("/servers/notes/disconnect", headers=ada).status_code == 204
         assert connected(ada) == {"notes": False, "open": True}
+
+
+def test_servers_list_only_the_allowed_pinned_tools_of_connected_servers_for_the_caller(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings)
+    servers = [replace(notes(notes_server), tools=("read_note", "write_note"))]
+    ada, grace = as_user(sign_token, "ada"), as_user(sign_token, "grace")
+
+    def tools_of(headers: dict[str, str]) -> list[tuple[str, bool]]:
+        listing = site.client.get("/servers", headers=headers).json()
+        return [(tool["name"], tool["read_only"]) for tool in listing[0]["tools"]]
+
+    with web(settings, servers, script(answer("ok")), token_signing_key, database) as site:
+        connect(site, ada)
+        assert tools_of(ada) == []
+        assert ask(site, ada).status_code == 200
+        assert sorted(tools_of(ada)) == [("read_note", True), ("write_note", False)]
+        assert tools_of(grace) == []
+
+        assert site.client.post("/servers/notes/disconnect", headers=ada).status_code == 204
+        assert tools_of(ada) == []
 
 
 def test_an_ask_runs_the_agent_and_the_server_sees_the_write_under_that_employee_s_token(
@@ -562,6 +593,29 @@ def test_an_employee_who_spent_the_cap_is_stopped_with_402_and_others_are_not(
         assert stopped.status_code == 402
         assert "DESKCLERK_BUDGET_USD" in stopped.json()["detail"]
         assert ask(site, grace).status_code == 200
+
+
+def test_me_reports_this_months_spending_and_the_budget_for_the_caller_only(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings, budget_usd=5.0)
+    ninety_thousand_tokens = UsageMetadata(
+        input_tokens=90_000, output_tokens=0, total_tokens=90_000
+    )
+    model = ScriptedModel(messages=itertools.repeat(answer("ok", usage=ninety_thousand_tokens)))
+    ada, grace = as_user(sign_token, "ada"), as_user(sign_token, "grace")
+    with web(settings, [], model, token_signing_key, database) as site:
+        before = site.client.get("/me", headers=ada).json()
+        assert before["spent_usd"] == 0.0
+        assert before["budget_usd"] == 5.0
+        assert ask(site, ada).status_code == 200
+        after = site.client.get("/me", headers=ada).json()
+        assert after["spent_usd"] == pytest.approx(0.009)
+        assert after["budget_usd"] == 5.0
+        assert site.client.get("/me", headers=grace).json()["spent_usd"] == 0.0
 
 
 def test_tokens_billed_before_a_provider_failure_count_against_the_cap(
@@ -772,7 +826,12 @@ def test_a_cookie_post_needs_the_custom_header_and_a_bearer_post_does_not(
     model = ScriptedModel(messages=itertools.repeat(answer("ok")))
     with web(settings, [], model, token_signing_key, database) as site:
         site.client.cookies.set(SESSION_COOKIE, session_cookie(site, "ada"))
-        assert site.client.get("/me").json() == {"user": "ada", "name": "ada"}
+        assert site.client.get("/me").json() == {
+            "user": "ada",
+            "name": "ada",
+            "spent_usd": 0.0,
+            "budget_usd": 2.0,
+        }
         assert ask(site, {}).status_code == 403
         assert ask(site, {CSRF_HEADER: "something else"}).status_code == 403
         assert ask(site, {CSRF_HEADER: CSRF_VALUE}).status_code == 200
@@ -1089,10 +1148,20 @@ def test_the_session_lasts_the_session_hours_after_the_id_token_expires(
     with web(settings, [], script(), token_signing_key, database, idp.transport) as site:
         state, _, _ = begin_sign_in(site)
         finish_sign_in(site, idp, sign_token, state, {"exp": int(time.time()) + 5})
-        assert site.client.get("/me").json() == {"user": "district-1", "name": "district-1"}
+        assert site.client.get("/me").json() == {
+            "user": "district-1",
+            "name": "district-1",
+            "spent_usd": 0.0,
+            "budget_usd": 2.0,
+        }
         now = time.time()
         monkeypatch.setattr(sessions, "time", SimpleNamespace(time=lambda: now + 10))
-        assert site.client.get("/me").json() == {"user": "district-1", "name": "district-1"}
+        assert site.client.get("/me").json() == {
+            "user": "district-1",
+            "name": "district-1",
+            "spent_usd": 0.0,
+            "budget_usd": 2.0,
+        }
         later = now + 8 * 3600 + 10
         monkeypatch.setattr(sessions, "time", SimpleNamespace(time=lambda: later))
         assert site.client.get("/me").status_code == 401
@@ -1110,7 +1179,12 @@ def test_sign_in_works_when_the_access_token_is_opaque(
         state, _, _ = begin_sign_in(site)
         done = finish_sign_in(site, idp, sign_token, state, {"scope": None, "typ": "ID"})
         assert (done.status_code, done.headers["location"]) == (303, "/")
-        assert site.client.get("/me").json() == {"user": "district-1", "name": "district-1"}
+        assert site.client.get("/me").json() == {
+            "user": "district-1",
+            "name": "district-1",
+            "spent_usd": 0.0,
+            "budget_usd": 2.0,
+        }
 
 
 def test_the_authorize_url_carries_the_nonce_and_the_three_scopes(
@@ -1477,7 +1551,12 @@ def test_logging_out_clears_the_session_cookie(
     settings = make_settings(token_settings)
     with web(settings, [], script(), token_signing_key, database) as site:
         site.client.cookies.set(SESSION_COOKIE, session_cookie(site, "ada"))
-        assert site.client.get("/me").json() == {"user": "ada", "name": "ada"}
+        assert site.client.get("/me").json() == {
+            "user": "ada",
+            "name": "ada",
+            "spent_usd": 0.0,
+            "budget_usd": 2.0,
+        }
         loggedout = site.client.post("/logout", headers={CSRF_HEADER: CSRF_VALUE})
         assert loggedout.status_code == 204
         cleared = loggedout.headers["set-cookie"]
@@ -1673,7 +1752,7 @@ def test_a_renamed_employee_keeps_the_same_conversation(
         second = ask_in(site, after, first["conversation"])
         me = site.client.get("/me", headers=after).json()
     assert second.status_code == 200
-    assert me == {"user": "u-1", "name": "ada-l"}
+    assert me == {"user": "u-1", "name": "ada-l", "spent_usd": 0.0, "budget_usd": 2.0}
 
 
 def ask_and_approve(

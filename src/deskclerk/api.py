@@ -87,6 +87,7 @@ from deskclerk.database import Database
 from deskclerk.erasure import erase_user
 from deskclerk.instructions import system_prompt
 from deskclerk.jev import Jev
+from deskclerk.pinning import MenuEntry, read_menu
 from deskclerk.providers import BudgetExceeded, Usage, cost_of
 from deskclerk.quota import Quota
 from deskclerk.retention import delete_old_threads, delete_old_threads_daily
@@ -185,6 +186,7 @@ class ServerOut(BaseModel):
     name: str
     url: str
     connected: bool
+    tools: list[MenuEntry]
 
 
 class ConnectOut(BaseModel):
@@ -644,22 +646,35 @@ def create_app(
         return Response(status_code=200, headers={"Cache-Control": "no-store"})
 
     @app.get("/me")
-    async def me(who: Caller = Depends(caller)) -> dict[str, str]:
-        return {"user": who.identity.user_id, "name": who.identity.display_name}
+    async def me(who: Caller = Depends(caller)) -> dict[str, str | float]:
+        month = month_of(datetime.now(UTC))
+        spent = await run_in_threadpool(spending_store.load, who.identity.user_id, month)
+        return {
+            "user": who.identity.user_id,
+            "name": who.identity.display_name,
+            "spent_usd": spent,
+            "budget_usd": settings.budget_usd,
+        }
 
     @app.get("/servers")
     async def list_servers(who: Caller = Depends(caller)) -> list[ServerOut]:
         user = who.identity.user_id
-        return [
-            ServerOut(
-                name=server.name,
-                url=server.url,
-                connected=server.auth == "none"
-                or await run_in_threadpool(tokens.get, user, server.name, "tokens") is not None,
+        listed = []
+        for server in servers:
+            if not server.open_to(who.identity.groups):
+                continue
+            connected = (
+                server.auth == "none"
+                or await run_in_threadpool(tokens.get, user, server.name, "tokens") is not None
             )
-            for server in servers
-            if server.open_to(who.identity.groups)
-        ]
+            menu = (
+                await run_in_threadpool(read_menu, tokens, user, server.name) if connected else []
+            )
+            allowed = [t for t in menu if server.tools is None or t.name in server.tools]
+            listed.append(
+                ServerOut(name=server.name, url=server.url, connected=connected, tools=allowed)
+            )
+        return listed
 
     @app.post("/servers/{name}/connect")
     async def connect(name: str, who: Caller = Depends(posting_caller)) -> ConnectOut:
