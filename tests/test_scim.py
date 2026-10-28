@@ -240,7 +240,12 @@ def test_a_reactivated_user_can_sign_in_again(
         assert site.client.get(f"{USERS}/{user_id}", headers=AUTH).json()["active"] is True
         session_id = site.sessions.create(Identity("ana", "deskclerk-api", "ana"), 3600)
         site.client.cookies.set(SESSION_COOKIE, session_id)
-        assert site.client.get("/me").json() == {"user": "ana", "name": "ana"}
+        assert site.client.get("/me").json() == {
+            "user": "ana",
+            "name": "ana",
+            "spent_usd": 0.0,
+            "budget_usd": 2.0,
+        }
 
 
 def test_discovery_endpoints_describe_the_user_resource_only(

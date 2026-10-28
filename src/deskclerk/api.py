@@ -643,8 +643,15 @@ def create_app(
         return Response(status_code=200, headers={"Cache-Control": "no-store"})
 
     @app.get("/me")
-    async def me(who: Caller = Depends(caller)) -> dict[str, str]:
-        return {"user": who.identity.user_id, "name": who.identity.display_name}
+    async def me(who: Caller = Depends(caller)) -> dict[str, str | float]:
+        month = month_of(datetime.now(UTC))
+        spent = await run_in_threadpool(spending_store.load, who.identity.user_id, month)
+        return {
+            "user": who.identity.user_id,
+            "name": who.identity.display_name,
+            "spent_usd": spent,
+            "budget_usd": settings.budget_usd,
+        }
 
     @app.get("/servers")
     async def list_servers(who: Caller = Depends(caller)) -> list[ServerOut]:
