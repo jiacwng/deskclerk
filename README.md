@@ -37,7 +37,8 @@ OpenAI or AWS Bedrock. This runs deskclerk, a development Keycloak and a demo ta
    docker compose up -d --wait
    ```
 
-4. Open http://localhost:8000 and sign in as `analyst` with the password `deskclerk`. Ask
+4. Open http://localhost:8000 and sign in as `kaminski-v` with the password `deskclerk`. The user
+   `dasovich-j` belongs to the second group. Ask
    "Create a task called Write the release notes", then "Mark it as doing", then "Delete it".
    Approve each change when the page asks.
 
