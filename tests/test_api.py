@@ -266,6 +266,7 @@ def test_the_client_metadata_document_is_served_without_sign_in(
         ("GET", "/servers"),
         ("POST", "/servers/notes/connect"),
         ("POST", "/servers/notes/disconnect"),
+        ("DELETE", "/servers/notes/always/append_note"),
         ("GET", "/oauth/callback?state=x&code=y"),
         ("POST", "/logout"),
         ("POST", "/ask"),
@@ -2081,6 +2082,81 @@ def test_a_destructive_call_cannot_be_always_allowed_and_a_non_destructive_one_c
         "approve_always",
         "always",
     ]
+
+
+def test_servers_list_the_callers_always_allowed_tools_and_revoking_one_asks_again(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    append_server: RunningServer,
+    database: Database,
+) -> None:
+    model = script(
+        calls(("notes__append_note", {"text": "one"})),
+        answer("appended"),
+        calls(("notes__append_note", {"text": "two"})),
+        answer("appended again"),
+        calls(("notes__append_note", {"text": "three"})),
+        answer("appended a third time"),
+    )
+    ada, grace = as_user(sign_token, "ada"), as_user(sign_token, "grace")
+
+    def always_allowed(headers: dict[str, str]) -> list[str]:
+        listing = site.client.get("/servers", headers=headers).json()
+        return cast(list[str], listing[0]["always_allowed"])
+
+    def revoke(headers: dict[str, str], server: str, tool: str) -> int:
+        return site.client.delete(f"/servers/{server}/always/{tool}", headers=headers).status_code
+
+    with web(
+        make_settings(token_settings), [notes(append_server)], model, token_signing_key, database
+    ) as site:
+        connect(site, ada)
+        connect(site, grace)
+        paused = ask(site, ada, "append one").json()
+        assert always_allowed(ada) == []
+        [waiting] = paused["pending"]
+        confirm(site, ada, paused["conversation"], {waiting["id"]: "approve_always"})
+        assert always_allowed(ada) == ["append_note"]
+        assert always_allowed(grace) == []
+        assert ask(site, ada, "append two").json()["pending"] == []
+
+        assert revoke(grace, "notes", "append_note") == 404
+        assert revoke(ada, "notes", "read_note") == 404
+        assert revoke(ada, "nowhere", "append_note") == 404
+        assert always_allowed(ada) == ["append_note"]
+
+        assert revoke(ada, "notes", "append_note") == 204
+        assert always_allowed(ada) == []
+        assert revoke(ada, "notes", "append_note") == 404
+        asked_again = ask(site, ada, "append three").json()
+        assert [call["tool"] for call in asked_again["pending"]] == ["append_note"]
+    assert [note[1] for note in append_server.notes] == ["one", "two"]
+
+
+def test_revoking_an_always_allowed_tool_from_a_browser_needs_the_custom_header(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    append_server: RunningServer,
+    database: Database,
+) -> None:
+    model = script(calls(("notes__append_note", {"text": "one"})), answer("appended"))
+    ada = as_user(sign_token, "ada")
+    path = "/servers/notes/always/append_note"
+    with web(
+        make_settings(token_settings), [notes(append_server)], model, token_signing_key, database
+    ) as site:
+        connect(site, ada)
+        paused = ask(site, ada, "append one").json()
+        [waiting] = paused["pending"]
+        confirm(site, ada, paused["conversation"], {waiting["id"]: "approve_always"})
+        site.client.cookies.set(SESSION_COOKIE, session_cookie(site, "ada"))
+        assert site.client.delete(path).status_code == 403
+        assert site.client.delete(path, headers={CSRF_HEADER: "something else"}).status_code == 403
+        assert site.client.get("/servers").json()[0]["always_allowed"] == ["append_note"]
+        assert site.client.delete(path, headers={CSRF_HEADER: CSRF_VALUE}).status_code == 204
+        assert site.client.get("/servers").json()[0]["always_allowed"] == []
 
 
 def test_the_page_payload_hides_always_allow_for_a_server_that_forbids_it(
