@@ -126,6 +126,8 @@ textarea { caret-color: var(--accent); }
   .brand { white-space: nowrap; }
   #status { display: none; }
 }
+.budget { font-size: 0.8125rem; margin-bottom: 1rem; }
+.budget[data-level="warn"] { color: var(--warn); font-weight: 600; }
 .heading { font-size: 0.8125rem; font-weight: 600; color: var(--muted); margin-bottom: 0.5rem; }
 
 button, .link-button {
@@ -366,6 +368,7 @@ textarea::placeholder { color: var(--muted); }
 
 <div id="app" class="shell" hidden>
   <aside id="rail" class="rail">
+    <p id="budget" class="budget muted" hidden></p>
     <section aria-labelledby="conversations-title">
       <h2 id="conversations-title" class="heading">Conversations</h2>
       <button id="new-conversation" class="small conv-new" type="button">New conversation</button>
@@ -689,6 +692,27 @@ function showChips(servers) {
     fitRequest();
     el("request").focus();
   }, "chip")));
+}
+
+function showBudget(spent, budget) {
+  const line = el("budget");
+  if (typeof budget !== "number" || typeof spent !== "number") {
+    line.hidden = true;
+    return;
+  }
+  const used = budget > 0 ? spent / budget : 1;
+  line.dataset.level = used >= 0.8 ? "warn" : "ok";
+  line.textContent = used >= 1
+    ? "Budget used: asks are refused until next month"
+    : "This month: $" + spent.toFixed(2) + " of $" + budget.toFixed(2);
+  line.hidden = false;
+}
+
+async function refreshBudget() {
+  const response = await api("/me").catch(() => null);
+  if (response === null || !response.ok) return;
+  const me = await response.json();
+  showBudget(me.spent_usd, me.budget_usd);
 }
 
 async function loadServers() {
@@ -1505,6 +1529,7 @@ async function ask(resent, edit) {
     running = null;
     setBusy(false);
     loadConversations();
+    refreshBudget();
     if (waiting === 0) el("request").focus();
   }
 }
@@ -1549,6 +1574,7 @@ async function send() {
     running = null;
     setBusy(false);
     loadConversations();
+    refreshBudget();
     if (waiting === 0) el("request").focus();
   }
 }
@@ -1593,7 +1619,9 @@ async function start() {
     el("signin-error").hidden = linkError === "";
     return;
   }
-  el("status").textContent = "Signed in as " + (await response.json()).name;
+  const me = await response.json();
+  el("status").textContent = "Signed in as " + me.name;
+  showBudget(me.spent_usd, me.budget_usd);
   el("who").hidden = false;
   el("app").hidden = false;
   restoreDraft();
