@@ -86,7 +86,7 @@ from deskclerk.database import Database
 from deskclerk.erasure import erase_user
 from deskclerk.instructions import system_prompt
 from deskclerk.jev import Jev
-from deskclerk.pinning import MenuEntry, read_menu
+from deskclerk.pinning import MenuEntry, allowed_tool_names, read_menu, revoke_tool
 from deskclerk.providers import BudgetExceeded, Usage, cost_of
 from deskclerk.quota import Quota
 from deskclerk.retention import delete_old_threads, delete_old_threads_daily
@@ -186,6 +186,7 @@ class ServerOut(BaseModel):
     url: str
     connected: bool
     tools: list[MenuEntry]
+    always_allowed: list[str]
 
 
 class ConnectOut(BaseModel):
@@ -670,8 +671,26 @@ def create_app(
                 await run_in_threadpool(read_menu, tokens, user, server.name) if connected else []
             )
             allowed = [t for t in menu if server.tools is None or t.name in server.tools]
+            menu_names = {t.name for t in allowed}
+            always = (
+                [
+                    name
+                    for name in await run_in_threadpool(
+                        allowed_tool_names, tokens, user, server.name
+                    )
+                    if name in menu_names
+                ]
+                if connected
+                else []
+            )
             listed.append(
-                ServerOut(name=server.name, url=server.url, connected=connected, tools=allowed)
+                ServerOut(
+                    name=server.name,
+                    url=server.url,
+                    connected=connected,
+                    tools=allowed,
+                    always_allowed=always,
+                )
             )
         return listed
 
@@ -736,6 +755,18 @@ def create_app(
         await connections.cancel_for(who.identity.user_id, server.name)
         await run_in_threadpool(tokens.delete_connection, who.identity.user_id, server.name)
         audit.connection(who.identity, "disconnect", server.name)
+        return Response(status_code=204)
+
+    @app.delete("/servers/{name}/always/{tool}", status_code=204)
+    async def revoke_always_allowed(
+        name: str, tool: str, who: Caller = Depends(posting_caller)
+    ) -> Response:
+        server = known_server(name, who.identity)
+        user = who.identity.user_id
+        async with database.user_lock(user):
+            revoked = await run_in_threadpool(revoke_tool, tokens, user, server.name, tool)
+        if not revoked:
+            raise HTTPException(404, f"{tool} is not always allowed")
         return Response(status_code=204)
 
     @app.get("/conversations")

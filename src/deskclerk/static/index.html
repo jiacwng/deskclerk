@@ -168,6 +168,10 @@ button.conv-delete:hover:not(:disabled) { color: var(--bad); }
 .server-name { font-weight: 600; }
 .server-url { font-family: var(--mono); font-size: 0.75rem; color: var(--muted); }
 .server-foot { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-top: 0.25rem; }
+.always-heading { font-size: 0.75rem; font-weight: 600; color: var(--muted); margin-top: 0.25rem; }
+.always-list { display: grid; gap: 0.125rem; }
+.always-item { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.always-name { min-width: 0; overflow-wrap: anywhere; font-size: 0.8125rem; }
 .state { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.8125rem; color: var(--muted); }
 .state::before { content: ""; width: 0.5rem; height: 0.5rem; border-radius: 50%; border: 1.5px solid var(--muted); }
 .state.on { color: var(--ok); }
@@ -648,6 +652,15 @@ async function disconnect(name) {
   loadServers();
 }
 
+async function revokeAlways(server, tool) {
+  const response = await api("/servers/" + encodeURIComponent(server) + "/always/" + encodeURIComponent(tool), {
+    method: "DELETE",
+    headers: { "X-Requested-With": "deskclerk" },
+  });
+  if (!response.ok && response.status !== 404) return reportFailure(response);
+  loadServers();
+}
+
 async function logout() {
   const response = await post("/logout");
   if (!response.ok) return reportFailure(response);
@@ -735,6 +748,18 @@ async function loadServers() {
     toggle.setAttribute("aria-label", toggle.textContent + " " + server.name);
     foot.append(toggle);
     card.append(foot);
+    if (server.connected && server.always_allowed.length > 0) {
+      const names = Object.fromEntries(server.tools.map((tool) => [tool.name, tool.title || tool.name]));
+      const items = make("div", "always-list");
+      for (const tool of server.always_allowed) {
+        const item = make("div", "always-item");
+        const revoke = button("Revoke", () => revokeAlways(server.name, tool), "small");
+        revoke.setAttribute("aria-label", "Revoke " + (names[tool] || tool) + " on " + server.name);
+        item.append(make("span", "always-name", names[tool] || tool), revoke);
+        items.append(item);
+      }
+      card.append(make("div", "always-heading", "Always allowed"), items);
+    }
     list.append(card);
   }
 }
@@ -1541,6 +1566,7 @@ async function send() {
   setBusy(true, "Sending your decisions…");
   const turn = currentTurn;
   turn.pending = [];
+  const usedAlways = Object.values(decisions).includes("approve_always");
   const stop = startWorking(turn.node, "Sending your decisions…");
   try {
     const { response, outcome } = await streamed("/ask/confirm", { conversation, decisions }, turn);
@@ -1573,6 +1599,7 @@ async function send() {
     stop();
     running = null;
     setBusy(false);
+    if (usedAlways) loadServers();
     loadConversations();
     refreshBudget();
     if (waiting === 0) el("request").focus();
