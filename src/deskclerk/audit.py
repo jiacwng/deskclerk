@@ -45,6 +45,7 @@ class Audit:
         cause: str | None = None,
         entry: str = "ask",
         executed: Sequence[ExecutedCall] = (),
+        edit_of: int | None = None,
     ) -> None:
         line = self._line(identity, entry)
         line.update(
@@ -71,6 +72,8 @@ class Audit:
         )
         if cause is not None:
             line["cause"] = cause
+        if edit_of is not None:
+            line["edit_of"] = edit_of
         if self.include_text:
             line["text"] = request
         _log.info(json.dumps(line))

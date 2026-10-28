@@ -974,7 +974,7 @@ def test_the_page_shows_the_calls_that_ran_before_a_failure(
         page = site.client.get("/").text
     assert "These calls ran before the error" in page
     assert "body?.calls" in page
-    assert "if (!kept) discardTurn" in page
+    assert "if (!kept) drop()" in page
     assert "failTurn(turn" in page
 
 
