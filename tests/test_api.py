@@ -1084,7 +1084,7 @@ def test_an_employee_signs_in_through_keycloak_and_asks(database: Database) -> N
             assert form is not None
             submitted = browser.post(
                 html.unescape(form.group(1)),
-                data={"username": "analyst", "password": "deskclerk"},
+                data={"username": "kaminski-v", "password": "deskclerk"},
             )
         assert submitted.status_code == 302
         landing = urlparse(submitted.headers["location"])
@@ -1097,7 +1097,7 @@ def test_an_employee_signs_in_through_keycloak_and_asks(database: Database) -> N
         finished = site.client.get(f"{landing.path}?{landing.query}")
         assert (finished.status_code, finished.headers["location"]) == (303, "/")
         me = site.client.get("/me").json()
-        assert me["name"] == "analyst"
+        assert me["name"] == "kaminski-v"
         assert re.fullmatch(r"[0-9a-f-]{36}", me["user"])
         asked = ask(site, {CSRF_HEADER: CSRF_VALUE})
         assert asked.json()["answer"] == "hello analyst"
