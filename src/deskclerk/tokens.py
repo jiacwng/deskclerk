@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from deskclerk.database import Database
 from deskclerk.servers import McpServer
 
-Kind = Literal["tokens", "client", "tool_pins", "always_allowed"]
+Kind = Literal["tokens", "client", "tool_pins", "always_allowed", "tool_menu"]
 
 KEY_CHECK_TEXT = b"deskclerk"
 
@@ -89,7 +89,7 @@ class TokenStore:
         with self.database.pool.connection() as connection:
             connection.execute(
                 "DELETE FROM secrets WHERE user_id = %s AND server_name = %s "
-                "AND kind IN ('tokens', 'tool_pins', 'always_allowed')",
+                "AND kind IN ('tokens', 'tool_pins', 'always_allowed', 'tool_menu')",
                 (user_id, server_name),
             )
 

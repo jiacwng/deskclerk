@@ -56,7 +56,7 @@ from deskclerk.connections import (
 )
 from deskclerk.conversations import close_unanswered_calls, earlier_texts
 from deskclerk.instructions import not_connected_note, unavailable_note
-from deskclerk.pinning import allow_tool, allowed_tools, pin_tools
+from deskclerk.pinning import allow_tool, allowed_tools, pin_tools, save_menu
 from deskclerk.providers import Usage, usage_from
 from deskclerk.screen import Screen, is_flagged
 from deskclerk.servers import McpServer
@@ -528,6 +528,7 @@ async def _offer(
         pinned = pin_tools(tokens, user_id, server.name, listed)
         changed_tools += [f"{server.name}__{name}" for name in pinned.changed]
         kept = tuple(_confirming(server, pinned.kept))
+        save_menu(tokens, user_id, server.name, kept)
         for info in kept:
             tools[f"{server.name}__{info.name}"] = _Tool(server, info)
         for info in allowed_tools(tokens, user_id, server.name, kept):

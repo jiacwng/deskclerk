@@ -16,13 +16,26 @@ _PINS = TypeAdapter(dict[str, str])
 
 
 @dataclass(frozen=True)
+class MenuEntry:
+    name: str
+    title: str
+    read_only: bool
+
+
+_MENU = TypeAdapter(list[MenuEntry])
+
+
+@dataclass(frozen=True)
 class PinnedTools:
     kept: tuple[ToolInfo, ...]
     changed: tuple[str, ...]
 
 
 def definition_hash(tool: ToolInfo) -> str:
-    canonical = json.dumps(asdict(tool), sort_keys=True, separators=(",", ":"))
+    definition = asdict(tool)
+    if not tool.title:
+        del definition["title"]
+    canonical = json.dumps(definition, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
@@ -66,3 +79,15 @@ def allowed_tools(
 def _stored_allowances(store: TokenStore, user_id: str, server_name: str) -> dict[str, str]:
     stored = store.get(user_id, server_name, "always_allowed")
     return {} if stored is None else _PINS.validate_json(stored)
+
+
+def save_menu(
+    store: TokenStore, user_id: str, server_name: str, kept: tuple[ToolInfo, ...]
+) -> None:
+    menu = [MenuEntry(tool.name, tool.title, tool.read_only) for tool in kept]
+    store.put(user_id, server_name, "tool_menu", _MENU.dump_json(menu).decode())
+
+
+def read_menu(store: TokenStore, user_id: str, server_name: str) -> list[MenuEntry]:
+    stored = store.get(user_id, server_name, "tool_menu")
+    return [] if stored is None else _MENU.validate_json(stored)

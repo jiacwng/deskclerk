@@ -397,6 +397,32 @@ def test_servers_show_whether_this_employee_is_connected(
         assert connected(ada) == {"notes": False, "open": True}
 
 
+def test_servers_list_only_the_allowed_pinned_tools_of_connected_servers_for_the_caller(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings)
+    servers = [replace(notes(notes_server), tools=("read_note", "write_note"))]
+    ada, grace = as_user(sign_token, "ada"), as_user(sign_token, "grace")
+
+    def tools_of(headers: dict[str, str]) -> list[tuple[str, bool]]:
+        listing = site.client.get("/servers", headers=headers).json()
+        return [(tool["name"], tool["read_only"]) for tool in listing[0]["tools"]]
+
+    with web(settings, servers, script(answer("ok")), token_signing_key, database) as site:
+        connect(site, ada)
+        assert tools_of(ada) == []
+        assert ask(site, ada).status_code == 200
+        assert sorted(tools_of(ada)) == [("read_note", True), ("write_note", False)]
+        assert tools_of(grace) == []
+
+        assert site.client.post("/servers/notes/disconnect", headers=ada).status_code == 204
+        assert tools_of(ada) == []
+
+
 def test_an_ask_runs_the_agent_and_the_server_sees_the_write_under_that_employee_s_token(
     sign_token: Sign,
     token_settings: Settings,
