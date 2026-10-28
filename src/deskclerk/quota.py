@@ -13,11 +13,6 @@ class Quota:
     def __init__(self, database: Database, per_minute: int) -> None:
         self._database = database
         self._per_minute = per_minute
-        database.create_tables(
-            "CREATE TABLE IF NOT EXISTS quota_hits ("
-            "user_id TEXT NOT NULL, hit_at DOUBLE PRECISION NOT NULL)",
-            "CREATE INDEX IF NOT EXISTS quota_hits_user ON quota_hits (user_id, hit_at)",
-        )
 
     async def allows(self, user_id: str) -> bool:
         now = time.time()

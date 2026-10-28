@@ -137,14 +137,6 @@ class OAuthConnections:
         self._outcomes: dict[str, asyncio.Future[str | None]] = {}
         self._handlers: set[asyncio.Task[None]] = set()
         self._listening = asyncio.Event()
-        self._database.create_tables(
-            "CREATE TABLE IF NOT EXISTS oauth_flows ("
-            "state TEXT PRIMARY KEY, user_id TEXT NOT NULL, server_name TEXT NOT NULL, "
-            "deadline DOUBLE PRECISION NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS oauth_callbacks ("
-            "state TEXT PRIMARY KEY, code TEXT, iss TEXT, error TEXT, "
-            "created_at DOUBLE PRECISION NOT NULL)",
-        )
 
     def client_metadata(self) -> OAuthClientMetadata:
         return OAuthClientMetadata(
