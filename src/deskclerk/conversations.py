@@ -3,7 +3,6 @@
 # employee can never load another's. Erasing an employee deletes every thread with their prefix.
 # A conversations table beside them holds each conversation's title and last activity for the list.
 
-import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -42,12 +41,6 @@ async def open_checkpointer(database: Database, fernet: Fernet) -> AsyncPostgres
     )
     async with database.schema_lock():
         await checkpointer.setup()
-    await asyncio.to_thread(
-        database.create_tables,
-        "CREATE TABLE IF NOT EXISTS conversations ("
-        "user_id TEXT NOT NULL, id UUID NOT NULL, title TEXT NOT NULL, "
-        "updated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (user_id, id))",
-    )
     return checkpointer
 
 

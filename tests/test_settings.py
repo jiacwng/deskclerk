@@ -100,3 +100,9 @@ def test_the_listing_bound_is_a_tenth_of_the_ask_deadline_but_at_least_five_seco
     ask_seconds: int, listing_seconds: float
 ) -> None:
     assert Settings.model_validate({"ask_seconds": ask_seconds}).listing_seconds == listing_seconds
+
+
+def test_the_issuer_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DESKCLERK_ISSUER")
+    with pytest.raises(ValidationError, match="issuer"):
+        Settings()
