@@ -346,3 +346,36 @@ def test_a_confirm_tool_name_must_not_be_empty_or_repeated(tmp_path: Path) -> No
         load_servers(write(tmp_path, entry + 'confirm_tools = [" "]\n'), {})
     with pytest.raises(ServersError, match="listed twice"):
         load_servers(write(tmp_path, entry + 'confirm_tools = ["x", "x"]\n'), {})
+
+
+def test_a_title_a_description_and_examples_are_read_from_toml_and_json(tmp_path: Path) -> None:
+    toml = write(
+        tmp_path,
+        '[[server]]\nname = "tasks"\nurl = "https://a.test/mcp"\ntitle = "Tasks"\n'
+        'description = "Your to-do list."\nexamples = ["What is on my list?", "Add a task"]\n',
+    )
+    json_file = write_json(
+        tmp_path,
+        '{"mcpServers": {"tasks": {"url": "https://a.test/mcp", "title": "Tasks", '
+        '"description": "Your to-do list.", "examples": ["What is on my list?", "Add a task"]}}}',
+    )
+    for path in (toml, json_file):
+        server = load_servers(path, {})[0]
+        assert (server.title, server.description, server.examples) == (
+            "Tasks",
+            "Your to-do list.",
+            ("What is on my list?", "Add a task"),
+        )
+
+
+def test_a_server_without_a_title_a_description_or_examples_has_none(tmp_path: Path) -> None:
+    path = write(tmp_path, '[[server]]\nname = "tasks"\nurl = "https://a.test/mcp"\n')
+    server = load_servers(path, {})[0]
+    assert (server.title, server.description, server.examples) == (None, None, ())
+
+
+@pytest.mark.parametrize("line", ['title = " "', 'description = ""', 'examples = ["ok", " "]'])
+def test_a_blank_title_description_or_example_is_refused(tmp_path: Path, line: str) -> None:
+    path = write(tmp_path, f'[[server]]\nname = "a"\nurl = "https://a.test/mcp"\n{line}\n')
+    with pytest.raises(ServersError, match="need"):
+        load_servers(path, {})
