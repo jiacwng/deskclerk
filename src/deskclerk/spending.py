@@ -30,14 +30,6 @@ class UsageRow:
 class SpendingStore:
     def __init__(self, database: Database) -> None:
         self._pool = database.pool
-        database.create_tables(
-            "CREATE TABLE IF NOT EXISTS costs ("
-            "user_id TEXT NOT NULL, month TEXT NOT NULL, source TEXT NOT NULL, "
-            "input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, "
-            "cache_read_tokens INTEGER NOT NULL, cache_write_tokens INTEGER NOT NULL, "
-            "usd DOUBLE PRECISION NOT NULL)",
-            "CREATE INDEX IF NOT EXISTS costs_user_month ON costs (user_id, month)",
-        )
 
     def load(self, user_id: str, month: str) -> float:
         with self._pool.connection() as connection:
