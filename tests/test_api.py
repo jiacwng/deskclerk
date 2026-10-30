@@ -191,11 +191,11 @@ CONNECT_FAILED = "/?error=connect_failed"
 
 
 def notes(running: RunningServer) -> McpServer:
-    return McpServer("notes", running.url, None, None)
+    return McpServer("notes", running.url, None, None, trusted=True)
 
 
 def open_notes(running: RunningServer) -> McpServer:
-    return McpServer("open", running.url, None, None, "none")
+    return McpServer("open", running.url, None, None, "none", trusted=True)
 
 
 def as_user(sign_token: Sign, user: str) -> dict[str, str]:

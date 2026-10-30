@@ -43,6 +43,7 @@ class McpServer:
     groups: tuple[str, ...] | None = None
     always_allow: bool = True
     confirm_tools: tuple[str, ...] = ()
+    trusted: bool = False
 
     def open_to(self, groups: frozenset[str]) -> bool:
         return self.groups is None or not groups.isdisjoint(self.groups)
@@ -64,6 +65,7 @@ class _ServerEntry(BaseModel):
     groups: list[str] | None = None
     always_allow: bool = True
     confirm_tools: list[str] = []
+    trusted: bool = False
 
     @field_validator("name")
     @classmethod
@@ -246,6 +248,7 @@ def load_servers(path: Path, environ: Mapping[str, str] = os.environ) -> list[Mc
                 None if entry.groups is None else tuple(entry.groups),
                 entry.always_allow,
                 tuple(entry.confirm_tools),
+                entry.trusted,
             )
         )
     return servers

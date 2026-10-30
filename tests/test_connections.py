@@ -70,8 +70,8 @@ async def connections(database: Database, key: str) -> AsyncIterator[OAuthConnec
 
 def server_record(running: RunningServer, preregistered: bool = False) -> McpServer:
     if preregistered:
-        return McpServer("notes", running.url, PRESET_CLIENT_ID, PRESET_CLIENT_SECRET)
-    return McpServer("notes", running.url, None, None)
+        return McpServer("notes", running.url, PRESET_CLIENT_ID, PRESET_CLIENT_SECRET, trusted=True)
+    return McpServer("notes", running.url, None, None, trusted=True)
 
 
 async def approve(authorization_url: str) -> tuple[str, str]:
