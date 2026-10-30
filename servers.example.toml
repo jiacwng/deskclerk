@@ -4,6 +4,11 @@
 [[server]]
 name = "tasks"
 url = "http://localhost:8100/mcp"
+# Optional. The name and one line the employee sees in Connected apps instead of the URL, and
+# example requests that come first in the suggestions on an empty conversation.
+title = "Tasks"
+description = "Your to-do list."
+examples = ["What is on my list today?", "Add a task to call the supplier"]
 # No sign-in. Without it, each employee signs in to the server with OAuth.
 auth = "none"
 trusted = true
@@ -11,6 +16,9 @@ trusted = true
 # [[server]]
 # name = "linear"
 # url = "https://mcp.linear.app/mcp"
+# title = "Linear"
+# description = "Issues and projects for the engineering team."
+# examples = ["Which issues are assigned to me?", "Create an issue for the login bug"]
 # A client registered with the server's login, and the variable in .env that holds its secret.
 # Without them, and with an https DESKCLERK_PUBLIC_URL, deskclerk signs in as the client document
 # it serves at /oauth/client.json, or registers a client per employee when the login does not
