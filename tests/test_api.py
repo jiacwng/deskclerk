@@ -313,6 +313,7 @@ def test_a_bad_bearer_token_is_refused_and_a_good_one_names_the_employee(
             "name": "ada",
             "spent_usd": 0.0,
             "budget_usd": 2.0,
+            "admin": False,
         }
 
 
@@ -875,6 +876,7 @@ def test_a_cookie_post_needs_the_custom_header_and_a_bearer_post_does_not(
             "name": "ada",
             "spent_usd": 0.0,
             "budget_usd": 2.0,
+            "admin": False,
         }
         assert ask(site, {}).status_code == 403
         assert ask(site, {CSRF_HEADER: "something else"}).status_code == 403
@@ -1197,6 +1199,7 @@ def test_the_session_lasts_the_session_hours_after_the_id_token_expires(
             "name": "district-1",
             "spent_usd": 0.0,
             "budget_usd": 2.0,
+            "admin": False,
         }
         now = time.time()
         monkeypatch.setattr(sessions, "time", SimpleNamespace(time=lambda: now + 10))
@@ -1205,6 +1208,7 @@ def test_the_session_lasts_the_session_hours_after_the_id_token_expires(
             "name": "district-1",
             "spent_usd": 0.0,
             "budget_usd": 2.0,
+            "admin": False,
         }
         later = now + 8 * 3600 + 10
         monkeypatch.setattr(sessions, "time", SimpleNamespace(time=lambda: later))
@@ -1228,6 +1232,7 @@ def test_sign_in_works_when_the_access_token_is_opaque(
             "name": "district-1",
             "spent_usd": 0.0,
             "budget_usd": 2.0,
+            "admin": False,
         }
 
 
@@ -1600,6 +1605,7 @@ def test_logging_out_clears_the_session_cookie(
             "name": "ada",
             "spent_usd": 0.0,
             "budget_usd": 2.0,
+            "admin": False,
         }
         loggedout = site.client.post("/logout", headers={CSRF_HEADER: CSRF_VALUE})
         assert loggedout.status_code == 204
@@ -1796,7 +1802,13 @@ def test_a_renamed_employee_keeps_the_same_conversation(
         second = ask_in(site, after, first["conversation"])
         me = site.client.get("/me", headers=after).json()
     assert second.status_code == 200
-    assert me == {"user": "u-1", "name": "ada-l", "spent_usd": 0.0, "budget_usd": 2.0}
+    assert me == {
+        "user": "u-1",
+        "name": "ada-l",
+        "spent_usd": 0.0,
+        "budget_usd": 2.0,
+        "admin": False,
+    }
 
 
 def ask_and_approve(

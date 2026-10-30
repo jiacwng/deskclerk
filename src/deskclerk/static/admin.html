@@ -1,0 +1,192 @@
+<!doctype html>
+<!-- The admin page: servers, usage this month and recent activity, read only. Everything is set with textContent. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>deskclerk admin</title>
+<style>
+:root {
+  --bg: #f4f3ef;
+  --rail: #eceae4;
+  --surface: #fbfaf8;
+  --sunk: #e7e5de;
+  --line: #d6d3ca;
+  --line-soft: #e2dfd7;
+  --edge: #85827a;
+  --fg: #1d1f1c;
+  --muted: #5d6159;
+  --accent: #1f5a55;
+  --accent-fg: #f6faf9;
+  --ok: #2b7345;
+  --warn: #8a5600;
+  --warn-soft: #f1e6cc;
+  --bad: #ae2a22;
+  --bad-soft: #f4dfdb;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161815;
+    --rail: #1b1d1a;
+    --surface: #1f221e;
+    --sunk: #292c27;
+    --line: #373a34;
+    --line-soft: #2d302b;
+    --edge: #7a7e74;
+    --fg: #e5e6e0;
+    --muted: #9fa399;
+    --accent: #7fc3b8;
+    --accent-fg: #0f1a18;
+    --ok: #7cc795;
+    --warn: #e0b454;
+    --warn-soft: #302a18;
+    --bad: #ee9d93;
+    --bad-soft: #3a2220;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #161815;
+  --rail: #1b1d1a;
+  --surface: #1f221e;
+  --sunk: #292c27;
+  --line: #373a34;
+  --line-soft: #2d302b;
+  --edge: #7a7e74;
+  --fg: #e5e6e0;
+  --muted: #9fa399;
+  --accent: #7fc3b8;
+  --accent-fg: #0f1a18;
+  --ok: #7cc795;
+  --warn: #e0b454;
+  --warn-soft: #302a18;
+  --bad: #ee9d93;
+  --bad-soft: #3a2220;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { accent-color: var(--accent); }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 0.9375rem/1.5 var(--sans); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+h1, h2, p { margin: 0; }
+[hidden] { display: none !important; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.muted { color: var(--muted); }
+.small { font-size: 0.8125rem; }
+.bar { border-bottom: 1px solid var(--line); }
+.bar-inner, main { max-width: 72rem; margin: 0 auto; padding-inline: 16px; }
+.bar-inner { display: flex; align-items: center; gap: 0.75rem; min-height: 2.75rem; }
+.brand { font-size: 0.9375rem; font-weight: 700; letter-spacing: -0.01em; margin-right: auto; }
+.back { color: var(--accent); font-weight: 600; text-decoration: none; }
+.back:hover { text-decoration: underline; }
+main { padding-block: 1.25rem 2rem; display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.75rem; }
+h2 { font-size: 0.8125rem; font-weight: 600; color: var(--muted); margin-bottom: 0.5rem; }
+.error { color: var(--bad); background: var(--bad-soft); border: 1px solid var(--bad); border-radius: 4px; padding: 0.5rem 0.75rem; }
+.scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
+table { width: 100%; min-width: 34rem; border-collapse: collapse; font-size: 0.875rem; overflow-wrap: normal; }
+.note { margin-top: 0.5rem; }
+th, td { text-align: left; padding: 0.45rem 0.75rem; border-top: 1px solid var(--line-soft); vertical-align: top; }
+thead th { border-top: 0; font-size: 0.75rem; font-weight: 600; color: var(--muted); background: var(--rail); white-space: nowrap; }
+td.num, th.num { text-align: right; white-space: nowrap; }
+td.mono { font-family: var(--mono); font-size: 0.8125rem; }
+td.over { color: var(--warn); font-weight: 600; }
+.empty { padding: 0.75rem; color: var(--muted); }
+</style>
+</head>
+<body>
+<header class="bar">
+  <div class="bar-inner">
+    <h1 class="brand">deskclerk admin</h1>
+    <a class="back small" href="/">Back to the chat</a>
+  </div>
+</header>
+<main>
+  <p id="error" class="error" role="alert" hidden></p>
+  <section aria-labelledby="servers-title">
+    <h2 id="servers-title">Servers</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Name</th><th>URL</th><th>Auth</th><th class="num">Employees connected</th><th class="num">Allowlisted tools</th></tr></thead>
+      <tbody id="servers"></tbody>
+    </table></div>
+  </section>
+  <section aria-labelledby="usage-title">
+    <h2 id="usage-title">Usage <span id="month"></span></h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Employee</th><th class="num">Priced calls</th><th class="num">Spent</th><th class="num">Budget</th></tr></thead>
+      <tbody id="usage"></tbody>
+    </table></div>
+  </section>
+  <section aria-labelledby="recent-title">
+    <h2 id="recent-title">Recent activity</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Employee</th><th>Conversation title</th><th>Last message</th></tr></thead>
+      <tbody id="recent"></tbody>
+    </table></div>
+    <p class="note muted small">The audit log is written to stdout and is not stored, so this lists the latest 50 conversations by last message.</p>
+  </section>
+</main>
+<script>
+const el = (id) => document.getElementById(id);
+
+function cell(text, className) {
+  const td = document.createElement("td");
+  td.textContent = text;
+  if (className) td.className = className;
+  return td;
+}
+
+function fill(id, rows, columns) {
+  const body = el(id);
+  body.replaceChildren();
+  if (rows.length === 0) {
+    const row = document.createElement("tr");
+    const td = cell("Nothing yet.", "empty");
+    td.colSpan = columns;
+    row.append(td);
+    body.append(row);
+    return;
+  }
+  for (const cells of rows) {
+    const row = document.createElement("tr");
+    row.append(...cells);
+    body.append(row);
+  }
+}
+
+const money = (value) => "$" + value.toFixed(4);
+const count = (value) => (value === null ? "n/a" : String(value));
+
+async function load() {
+  const response = await fetch("/admin/summary");
+  if (response.status === 401) {
+    window.location.assign("/login");
+    return;
+  }
+  if (!response.ok) {
+    el("error").textContent = "Could not load the summary (" + response.status + ").";
+    el("error").hidden = false;
+    return;
+  }
+  const summary = await response.json();
+  el("month").textContent = "(" + summary.month + ")";
+  fill("servers", summary.servers.map((s) => [
+    cell(s.name), cell(s.url, "mono"), cell(s.auth),
+    cell(count(s.employees_connected), "num"),
+    cell(s.allowlist_size === null ? "all" : String(s.allowlist_size), "num"),
+  ]), 5);
+  fill("usage", summary.usage.map((u) => [
+    cell(u.user_id), cell(String(u.calls), "num"),
+    cell(money(u.spent_usd), u.spent_usd >= u.budget_usd ? "num over" : "num"),
+    cell(money(u.budget_usd), "num"),
+  ]), 4);
+  fill("recent", summary.recent.map((r) => [
+    cell(r.user_id), cell(r.title === null ? "hidden (DESKCLERK_AUDIT_TEXT is off)" : r.title), cell(new Date(r.updated_at).toLocaleString()),
+  ]), 3);
+}
+
+load();
+</script>
+</body>
+</html>

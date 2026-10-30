@@ -105,6 +105,7 @@ textarea { caret-color: var(--accent); }
 .bar-inner { display: flex; align-items: center; gap: 0.75rem; min-height: 2.75rem; }
 .brand { font-size: 0.9375rem; font-weight: 700; letter-spacing: -0.01em; margin-right: auto; }
 .who { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+#admin-link { color: var(--accent); font-weight: 600; text-decoration: none; }
 
 .rail { padding-block: 1rem; min-height: 0; overflow-y: auto; }
 .rail-toggle { display: none; }
@@ -357,6 +358,7 @@ textarea::placeholder { color: var(--muted); }
     <h1 class="brand">deskclerk</h1>
     <div id="who" class="who" hidden>
       <span id="status" class="muted small"></span>
+      <a id="admin-link" class="small" href="/admin" hidden>Admin</a>
       <button id="logout" class="small quiet" type="button">Sign out</button>
     </div>
   </div>
@@ -1643,6 +1645,7 @@ async function start() {
   }
   const me = await response.json();
   el("status").textContent = "Signed in as " + me.name;
+  el("admin-link").hidden = !me.admin;
   showBudget(me.spent_usd, me.budget_usd);
   el("who").hidden = false;
   el("app").hidden = false;
