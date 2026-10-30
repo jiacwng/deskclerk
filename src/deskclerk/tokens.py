@@ -70,6 +70,14 @@ class TokenStore:
             return None
         return self._decrypt(row[0])
 
+    def connected_counts(self) -> dict[str, int]:
+        with self.database.pool.connection() as connection:
+            found = connection.execute(
+                "SELECT server_name, COUNT(DISTINCT user_id) FROM secrets "
+                "WHERE kind = 'tokens' GROUP BY server_name"
+            ).fetchall()
+        return {str(name): int(count) for name, count in found}
+
     def put(self, user_id: str, server_name: str, kind: Kind, text: str) -> None:
         with self.database.pool.connection() as connection:
             connection.execute(

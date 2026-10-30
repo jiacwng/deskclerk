@@ -88,6 +88,24 @@ async def list_conversations(database: Database, user_id: str) -> list[Conversat
     return [ConversationSummary(row["id"], row["title"], row["updated_at"]) for row in found]
 
 
+@dataclass(frozen=True)
+class RecentConversation:
+    user_id: str
+    title: str
+    updated_at: datetime
+
+
+async def recent_conversations(database: Database, limit: int) -> list[RecentConversation]:
+    async with database.async_pool.connection() as connection:
+        cursor = await connection.execute(
+            "SELECT user_id, title, updated_at FROM conversations "
+            "ORDER BY updated_at DESC LIMIT %s",
+            (limit,),
+        )
+        found = await cursor.fetchall()
+    return [RecentConversation(row["user_id"], row["title"], row["updated_at"]) for row in found]
+
+
 async def delete_conversation(
     database: Database, checkpointer: BaseCheckpointSaver[Any], user_id: str, conversation: UUID
 ) -> None:
