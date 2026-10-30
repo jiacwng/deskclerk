@@ -21,16 +21,16 @@ flowchart LR
 ## Try it
 
 You need Docker with Compose and an API key for one model provider: Anthropic, OpenAI, Azure
-OpenAI or AWS Bedrock. This runs deskclerk, a development Keycloak and a demo task server on ports
+OpenAI or AWS Bedrock. This runs deskclerk, a development Keycloak and a demo Git server on ports
 8000, 8080 and 8100.
 
 1. Copy `.env.example` to `.env`. Fill in `ANTHROPIC_API_KEY`, or set `DESKCLERK_MODEL` and your
    provider's key as `.env.example` shows. Make `DESKCLERK_TOKEN_KEY` and
    `DESKCLERK_SESSION_KEY` with the two `python3` commands in the file. Without a TypeSafe key,
    also set `DESKCLERK_ALLOW_UNSCREENED=true`.
-2. Copy `servers.example.toml` to `servers.toml`. It lists the demo task server, a small to-do
-   list that stands in for a tracker like Linear or Jira and needs no account. The same file shows
-   how to add Linear's hosted MCP server, which deskclerk was tested on.
+2. Copy `servers.example.toml` to `servers.toml`. It lists the demo Git server, the official MCP
+   Git server running on a copy of this repository inside its container. It needs no account. The
+   same file shows how to add Linear's hosted MCP server, which deskclerk was tested on.
 3. Start everything. The first start builds the image and takes about a minute.
 
    ```
@@ -39,8 +39,9 @@ OpenAI or AWS Bedrock. This runs deskclerk, a development Keycloak and a demo ta
 
 4. Open http://localhost:8000 and sign in as `kaminski-v` with the password `deskclerk`. The user
    `dasovich-j` belongs to the second group. Ask
-   "Create a task called Write the release notes", then "Mark it as doing", then "Delete it".
-   Approve each change when the page asks.
+   "Summarise what changed in the last 10 commits of /sandbox/deskclerk", then "Create a branch
+   called release-notes in /sandbox/deskclerk". Approve the change when the page asks. The branch
+   exists only inside the demo container.
 
 ## Run it at your company
 

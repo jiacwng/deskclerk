@@ -2,13 +2,16 @@
 # digits, hyphens and single underscores. DESKCLERK_SERVERS_FILE can name a .json file in the
 # mcpServers format instead.
 [[server]]
-name = "tasks"
+name = "repo"
 url = "http://localhost:8100/mcp"
 # Optional. The name and one line the employee sees in Connected apps instead of the URL, and
 # example requests that come first in the suggestions on an empty conversation.
-title = "Tasks"
-description = "Your to-do list."
-examples = ["What is on my list today?", "Add a task to call the supplier"]
+title = "Git"
+description = "A copy of the deskclerk repository inside the demo container."
+examples = [
+    "Summarise the last 10 commits of /sandbox/deskclerk",
+    "Create a branch called release-notes in /sandbox/deskclerk",
+]
 # No sign-in. Without it, each employee signs in to the server with OAuth.
 auth = "none"
 trusted = true
