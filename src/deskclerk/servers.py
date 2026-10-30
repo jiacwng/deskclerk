@@ -43,6 +43,9 @@ class McpServer:
     groups: tuple[str, ...] | None = None
     always_allow: bool = True
     confirm_tools: tuple[str, ...] = ()
+    title: str | None = None
+    description: str | None = None
+    examples: tuple[str, ...] = ()
 
     def open_to(self, groups: frozenset[str]) -> bool:
         return self.groups is None or not groups.isdisjoint(self.groups)
@@ -64,6 +67,9 @@ class _ServerEntry(BaseModel):
     groups: list[str] | None = None
     always_allow: bool = True
     confirm_tools: list[str] = []
+    title: str | None = None
+    description: str | None = None
+    examples: list[str] = []
 
     @field_validator("name")
     @classmethod
@@ -86,6 +92,20 @@ class _ServerEntry(BaseModel):
                 raise ValueError(f"tool name {name!r} is listed twice")
             seen.add(name)
         return names
+
+    @field_validator("title", "description")
+    @classmethod
+    def _text_has_text(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("title and description need text when they are set")
+        return value
+
+    @field_validator("examples")
+    @classmethod
+    def _examples_have_text(cls, examples: list[str]) -> list[str]:
+        if any(not example.strip() for example in examples):
+            raise ValueError("each example needs text")
+        return examples
 
     @field_validator("groups")
     @classmethod
@@ -246,6 +266,9 @@ def load_servers(path: Path, environ: Mapping[str, str] = os.environ) -> list[Mc
                 None if entry.groups is None else tuple(entry.groups),
                 entry.always_allow,
                 tuple(entry.confirm_tools),
+                entry.title,
+                entry.description,
+                tuple(entry.examples),
             )
         )
     return servers
