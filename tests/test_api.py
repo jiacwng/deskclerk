@@ -191,11 +191,11 @@ CONNECT_FAILED = "/?error=connect_failed"
 
 
 def notes(running: RunningServer) -> McpServer:
-    return McpServer("notes", running.url, None, None)
+    return McpServer("notes", running.url, None, None, trusted=True)
 
 
 def open_notes(running: RunningServer) -> McpServer:
-    return McpServer("open", running.url, None, None, "none")
+    return McpServer("open", running.url, None, None, "none", trusted=True)
 
 
 def as_user(sign_token: Sign, user: str) -> dict[str, str]:
@@ -399,6 +399,49 @@ def test_servers_show_whether_this_employee_is_connected(
         assert connected(ada) == {"notes": False, "open": True}
 
 
+def test_servers_show_the_title_description_and_examples_the_admin_wrote(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    open_server: RunningServer,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings)
+    described = replace(
+        notes(notes_server),
+        title="Notes",
+        description="Your notebook.",
+        examples=("Read my notes", "Add a note"),
+    )
+    servers = [described, open_notes(open_server)]
+    with web(settings, servers, script(), token_signing_key, database) as site:
+        listing = site.client.get("/servers", headers=as_user(sign_token, "ada")).json()
+    shown = {entry["name"]: entry for entry in listing}
+    assert [(shown["notes"][key]) for key in ("title", "description", "examples")] == [
+        "Notes",
+        "Your notebook.",
+        ["Read my notes", "Add a note"],
+    ]
+    assert [(shown["open"][key]) for key in ("title", "description", "examples")] == [
+        None,
+        None,
+        [],
+    ]
+
+
+def test_the_page_names_apps_and_the_assistant_in_plain_words(
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
+) -> None:
+    settings = make_settings(token_settings)
+    with web(settings, [], script(), token_signing_key, database) as site:
+        page = site.client.get("/").text
+    for text in ("Connected apps", '"Assistant"', ">Continue</button>", "Reconnect the app"):
+        assert text in page
+    for text in ("Run decisions", "injection screen", "Cost: "):
+        assert text not in page
+
+
 def test_servers_list_only_the_allowed_pinned_tools_of_connected_servers_for_the_caller(
     sign_token: Sign,
     token_settings: Settings,
@@ -555,7 +598,7 @@ def test_the_page_tells_an_employee_when_a_tool_result_was_flagged(
     settings = make_settings(token_settings)
     with web(settings, [], script(), token_signing_key, database) as site:
         page = site.client.get("/").text
-    assert "flagged by the injection screen" in page
+    assert "looked like it contained instructions" in page
 
 
 def test_asks_beyond_the_per_minute_quota_get_429_for_that_employee_only(

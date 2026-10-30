@@ -186,6 +186,9 @@ class ConfirmBody(BaseModel):
 class ServerOut(BaseModel):
     name: str
     url: str
+    title: str | None
+    description: str | None
+    examples: list[str]
     connected: bool
     tools: list[MenuEntry]
     always_allowed: list[str]
@@ -727,6 +730,9 @@ def create_app(
                 ServerOut(
                     name=server.name,
                     url=server.url,
+                    title=server.title,
+                    description=server.description,
+                    examples=list(server.examples),
                     connected=connected,
                     tools=allowed,
                     always_allowed=always,

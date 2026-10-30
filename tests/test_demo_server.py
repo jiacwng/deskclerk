@@ -35,7 +35,7 @@ def demo_server() -> Iterator[McpServer]:
     while not server.started:
         time.sleep(0.01)
     try:
-        yield McpServer("tasks", url, None, None, "none")
+        yield McpServer("tasks", url, None, None, "none", trusted=True)
     finally:
         server.should_exit = True
         thread.join()
