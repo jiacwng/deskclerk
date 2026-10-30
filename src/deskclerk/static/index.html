@@ -105,6 +105,7 @@ textarea { caret-color: var(--accent); }
 .bar-inner { display: flex; align-items: center; gap: 0.75rem; min-height: 2.75rem; }
 .brand { font-size: 0.9375rem; font-weight: 700; letter-spacing: -0.01em; margin-right: auto; }
 .who { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+#admin-link { color: var(--accent); font-weight: 600; text-decoration: none; }
 
 .rail { padding-block: 1rem; min-height: 0; overflow-y: auto; }
 .rail-toggle { display: none; }
@@ -166,6 +167,7 @@ button.conv-delete:hover:not(:disabled) { color: var(--bad); }
 .server { padding-block: 0.625rem; border-top: 1px solid var(--line-soft); display: grid; gap: 0.25rem; }
 .server:first-child { border-top: 0; padding-top: 0; }
 .server-name { font-weight: 600; }
+.server-about { font-size: 0.8125rem; color: var(--muted); }
 .server-url { font-family: var(--mono); font-size: 0.75rem; color: var(--muted); }
 .server-foot { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-top: 0.25rem; }
 .always-heading { font-size: 0.75rem; font-weight: 600; color: var(--muted); margin-top: 0.25rem; }
@@ -256,8 +258,6 @@ pre {
 .badge.bad { color: var(--bad); }
 .badge.info { color: var(--muted); }
 .badge.info::before { background: transparent; border: 1.5px solid currentColor; }
-.cost { justify-self: start; display: inline-flex; align-items: center; justify-content: center; width: 1.25rem; height: 1.25rem; border-radius: 50%; border: 1px solid var(--line); font-size: 0.6875rem; font-weight: 700; color: var(--muted); cursor: help; }
-.cost:empty { display: none; }
 
 .confirm { background: var(--surface); border: 1px solid var(--warn); border-radius: 4px; margin-bottom: 1rem; }
 .confirm-head { padding: 0.75rem; display: grid; gap: 0.125rem; background: var(--warn-soft); border-radius: 3px 3px 0 0; }
@@ -358,6 +358,7 @@ textarea::placeholder { color: var(--muted); }
     <h1 class="brand">deskclerk</h1>
     <div id="who" class="who" hidden>
       <span id="status" class="muted small"></span>
+      <a id="admin-link" class="small" href="/admin" hidden>Admin</a>
       <button id="logout" class="small quiet" type="button">Sign out</button>
     </div>
   </div>
@@ -365,7 +366,7 @@ textarea::placeholder { color: var(--muted); }
 
 <section id="signin" class="signin" hidden>
   <h2 class="signin-title">Sign in to continue</h2>
-  <p class="muted">deskclerk acts on your connected servers as you.</p>
+  <p class="muted">deskclerk acts on your connected apps as you.</p>
   <p id="signin-error" class="error" role="alert" hidden></p>
   <a class="link-button primary" href="/login">Sign in</a>
 </section>
@@ -379,7 +380,7 @@ textarea::placeholder { color: var(--muted); }
       <ul id="conversation-list" class="conv-list"></ul>
     </section>
     <section aria-labelledby="rail-summary">
-      <h2 id="rail-summary" class="heading">Servers</h2>
+      <h2 id="rail-summary" class="heading">Connected apps</h2>
       <div id="servers" class="servers"></div>
     </section>
   </aside>
@@ -391,7 +392,7 @@ textarea::placeholder { color: var(--muted); }
     <h2 id="messages-title" class="sr-only">Conversation</h2>
     <div id="empty" class="empty">
       <h2 class="empty-title">What can I help with?</h2>
-      <p>Ask for something to look up or change on your connected servers.</p>
+      <p>Ask for something to look up or change in your connected apps.</p>
       <div id="chips" class="chips"></div>
     </div>
     <div id="turns" class="turns"></div>
@@ -403,7 +404,7 @@ textarea::placeholder { color: var(--muted); }
       </div>
       <div id="pending" class="pending"></div>
       <div id="confirm-foot" class="confirm-foot">
-        <button id="send" class="primary" type="button" disabled>Run decisions</button>
+        <button id="send" class="primary" type="button" disabled>Continue</button>
         <span id="decided" class="muted small"></span>
       </div>
     </section>
@@ -484,7 +485,7 @@ let confirming = null;
 let loadToken = 0;
 let recorded = 0;
 const turnOf = new WeakMap();
-const EDIT_WARNING = "Changes already made on your servers are not undone.";
+const EDIT_WARNING = "Changes already made in your apps are not undone.";
 
 function scrollBehavior() {
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
@@ -695,10 +696,9 @@ function toolPrompts(servers) {
 }
 
 function showChips(servers) {
-  let prompts = toolPrompts(servers);
+  let prompts = servers.flatMap((server) => server.examples).concat(toolPrompts(servers));
   if (prompts.length === 0) {
-    prompts = [];
-    for (const template of PROMPTS) for (const server of servers) prompts.push(template(server.name));
+    for (const template of PROMPTS) for (const server of servers) prompts.push(template(server.title || server.name));
   }
   el("chips").replaceChildren(...prompts.slice(0, 4).map((text) => button(text, () => {
     el("request").value = text;
@@ -735,11 +735,11 @@ async function loadServers() {
   list.replaceChildren();
   const servers = await response.json();
   const connected = servers.filter((server) => server.connected).length;
-  el("rail-summary").textContent = "Servers: " + connected + " of " + servers.length + " connected";
+  el("rail-summary").textContent = "Connected apps: " + connected + " of " + servers.length + " connected";
   showChips(servers.filter((server) => server.connected));
   for (const server of servers) {
     const card = make("div", "server");
-    card.append(make("div", "server-name", server.name), make("div", "server-url", server.url));
+    card.append(make("div", "server-name", server.title || server.name), make("div", server.description ? "server-about" : "server-url", server.description || server.url));
     const foot = make("div", "server-foot");
     foot.append(make("span", server.connected ? "state on" : "state", server.connected ? "Connected" : "Not connected"));
     const toggle = server.connected
@@ -898,7 +898,7 @@ function buildCalls(result) {
     rows.push(noteRow("warn", "No answer", name + " did not answer, so its tools were not offered"));
   }
   for (const name of result.changed_tools) {
-    rows.push(noteRow("warn", "Changed", name + " was changed since you first used its server, so it was not offered. Disconnect and connect the server to accept the change"));
+    rows.push(noteRow("warn", "Changed", name + " changed one of its tools. Reconnect the app to use it again."));
   }
   if (result.cut_off) {
     rows.push(noteRow("warn", "Cut off", "The reply was cut off at the output limit, so the answer above is incomplete"));
@@ -907,8 +907,10 @@ function buildCalls(result) {
     rows.push(noteRow("warn", "Step limit", "The step limit was reached, so the answer may be incomplete"));
   }
   if (result.flagged > 0) {
-    const noun = result.flagged === 1 ? "tool result was" : "tool results were";
-    rows.push(noteRow("warn", "Flagged", result.flagged + " " + noun + " flagged by the injection screen, so later calls waited for your approval"));
+    const text = result.flagged === 1
+      ? "A tool result looked like it contained instructions, so later steps ask you first"
+      : result.flagged + " tool results looked like they contained instructions, so later steps ask you first";
+    rows.push(noteRow("warn", "Flagged", text));
   }
   return rows;
 }
@@ -1005,13 +1007,12 @@ function newTurn(request) {
   asked.append(make("div", "request", request));
   const reply = make("div");
   reply.hidden = true;
-  reply.append(make("div", "who-label", "deskclerk"), make("div", "answer"));
+  reply.append(make("div", "who-label", "Assistant"), make("div", "answer"));
   const calls = make("div", "calls");
-  const cost = make("span", "cost");
-  turn.append(asked, reply, calls, cost);
+  turn.append(asked, reply, calls);
   el("turns").append(turn);
   el("empty").hidden = true;
-  const made = { node: turn, asked, reply, answer: reply.lastChild, calls, cost, text: "", frame: 0, rows: new Map(), pending: [], id: null, wrote: false, index: null };
+  const made = { node: turn, asked, reply, answer: reply.lastChild, calls, text: "", frame: 0, rows: new Map(), pending: [], id: null, wrote: false, index: null };
   const edit = button("Edit", () => openEditor(made), "small quiet edit-request");
   edit.setAttribute("aria-label", "Edit this request");
   edit.disabled = busy || waiting > 0;
@@ -1314,7 +1315,7 @@ function showPending(pending) {
   el("confirm-foot").hidden = pending.length === 1;
   el("confirm-note").textContent = pending.length === 1
     ? "This call needs your approval before it runs."
-    : "Each call below needs your approval before it runs. Approve or reject each one, then press Run decisions.";
+    : "Each call below needs your approval before it runs. Approve or reject each one, then press Continue.";
   el("confirm").hidden = pending.length === 0;
   updateControls();
 }
@@ -1381,10 +1382,6 @@ function showResult(result) {
   stopPainting(turn);
   setAnswer(turn, result.answer);
   turn.calls.replaceChildren(...buildCalls(result));
-  const cost = "Cost: " + result.cost_usd.toFixed(4) + " USD";
-  turn.cost.title = cost;
-  turn.cost.replaceChildren(make("span", "", "i"), make("span", "sr-only", cost));
-  turn.cost.firstChild.setAttribute("aria-hidden", "true");
   showPending(result.pending);
   if (result.pending.length > 0) {
     el("confirm-title").focus({ preventScroll: true });
@@ -1648,6 +1645,7 @@ async function start() {
   }
   const me = await response.json();
   el("status").textContent = "Signed in as " + me.name;
+  el("admin-link").hidden = !me.admin;
   showBudget(me.spent_usd, me.budget_usd);
   el("who").hidden = false;
   el("app").hidden = false;

@@ -1,7 +1,7 @@
 # Settings read from DESKCLERK_* environment variables by pydantic-settings: how employees sign
 # in, the model and the budget, the audit log and the request quota, the MCP server list, the
 # Postgres database that holds all state, how long conversations are kept and the session of the
-# web front and the SCIM endpoints that offboard a leaver.
+# web front, the SCIM endpoints that offboard a leaver and the group allowed to open /admin.
 
 from pathlib import Path
 from typing import Any
@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     # or oid on Entra ID. Changing it later orphans every stored token and conversation.
     user_claim: str = "sub"
     groups_claim: str = "groups"
+    admin_group: str | None = None
     model: str = "anthropic:claude-haiku-5-5"
     price_model: str = ""
     budget_usd: float = 2.0

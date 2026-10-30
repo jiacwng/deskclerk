@@ -265,7 +265,7 @@ def _names_the_model_accepts(server: str, listed: list[ToolInfo]) -> list[ToolIn
 def _confirming(server: McpServer, kept: tuple[ToolInfo, ...]) -> list[ToolInfo]:
     return [
         replace(info, read_only=False, destructive=True)
-        if info.name in server.confirm_tools
+        if info.name in server.confirm_tools or not server.trusted
         else info
         for info in kept
     ]

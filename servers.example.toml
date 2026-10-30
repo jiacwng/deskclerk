@@ -4,12 +4,24 @@
 [[server]]
 name = "repo"
 url = "http://localhost:8100/mcp"
+# Optional. The name and one line the employee sees in Connected apps instead of the URL, and
+# example requests that come first in the suggestions on an empty conversation.
+title = "Git"
+description = "A copy of the deskclerk repository inside the demo container."
+examples = [
+    "Summarise the last 10 commits of /sandbox/deskclerk",
+    "Create a branch called release-notes in /sandbox/deskclerk",
+]
 # No sign-in. Without it, each employee signs in to the server with OAuth.
 auth = "none"
+trusted = true
 
 # [[server]]
 # name = "linear"
 # url = "https://mcp.linear.app/mcp"
+# title = "Linear"
+# description = "Issues and projects for the engineering team."
+# examples = ["Which issues are assigned to me?", "Create an issue for the login bug"]
 # A client registered with the server's login, and the variable in .env that holds its secret.
 # Without them, and with an https DESKCLERK_PUBLIC_URL, deskclerk signs in as the client document
 # it serves at /oauth/client.json, or registers a client per employee when the login does not
@@ -29,6 +41,9 @@ auth = "none"
 # Tools that always ask first with a confirm card and never get Always allow, whatever the server
 # says about them. Each name must be a tool the server lists, or deskclerk logs a warning.
 # confirm_tools = ["send_email"]
+# Set to true to believe the server's own read-only and destructive hints. Without it, every
+# tool of the server asks first with a confirm card and never gets Always allow.
+# trusted = true
 # Mutual TLS. Mount these files into the container.
 # client_cert = "/run/certs/client.pem"
 # client_key = "/run/certs/client.key"

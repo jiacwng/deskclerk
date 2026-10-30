@@ -37,7 +37,7 @@ def demo_server() -> McpServer:
     url = os.environ.get("DESKCLERK_DEMO_URL")
     if url is None:
         pytest.skip("DESKCLERK_DEMO_URL is not set")
-    return McpServer("repo", url, None, None, "none")
+    return McpServer("repo", url, None, None, "none", trusted=True)
 
 
 @pytest.fixture
