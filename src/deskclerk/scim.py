@@ -84,13 +84,6 @@ class ScimUser:
 class ScimUsers:
     def __init__(self, database: Database) -> None:
         self._pool = database.pool
-        database.create_tables(
-            "CREATE TABLE IF NOT EXISTS scim_users ("
-            "position BIGSERIAL, id TEXT PRIMARY KEY, external_id TEXT NOT NULL UNIQUE, "
-            "user_name TEXT NOT NULL, active BOOLEAN NOT NULL)",
-            "CREATE UNIQUE INDEX IF NOT EXISTS scim_users_user_name "
-            "ON scim_users (lower(user_name))",
-        )
 
     def add(self, external_id: str, user_name: str, active: bool) -> ScimUser:
         user = ScimUser(str(uuid.uuid4()), external_id, user_name, active)

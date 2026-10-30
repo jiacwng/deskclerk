@@ -17,12 +17,6 @@ def _digest(session_id: str) -> str:
 class SessionStore:
     def __init__(self, database: Database) -> None:
         self._pool = database.pool
-        database.create_tables(
-            "CREATE TABLE IF NOT EXISTS sessions ("
-            "id_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, client_id TEXT NOT NULL, "
-            "name TEXT NOT NULL, sid TEXT, subject TEXT, groups TEXT NOT NULL, "
-            "expires_at DOUBLE PRECISION NOT NULL)"
-        )
 
     def create(self, identity: Identity, lifetime_seconds: int) -> str:
         session_id = secrets.token_urlsafe(32)

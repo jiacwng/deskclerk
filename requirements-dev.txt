@@ -10,6 +10,8 @@ psycopg[binary]==3.3.6
 psycopg-pool==3.3.3
 langgraph-checkpoint-postgres==3.2.0
 scim2-models==0.12.3
+alembic==1.20.0
+sqlalchemy==2.0.54
 langchain-openai==1.7.2
 langchain-aws==1.9.0
 genai-prices==0.1.13

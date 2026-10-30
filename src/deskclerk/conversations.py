@@ -3,7 +3,6 @@
 # employee can never load another's. Erasing an employee deletes every thread with their prefix.
 # A conversations table beside them holds each conversation's title and last activity for the list.
 
-import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -42,12 +41,6 @@ async def open_checkpointer(database: Database, fernet: Fernet) -> AsyncPostgres
     )
     async with database.schema_lock():
         await checkpointer.setup()
-    await asyncio.to_thread(
-        database.create_tables,
-        "CREATE TABLE IF NOT EXISTS conversations ("
-        "user_id TEXT NOT NULL, id UUID NOT NULL, title TEXT NOT NULL, "
-        "updated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (user_id, id))",
-    )
     return checkpointer
 
 
@@ -96,6 +89,34 @@ async def delete_conversation(
         await connection.execute(
             "DELETE FROM conversations WHERE user_id = %s AND id = %s", (user_id, conversation)
         )
+
+
+DELETE_DROPPED_TURNS = (
+    "WITH RECURSIVE kept AS ("
+    "(SELECT checkpoint_id, parent_checkpoint_id FROM checkpoints "
+    "WHERE thread_id = %(thread)s AND checkpoint_ns = '' ORDER BY checkpoint_id DESC LIMIT 1) "
+    "UNION ALL "
+    "SELECT c.checkpoint_id, c.parent_checkpoint_id FROM checkpoints c "
+    "JOIN kept ON c.thread_id = %(thread)s AND c.checkpoint_ns = '' "
+    "AND c.checkpoint_id = kept.parent_checkpoint_id), "
+    "dropped_writes AS (DELETE FROM checkpoint_writes WHERE thread_id = %(thread)s "
+    "AND checkpoint_ns = '' AND checkpoint_id <> (SELECT max(checkpoint_id) FROM kept)), "
+    "dropped_blobs AS (DELETE FROM checkpoint_blobs b WHERE b.thread_id = %(thread)s "
+    "AND b.checkpoint_ns = '' AND NOT EXISTS ("
+    "SELECT 1 FROM checkpoints c, jsonb_each_text(c.checkpoint -> 'channel_versions') v "
+    "WHERE c.thread_id = b.thread_id AND c.checkpoint_ns = b.checkpoint_ns "
+    "AND c.checkpoint_id IN (SELECT checkpoint_id FROM kept) "
+    "AND v.key = b.channel AND v.value = b.version "
+    "AND (v.key <> '__start__' OR c.checkpoint_id = (SELECT max(checkpoint_id) FROM kept)))) "
+    "DELETE FROM checkpoints WHERE thread_id = %(thread)s "
+    "AND checkpoint_ns = '' AND checkpoint_id NOT IN (SELECT checkpoint_id FROM kept)"
+)
+
+
+async def delete_dropped_turns(database: Database, thread: str) -> None:
+    # an earlier checkpoint keeps no writes and no __start__ blob: they hold the replaced input
+    async with database.async_pool.connection() as connection:
+        await connection.execute(DELETE_DROPPED_TURNS, {"thread": thread})
 
 
 def thread_id(user_id: str, conversation: UUID) -> str:

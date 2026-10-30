@@ -1,6 +1,6 @@
 # Local services, reachable from this machine only.
 services:
-  # Development login server. The realm in keycloak/ holds the six users of the public data, each
+  # Development login server. The realm in keycloak/ holds three users of the public Enron data, each
   # with the password deskclerk; the admin console account is admin / admin.
   keycloak:
     image: quay.io/keycloak/keycloak:26.8.0
@@ -68,6 +68,7 @@ services:
     env_file: .env
     environment:
       DESKCLERK_HOST: 0.0.0.0
+      DESKCLERK_ISSUER: http://localhost:8080/realms/deskclerk
       DESKCLERK_DATABASE_URL: postgresql://deskclerk:deskclerk@127.0.0.1:5432/deskclerk
     volumes:
       - type: bind

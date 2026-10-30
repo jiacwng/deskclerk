@@ -76,6 +76,19 @@ def allowed_tools(
     return tuple(allowed)
 
 
+def allowed_tool_names(store: TokenStore, user_id: str, server_name: str) -> list[str]:
+    return sorted(_stored_allowances(store, user_id, server_name))
+
+
+def revoke_tool(store: TokenStore, user_id: str, server_name: str, tool_name: str) -> bool:
+    allowed = _stored_allowances(store, user_id, server_name)
+    if tool_name not in allowed:
+        return False
+    del allowed[tool_name]
+    store.put(user_id, server_name, "always_allowed", _PINS.dump_json(allowed).decode())
+    return True
+
+
 def _stored_allowances(store: TokenStore, user_id: str, server_name: str) -> dict[str, str]:
     stored = store.get(user_id, server_name, "always_allowed")
     return {} if stored is None else _PINS.validate_json(stored)
