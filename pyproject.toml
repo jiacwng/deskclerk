@@ -27,6 +27,8 @@ dependencies = [
     "psycopg-pool>=3.3",
     "langgraph-checkpoint-postgres>=3.2",
     "scim2-models>=0.12",
+    "alembic>=1.20",
+    "sqlalchemy>=2.0.54",
 ]
 
 [project.optional-dependencies]
@@ -39,7 +41,7 @@ package-dir = {"" = "src"}
 packages = ["deskclerk"]
 
 [tool.setuptools.package-data]
-deskclerk = ["static/*.html", "static/vendor/*"]
+deskclerk = ["static/*.html", "static/vendor/*", "migrations/*.py", "migrations/versions/*.py"]
 
 [tool.ruff]
 line-length = 100

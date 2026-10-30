@@ -23,6 +23,7 @@ APP_DATABASE_URL = os.environ.get(
 TEST_DATABASE = "deskclerk_test"
 DATABASE_URL = make_conninfo(APP_DATABASE_URL, dbname=TEST_DATABASE)
 os.environ["DESKCLERK_DATABASE_URL"] = DATABASE_URL
+os.environ.setdefault("DESKCLERK_ISSUER", "http://localhost:8080/realms/deskclerk")
 
 TOKEN_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
