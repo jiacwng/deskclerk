@@ -31,6 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from deskclerk import cookies, oidc
+from deskclerk.admin import AdminSummary, recent_rows, server_rows, usage_rows
 from deskclerk.agent import (
     AlwaysAllowRefused,
     CallEnded,
@@ -185,6 +186,9 @@ class ConfirmBody(BaseModel):
 class ServerOut(BaseModel):
     name: str
     url: str
+    title: str | None
+    description: str | None
+    examples: list[str]
     connected: bool
     tools: list[MenuEntry]
     always_allowed: list[str]
@@ -400,11 +404,16 @@ def create_app(
         name: resources.files("deskclerk").joinpath(f"static/vendor/{name}").read_bytes()
         for name in VENDOR_SCRIPTS
     }
+    admin_page = resources.files("deskclerk").joinpath("static/admin.html").read_text("utf-8")
     page_headers = {
         "Content-Security-Policy": _content_security_policy(page, vendor),
         "Cache-Control": "no-store",
         "X-Content-Type-Options": "nosniff",
         "Referrer-Policy": "no-referrer",
+    }
+    admin_headers = {
+        **page_headers,
+        "Content-Security-Policy": _content_security_policy(admin_page, {}),
     }
 
     @asynccontextmanager
@@ -473,6 +482,14 @@ def create_app(
             raise HTTPException(403, f"send the header {CSRF_HEADER}: {CSRF_VALUE}")
         return who
 
+    def is_admin(identity: Identity) -> bool:
+        return bool(settings.admin_group) and settings.admin_group in identity.groups
+
+    async def admin_caller(who: Caller = Depends(caller)) -> Caller:
+        if not is_admin(who.identity):
+            raise HTTPException(403, "this page is for the admins group")
+        return who
+
     def known_server(name: str, identity: Identity) -> McpServer:
         server = server_by_name.get(name)
         if server is None or not server.open_to(identity.groups):
@@ -526,6 +543,30 @@ def create_app(
     @app.get("/", response_class=HTMLResponse)
     async def index() -> HTMLResponse:
         return HTMLResponse(page, headers=page_headers)
+
+    if settings.admin_group:
+
+        @app.get("/admin", response_class=HTMLResponse)
+        async def admin(request: Request) -> Response:
+            try:
+                await admin_caller(await caller(request))
+            except HTTPException as refused:
+                if refused.status_code == 401:
+                    return RedirectResponse("/login", status_code=302)
+                raise
+            return HTMLResponse(admin_page, headers=admin_headers)
+
+        @app.get("/admin/summary")
+        async def admin_summary(_: Caller = Depends(admin_caller)) -> AdminSummary:
+            month = month_of(datetime.now(UTC))
+            return AdminSummary(
+                month=month,
+                servers=await run_in_threadpool(server_rows, servers, tokens),
+                usage=await run_in_threadpool(
+                    usage_rows, spending_store, month, settings.budget_usd
+                ),
+                recent=await recent_rows(database, settings.audit_text),
+            )
 
     @app.get("/vendor/{name}")
     async def vendor_script(name: str) -> Response:
@@ -647,7 +688,7 @@ def create_app(
         return Response(status_code=200, headers={"Cache-Control": "no-store"})
 
     @app.get("/me")
-    async def me(who: Caller = Depends(caller)) -> dict[str, str | float]:
+    async def me(who: Caller = Depends(caller)) -> dict[str, str | float | bool]:
         month = month_of(datetime.now(UTC))
         spent = await run_in_threadpool(spending_store.load, who.identity.user_id, month)
         return {
@@ -655,6 +696,7 @@ def create_app(
             "name": who.identity.display_name,
             "spent_usd": spent,
             "budget_usd": settings.budget_usd,
+            "admin": is_admin(who.identity),
         }
 
     @app.get("/servers")
@@ -688,6 +730,9 @@ def create_app(
                 ServerOut(
                     name=server.name,
                     url=server.url,
+                    title=server.title,
+                    description=server.description,
+                    examples=list(server.examples),
                     connected=connected,
                     tools=allowed,
                     always_allowed=always,

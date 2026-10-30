@@ -191,11 +191,11 @@ CONNECT_FAILED = "/?error=connect_failed"
 
 
 def notes(running: RunningServer) -> McpServer:
-    return McpServer("notes", running.url, None, None)
+    return McpServer("notes", running.url, None, None, trusted=True)
 
 
 def open_notes(running: RunningServer) -> McpServer:
-    return McpServer("open", running.url, None, None, "none")
+    return McpServer("open", running.url, None, None, "none", trusted=True)
 
 
 def as_user(sign_token: Sign, user: str) -> dict[str, str]:
@@ -313,6 +313,7 @@ def test_a_bad_bearer_token_is_refused_and_a_good_one_names_the_employee(
             "name": "ada",
             "spent_usd": 0.0,
             "budget_usd": 2.0,
+            "admin": False,
         }
 
 
@@ -396,6 +397,49 @@ def test_servers_show_whether_this_employee_is_connected(
 
         assert site.client.post("/servers/notes/disconnect", headers=ada).status_code == 204
         assert connected(ada) == {"notes": False, "open": True}
+
+
+def test_servers_show_the_title_description_and_examples_the_admin_wrote(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    open_server: RunningServer,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings)
+    described = replace(
+        notes(notes_server),
+        title="Notes",
+        description="Your notebook.",
+        examples=("Read my notes", "Add a note"),
+    )
+    servers = [described, open_notes(open_server)]
+    with web(settings, servers, script(), token_signing_key, database) as site:
+        listing = site.client.get("/servers", headers=as_user(sign_token, "ada")).json()
+    shown = {entry["name"]: entry for entry in listing}
+    assert [(shown["notes"][key]) for key in ("title", "description", "examples")] == [
+        "Notes",
+        "Your notebook.",
+        ["Read my notes", "Add a note"],
+    ]
+    assert [(shown["open"][key]) for key in ("title", "description", "examples")] == [
+        None,
+        None,
+        [],
+    ]
+
+
+def test_the_page_names_apps_and_the_assistant_in_plain_words(
+    token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
+) -> None:
+    settings = make_settings(token_settings)
+    with web(settings, [], script(), token_signing_key, database) as site:
+        page = site.client.get("/").text
+    for text in ("Connected apps", '"Assistant"', ">Continue</button>", "Reconnect the app"):
+        assert text in page
+    for text in ("Run decisions", "injection screen", "Cost: "):
+        assert text not in page
 
 
 def test_servers_list_only_the_allowed_pinned_tools_of_connected_servers_for_the_caller(
@@ -554,7 +598,7 @@ def test_the_page_tells_an_employee_when_a_tool_result_was_flagged(
     settings = make_settings(token_settings)
     with web(settings, [], script(), token_signing_key, database) as site:
         page = site.client.get("/").text
-    assert "flagged by the injection screen" in page
+    assert "looked like it contained instructions" in page
 
 
 def test_asks_beyond_the_per_minute_quota_get_429_for_that_employee_only(
@@ -832,6 +876,7 @@ def test_a_cookie_post_needs_the_custom_header_and_a_bearer_post_does_not(
             "name": "ada",
             "spent_usd": 0.0,
             "budget_usd": 2.0,
+            "admin": False,
         }
         assert ask(site, {}).status_code == 403
         assert ask(site, {CSRF_HEADER: "something else"}).status_code == 403
@@ -1154,6 +1199,7 @@ def test_the_session_lasts_the_session_hours_after_the_id_token_expires(
             "name": "district-1",
             "spent_usd": 0.0,
             "budget_usd": 2.0,
+            "admin": False,
         }
         now = time.time()
         monkeypatch.setattr(sessions, "time", SimpleNamespace(time=lambda: now + 10))
@@ -1162,6 +1208,7 @@ def test_the_session_lasts_the_session_hours_after_the_id_token_expires(
             "name": "district-1",
             "spent_usd": 0.0,
             "budget_usd": 2.0,
+            "admin": False,
         }
         later = now + 8 * 3600 + 10
         monkeypatch.setattr(sessions, "time", SimpleNamespace(time=lambda: later))
@@ -1185,6 +1232,7 @@ def test_sign_in_works_when_the_access_token_is_opaque(
             "name": "district-1",
             "spent_usd": 0.0,
             "budget_usd": 2.0,
+            "admin": False,
         }
 
 
@@ -1557,6 +1605,7 @@ def test_logging_out_clears_the_session_cookie(
             "name": "ada",
             "spent_usd": 0.0,
             "budget_usd": 2.0,
+            "admin": False,
         }
         loggedout = site.client.post("/logout", headers={CSRF_HEADER: CSRF_VALUE})
         assert loggedout.status_code == 204
@@ -1753,7 +1802,13 @@ def test_a_renamed_employee_keeps_the_same_conversation(
         second = ask_in(site, after, first["conversation"])
         me = site.client.get("/me", headers=after).json()
     assert second.status_code == 200
-    assert me == {"user": "u-1", "name": "ada-l", "spent_usd": 0.0, "budget_usd": 2.0}
+    assert me == {
+        "user": "u-1",
+        "name": "ada-l",
+        "spent_usd": 0.0,
+        "budget_usd": 2.0,
+        "admin": False,
+    }
 
 
 def ask_and_approve(

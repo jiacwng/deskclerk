@@ -43,14 +43,12 @@ services:
       timeout: 5s
       retries: 30
 
-  # A small task list server on http://localhost:8100/mcp with no sign-in, for trying deskclerk
-  # without an account. It starts empty and keeps its tasks in memory.
+  # The official MCP git server on http://localhost:8100/mcp with no sign-in, for trying deskclerk
+  # without an account. It works on a clone of the deskclerk repository made when the image is
+  # built, so every change it makes stays inside the container.
   demo:
-    build: .
+    build: ./demo
     network_mode: "service:keycloak"
-    command: ["python", "/app/demo/tasks_server.py"]
-    volumes:
-      - ./demo/tasks_server.py:/app/demo/tasks_server.py:ro
     healthcheck:
       test:
         - CMD
