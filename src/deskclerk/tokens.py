@@ -3,7 +3,7 @@
 
 from typing import Literal
 
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from mcp.shared.auth_utils import calculate_token_expiry
 from pydantic import BaseModel
@@ -20,6 +20,16 @@ class TokenKeyError(Exception):
     pass
 
 
+def multi_fernet(keys: str) -> MultiFernet:
+    fernets = []
+    for position, key in enumerate(keys.split(","), start=1):
+        try:
+            fernets.append(Fernet(key.strip()))
+        except ValueError:
+            raise TokenKeyError(f"token key {position} is not a Fernet key") from None
+    return MultiFernet(fernets)
+
+
 class _StoredTokens(BaseModel):
     token: OAuthToken
     expires_at: float | None
@@ -27,10 +37,7 @@ class _StoredTokens(BaseModel):
 
 class TokenStore:
     def __init__(self, database: Database, key: str) -> None:
-        try:
-            self.fernet = Fernet(key)
-        except ValueError:
-            raise TokenKeyError("the token key is not a Fernet key") from None
+        self.fernet = multi_fernet(key)
         self.database = database
         with database.pool.connection() as connection:
             connection.execute(
