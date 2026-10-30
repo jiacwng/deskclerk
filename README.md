@@ -18,6 +18,20 @@ flowchart LR
     servers -->|tool result| screen[Jev screen, with a TypeSafe key] --> agent
 ```
 
+![An employee asks for a summary of recent commits, then approves a new branch](demo/deskclerk.gif)
+
+## Features
+
+- Single sign-on with OpenID Connect (Entra ID, Okta, Keycloak) and SCIM deprovisioning.
+- Each employee's own accounts on each MCP server through OAuth, with tokens encrypted at rest
+  and a rotatable key.
+- Approval of every call that changes data, with editable arguments.
+- Tool pinning: a tool whose definition changes is withheld.
+- Tool allowlists, access by group, and tools that always ask first.
+- Prompt injection screening of tool results.
+- Monthly budgets, a usage report, a read-only admin page and an audit log.
+- All state in Postgres, so several copies can run.
+
 ## Try it
 
 You need Docker with Compose and an API key for one model provider: Anthropic, OpenAI, Azure
@@ -82,6 +96,9 @@ can run behind a load balancer on one database, and each copy opens up to 41 con
 - To back up, run
   `docker compose -f compose.prod.yaml exec postgres pg_dump -U deskclerk deskclerk > backup.sql`.
   Keep the token key with it.
+- To replace the token key, put the new key first in `DESKCLERK_TOKEN_KEY` and the old one after
+  it, separated by a comma, then run `... python -m deskclerk rotate-key`. When it finishes,
+  remove the old key.
 - To upgrade, run `git pull`, then `docker compose -f compose.prod.yaml up -d --build`.
 - `/livez` answers while the process runs, and `/readyz` once it can serve.
 - Sign-in and connection failures are logged with their reason. The audit log is one JSON line per
