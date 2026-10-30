@@ -348,6 +348,16 @@ def test_a_confirm_tool_name_must_not_be_empty_or_repeated(tmp_path: Path) -> No
         load_servers(write(tmp_path, entry + 'confirm_tools = ["x", "x"]\n'), {})
 
 
+def test_a_server_is_untrusted_unless_the_file_trusts_it(tmp_path: Path) -> None:
+    path = write(
+        tmp_path,
+        '[[server]]\nname = "ledger"\nurl = "https://a.test/mcp"\n'
+        '[[server]]\nname = "wiki"\nurl = "https://b.test/mcp"\ntrusted = true\n',
+    )
+    ledger, wiki = load_servers(path, {})
+    assert (ledger.trusted, wiki.trusted) == (False, True)
+
+
 def test_a_title_a_description_and_examples_are_read_from_toml_and_json(tmp_path: Path) -> None:
     toml = write(
         tmp_path,

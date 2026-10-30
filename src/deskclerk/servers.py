@@ -43,6 +43,7 @@ class McpServer:
     groups: tuple[str, ...] | None = None
     always_allow: bool = True
     confirm_tools: tuple[str, ...] = ()
+    trusted: bool = False
     title: str | None = None
     description: str | None = None
     examples: tuple[str, ...] = ()
@@ -67,6 +68,7 @@ class _ServerEntry(BaseModel):
     groups: list[str] | None = None
     always_allow: bool = True
     confirm_tools: list[str] = []
+    trusted: bool = False
     title: str | None = None
     description: str | None = None
     examples: list[str] = []
@@ -266,6 +268,7 @@ def load_servers(path: Path, environ: Mapping[str, str] = os.environ) -> list[Mc
                 None if entry.groups is None else tuple(entry.groups),
                 entry.always_allow,
                 tuple(entry.confirm_tools),
+                entry.trusted,
                 entry.title,
                 entry.description,
                 tuple(entry.examples),

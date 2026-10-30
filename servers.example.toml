@@ -11,6 +11,7 @@ description = "Your to-do list."
 examples = ["What is on my list today?", "Add a task to call the supplier"]
 # No sign-in. Without it, each employee signs in to the server with OAuth.
 auth = "none"
+trusted = true
 
 # [[server]]
 # name = "linear"
@@ -37,6 +38,9 @@ auth = "none"
 # Tools that always ask first with a confirm card and never get Always allow, whatever the server
 # says about them. Each name must be a tool the server lists, or deskclerk logs a warning.
 # confirm_tools = ["send_email"]
+# Set to true to believe the server's own read-only and destructive hints. Without it, every
+# tool of the server asks first with a confirm card and never gets Always allow.
+# trusted = true
 # Mutual TLS. Mount these files into the container.
 # client_cert = "/run/certs/client.pem"
 # client_key = "/run/certs/client.key"
