@@ -32,13 +32,6 @@ class TokenStore:
         except ValueError:
             raise TokenKeyError("the token key is not a Fernet key") from None
         self.database = database
-        database.create_tables(
-            "CREATE TABLE IF NOT EXISTS secrets ("
-            "user_id TEXT NOT NULL, server_name TEXT NOT NULL, kind TEXT NOT NULL, "
-            "value BYTEA NOT NULL, PRIMARY KEY (user_id, server_name, kind))",
-            "CREATE TABLE IF NOT EXISTS key_check ("
-            "only_row BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (only_row), value BYTEA NOT NULL)",
-        )
         with database.pool.connection() as connection:
             connection.execute(
                 "INSERT INTO key_check (value) VALUES (%s) ON CONFLICT DO NOTHING",

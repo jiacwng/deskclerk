@@ -70,6 +70,7 @@ services:
     env_file: .env
     environment:
       DESKCLERK_HOST: 0.0.0.0
+      DESKCLERK_ISSUER: http://localhost:8080/realms/deskclerk
       DESKCLERK_DATABASE_URL: postgresql://deskclerk:deskclerk@127.0.0.1:5432/deskclerk
     volumes:
       - type: bind

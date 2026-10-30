@@ -22,7 +22,7 @@ DEFAULT_HISTORY_TOKENS = 40000
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="DESKCLERK_", frozen=True)
 
-    issuer: str = "http://localhost:8080/realms/deskclerk"
+    issuer: str
     client_id: str = "deskclerk-api"
     client_secret: SecretStr | None = None
     audience: str
