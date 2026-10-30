@@ -1,45 +1,43 @@
-# The demo task server driven through deskclerk's own client and agent: a task is created,
-# listed and updated, and a delete of an id nobody has seen is refused by the write check.
+# The demo server (the official MCP git server on a clone of this repository): the example server
+# list names it, and, when DESKCLERK_DEMO_URL points at a running copy, its tools carry the hints
+# that decide which calls need a confirmation.
 
-import re
-import socket
-import threading
-import time
-from collections.abc import AsyncIterator, Iterator
+import os
+from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
-import uvicorn
 from cryptography.fernet import Fernet
-from langgraph.checkpoint.memory import InMemorySaver
 
-from deskclerk.agent import run_agent
 from deskclerk.connections import OAuthConnections
 from deskclerk.database import Database
-from deskclerk.screen import pass_through
-from deskclerk.servers import McpServer
-from deskclerk.writecheck import write_check
-from tasks_server import build_server
-from test_agent import answer, calls, script
+from deskclerk.servers import McpServer, load_servers
 from test_connections import serving_connections
+
+ROOT = Path(__file__).parent.parent
+SANDBOX = "/sandbox/deskclerk"
+
+
+def test_the_example_server_list_names_the_demo_server() -> None:
+    [server] = load_servers(ROOT / "servers.example.toml", {})
+    assert (server.name, server.url, server.auth) == ("repo", "http://localhost:8100/mcp", "none")
+
+
+def test_the_demo_image_serves_the_git_server_on_the_clone_only() -> None:
+    dockerfile = (ROOT / "demo" / "Dockerfile").read_text()
+    assert "git clone" in dockerfile
+    assert '"mcp-server-git", "--repository", "/sandbox/deskclerk"' in dockerfile
+    assert "--require-hashes -r /tmp/requirements.lock" in dockerfile
+    lock = (ROOT / "demo" / "requirements.lock").read_text()
+    assert "\nmcp-server-git==2026.10.10 \\\n    --hash=sha256:" in lock
 
 
 @pytest.fixture
-def demo_server() -> Iterator[McpServer]:
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    url = f"http://127.0.0.1:{sock.getsockname()[1]}/mcp"
-    app = build_server().streamable_http_app()
-    server = uvicorn.Server(uvicorn.Config(app, log_level="warning"))
-    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]})
-    thread.start()
-    while not server.started:
-        time.sleep(0.01)
-    try:
-        yield McpServer("tasks", url, None, None, "none")
-    finally:
-        server.should_exit = True
-        thread.join()
-        sock.close()
+def demo_server() -> McpServer:
+    url = os.environ.get("DESKCLERK_DEMO_URL")
+    if url is None:
+        pytest.skip("DESKCLERK_DEMO_URL is not set")
+    return McpServer("repo", url, None, None, "none")
 
 
 @pytest.fixture
@@ -49,54 +47,24 @@ async def connections(database: Database) -> AsyncIterator[OAuthConnections]:
 
 
 @pytest.mark.anyio
-async def test_a_task_is_created_listed_and_updated(
+async def test_reads_are_read_only_and_changes_are_not(
     demo_server: McpServer, connections: OAuthConnections
 ) -> None:
-    tools = await connections.tools("ada", demo_server)
-    assert {tool.name: (tool.read_only, tool.destructive) for tool in tools} == {
-        "list_tasks": (True, False),
-        "get_task": (True, False),
-        "create_task": (False, False),
-        "update_task": (False, False),
-        "delete_task": (False, True),
-    }
-    empty = await connections.call("ada", demo_server, "list_tasks", {})
-    assert empty.text == "There are no tasks."
-    created = await connections.call("ada", demo_server, "create_task", {"title": "pay rent"})
-    match = re.fullmatch(r"created ([0-9a-f]{6}): pay rent \[todo\]", created.text)
-    assert match
-    task_id = match.group(1)
-    updated = await connections.call(
-        "ada", demo_server, "update_task", {"task_id": task_id, "status": "done"}
-    )
-    assert updated.text == f"updated {task_id}: pay rent [done]"
-    listed = await connections.call("ada", demo_server, "list_tasks", {})
-    assert listed.text == f"{task_id}: pay rent [done]"
+    tools = {tool.name: tool for tool in await connections.tools("ada", demo_server)}
+    for name in ("git_log", "git_show", "git_diff", "git_status"):
+        assert tools[name].read_only
+    for name in ("git_create_branch", "git_add", "git_commit", "git_checkout", "git_reset"):
+        assert not tools[name].read_only
+    assert tools["git_reset"].destructive
 
 
 @pytest.mark.anyio
-async def test_a_delete_of_an_unseen_id_is_refused_by_the_write_check(
+async def test_the_log_is_read_from_the_clone_and_other_paths_are_refused(
     demo_server: McpServer, connections: OAuthConnections
 ) -> None:
-    model = script(calls(("tasks__delete_task", {"task_id": "abc123"})), answer("not deleted"))
-    result = await run_agent(
-        "ada",
-        "delete my task",
-        "Be careful.",
-        [demo_server],
-        connections,
-        connections.tokens,
-        InMemorySaver(),
-        "ada/demo",
-        [],
-        model,
-        write_check(),
-        pass_through,
-        5,
-        lambda usage: None,
-        confirm_writes=False,
+    log = await connections.call(
+        "ada", demo_server, "git_log", {"repo_path": SANDBOX, "max_count": 3}
     )
-    assert result.executed == ()
-    [blocked] = result.blocked
-    assert blocked.tool == "delete_task"
-    assert "id it has not seen" in blocked.reason
+    assert log.text.startswith("Commit history:")
+    outside = await connections.call("ada", demo_server, "git_status", {"repo_path": "/etc"})
+    assert "outside the allowed repository" in outside.text

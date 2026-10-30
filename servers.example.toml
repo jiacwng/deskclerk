@@ -2,7 +2,7 @@
 # digits, hyphens and single underscores. DESKCLERK_SERVERS_FILE can name a .json file in the
 # mcpServers format instead.
 [[server]]
-name = "tasks"
+name = "repo"
 url = "http://localhost:8100/mcp"
 # No sign-in. Without it, each employee signs in to the server with OAuth.
 auth = "none"
