@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, MultiFernet
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -23,7 +23,7 @@ LIST_LIMIT = 100
 
 
 class FernetCipher:
-    def __init__(self, fernet: Fernet) -> None:
+    def __init__(self, fernet: Fernet | MultiFernet) -> None:
         self._fernet = fernet
 
     def encrypt(self, plaintext: bytes) -> tuple[str, bytes]:
@@ -35,7 +35,7 @@ class FernetCipher:
         return self._fernet.decrypt(ciphertext)
 
 
-async def open_checkpointer(database: Database, fernet: Fernet) -> AsyncPostgresSaver:
+async def open_checkpointer(database: Database, fernet: Fernet | MultiFernet) -> AsyncPostgresSaver:
     checkpointer = AsyncPostgresSaver(
         database.async_pool, serde=EncryptedSerializer(FernetCipher(fernet))
     )

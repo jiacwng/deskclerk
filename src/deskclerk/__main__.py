@@ -1,7 +1,8 @@
 # Runs the web front: python -m deskclerk reads the settings, the server list and the token
 # store, builds the model, and serves the app with uvicorn. python -m deskclerk erase <user_id>
 # deletes one employee's tokens, conversations and spending rows instead. python -m deskclerk usage
-# [--month YYYY-MM] prints each employee's spend for a month as tab separated lines.
+# [--month YYYY-MM] prints each employee's spend for a month as tab separated lines. python -m
+# deskclerk rotate-key re-encrypts every stored value with the newest key in DESKCLERK_TOKEN_KEY.
 
 import argparse
 import sys
@@ -22,6 +23,7 @@ from deskclerk.database import Database
 from deskclerk.erasure import erase_user
 from deskclerk.jev import jev_from_environment
 from deskclerk.providers import MissingApiKey, ProviderNotInstalled, chat_model
+from deskclerk.rotation import rotate_key
 from deskclerk.secret_files import SecretFileError, read_secret_files
 from deskclerk.servers import ServersError, load_servers
 from deskclerk.sessions import SessionStore
@@ -69,6 +71,20 @@ def erase(user_id: str) -> None:
     )
 
 
+def rotate() -> None:
+    try:
+        settings = load_settings()
+        if settings.token_key is None:
+            raise TokenKeyError("DESKCLERK_TOKEN_KEY is not set; put it in .env")
+        database = open_database(settings)
+        tokens = TokenStore(database, settings.token_key.get_secret_value())
+    except (ValidationError, TokenKeyError) as error:
+        sys.exit(f"deskclerk: {error}")
+    for rotated in rotate_key(database, tokens.fernet):
+        print(f"deskclerk: rotated {rotated.rows} rows in {rotated.table}")
+    database.close()
+
+
 def month_argument(text: str) -> str:
     try:
         return month_of(datetime.strptime(text, "%Y-%m"))
@@ -102,6 +118,7 @@ def main(argv: Sequence[str] = ()) -> None:
     commands.add_parser("usage", help="print each employee's spend for a month").add_argument(
         "--month", type=month_argument
     )
+    commands.add_parser("rotate-key", help="re-encrypt everything with the newest token key")
     arguments = parser.parse_args(argv)
     try:
         read_secret_files()
@@ -109,6 +126,9 @@ def main(argv: Sequence[str] = ()) -> None:
         sys.exit(f"deskclerk: {error}")
     if arguments.command == "erase":
         erase(arguments.user_id)
+        return
+    if arguments.command == "rotate-key":
+        rotate()
         return
     if arguments.command == "usage":
         usage(arguments.month)
