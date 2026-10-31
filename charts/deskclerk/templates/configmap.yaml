@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "deskclerk.fullname" . }}
+  labels:
+    {{- include "deskclerk.labels" . | nindent 4 }}
+data:
+  servers.toml: {{ .Values.servers | quote }}
