@@ -55,7 +55,7 @@ jobs:
       - run: helm lint charts/deskclerk -f charts/deskclerk/ci/values.yaml
       - run: docker build -t deskclerk:ci .
       - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
-      - run: kind load docker-image deskclerk:ci
+      - run: kind load docker-image deskclerk:ci --name chart-testing
       - name: start postgres and a stub login server
         run: |
           kubectl apply -f charts/deskclerk/ci/dependencies.yaml
