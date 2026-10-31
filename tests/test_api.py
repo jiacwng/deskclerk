@@ -30,6 +30,7 @@ from fastapi.testclient import TestClient
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.messages.ai import UsageMetadata
+from prometheus_client import CollectorRegistry
 from pydantic import SecretStr
 
 from deskclerk import cookies, sessions
@@ -74,6 +75,7 @@ class Web:
     tokens: TokenStore
     sessions: SessionStore
     catalog: ServerCatalog
+    registry: CollectorRegistry
 
 
 def entry_of(server: McpServer) -> ServerEntry:
@@ -142,6 +144,7 @@ def web(
     sessions = SessionStore(database)
     connections = OAuthConnections(tokens, REDIRECT, "deskclerk test", 600)
     catalog = stored_catalog(database, servers)
+    registry = CollectorRegistry()
     app = create_app(
         settings,
         database,
@@ -154,11 +157,12 @@ def web(
         write_check(),
         jev,
         signing_key,
+        registry,
         tracing,
         idp_transport=idp_transport,
     )
     with TestClient(app) as client:
-        yield Web(client, tokens, sessions, catalog)
+        yield Web(client, tokens, sessions, catalog, registry)
 
 
 class FakeIdp:
@@ -2312,6 +2316,35 @@ def test_livez_answers_without_a_sign_in(
     with web(settings, [], script(), token_signing_key, database) as site:
         response = site.client.get("/livez")
     assert response.status_code == 200
+
+
+def sample(site: Web, name: str, **labels: str) -> float:
+    return site.registry.get_sample_value(name, labels) or 0.0
+
+
+def test_metrics_count_an_ask_and_a_confirmed_call_without_naming_the_employee(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings)
+    model = script(calls(("notes__write_note", {"text": "hi"})), answer("saved"))
+    ada = as_user(sign_token, "ada")
+    with web(settings, [notes(notes_server)], model, token_signing_key, database) as site:
+        assert site.client.get("/metrics").status_code == 200
+        connect(site, ada)
+        ask_and_approve(site, ada)
+        text = site.client.get("/metrics").text
+        assert sample(site, "deskclerk_asks_total", outcome="awaiting_confirmation") == 1
+        assert sample(site, "deskclerk_asks_total", outcome="answered") == 1
+        assert sample(site, "deskclerk_ask_duration_seconds_count") == 2
+        assert sample(site, "deskclerk_confirmations_total", decision="approve") == 1
+        assert sample(site, "deskclerk_tool_calls_total", server="notes", outcome="ok") == 1
+        assert sample(site, "deskclerk_tool_call_duration_seconds_count", server="notes") == 1
+    assert "ada" not in text
+    assert "save a note" not in text
 
 
 def test_readyz_is_503_until_the_login_server_has_been_read_and_then_200(

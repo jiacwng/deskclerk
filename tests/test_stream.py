@@ -17,6 +17,7 @@ import pytest
 import uvicorn
 from cryptography.fernet import Fernet
 from langchain_core.language_models import BaseChatModel
+from prometheus_client import CollectorRegistry
 
 from deskclerk.api import create_app
 from deskclerk.auth import SigningKeyLookup
@@ -285,6 +286,7 @@ def listening(
         write_check(),
         None,
         signing_key,
+        CollectorRegistry(),
     )
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning"))
     thread = threading.Thread(target=server.run)

@@ -25,3 +25,4 @@ fastapi==0.142.4
 uvicorn==0.54.0
 langfuse==5.0.4
 tomli-w==1.2.0
+prometheus-client==0.26.0
