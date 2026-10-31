@@ -246,6 +246,7 @@ def test_a_reactivated_user_can_sign_in_again(
             "spent_usd": 0.0,
             "budget_usd": 2.0,
             "admin": False,
+            "unscreened": True,
         }
 
 

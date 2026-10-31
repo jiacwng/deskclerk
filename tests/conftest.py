@@ -5,6 +5,7 @@ import os
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import suppress
+from pathlib import Path
 
 import jwt
 import psycopg
@@ -95,3 +96,13 @@ def database() -> Iterator[Database]:
 async def served_database(database: Database) -> AsyncIterator[Database]:
     async with database.serving():
         yield database
+
+
+@pytest.fixture(autouse=True)
+def generated_keys_stay_in_a_temporary_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("DESKCLERK_DATA_DIR", str(tmp_path / "data"))
+    for variable in ("DESKCLERK_TOKEN_KEY", "DESKCLERK_SESSION_KEY"):
+        monkeypatch.setenv(variable, "placeholder")
+        monkeypatch.delenv(variable)

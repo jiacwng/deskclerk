@@ -39,9 +39,9 @@ OpenAI or AWS Bedrock. This runs deskclerk, a development Keycloak and a demo Gi
 8000, 8080 and 8100.
 
 1. Copy `.env.example` to `.env`. Fill in `ANTHROPIC_API_KEY`, or set `DESKCLERK_MODEL` and your
-   provider's key as `.env.example` shows. Make `DESKCLERK_TOKEN_KEY` and
-   `DESKCLERK_SESSION_KEY` with the two `python3` commands in the file. Without a TypeSafe key,
-   also set `DESKCLERK_ALLOW_UNSCREENED=true`.
+   provider's key as `.env.example` shows. The first start makes the token key and the session
+   key and keeps them in the `deskclerk-data` volume. Without a TypeSafe key, the page warns that
+   tool results are not screened.
 2. Copy `servers.example.toml` to `servers.toml`. It lists the demo Git server, the official MCP
    Git server running on a copy of this repository inside its container. It needs no account. The
    same file shows how to add Linear's hosted MCP server, which deskclerk was tested on.
@@ -77,14 +77,15 @@ OpenAI or AWS Bedrock. This runs deskclerk, a development Keycloak and a demo Gi
    ```
 
 `.env.example` describes every other setting: the model provider, the screen, budgets, retention
-and tracing. Keep `DESKCLERK_TOKEN_KEY`, because the stored tokens and conversations are encrypted
-with it. With a TypeSafe key, each request and every tool result are also sent to TypeSafe's API
+and tracing. Keep the token key, because the stored tokens and conversations are encrypted with
+it. It is in the `deskclerk-data` volume unless you set `DESKCLERK_TOKEN_KEY`. With a TypeSafe key, each request and every tool result are also sent to TypeSafe's API
 to be screened.
 
 All state lives in one Postgres database. `compose.prod.yaml` starts it and sets
 `DESKCLERK_DATABASE_URL` from `POSTGRES_PASSWORD`, which you set in `.env` with letters and digits
 only. To use your own Postgres, set `DESKCLERK_DATABASE_URL` instead. Several copies of deskclerk
-can run behind a load balancer on one database, and each copy opens up to 41 connections.
+can run behind a load balancer on one database, and each copy opens up to 41 connections. Set both
+keys in `.env` first, because each copy would otherwise make its own.
 
 ## Operate it
 
@@ -98,7 +99,8 @@ can run behind a load balancer on one database, and each copy opens up to 41 con
   Keep the token key with it.
 - To replace the token key, put the new key first in `DESKCLERK_TOKEN_KEY` and the old one after
   it, separated by a comma, then run `... python -m deskclerk rotate-key`. When it finishes,
-  remove the old key.
+  remove the old key. A key made on the first start is in `/var/lib/deskclerk/token_key` inside
+  the container.
 - To upgrade, run `git pull`, then `docker compose -f compose.prod.yaml up -d --build`.
 - `/livez` answers while the process runs, and `/readyz` once it can serve.
 - Sign-in and connection failures are logged with their reason. The audit log is one JSON line per
