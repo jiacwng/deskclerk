@@ -6,4 +6,3 @@ existingSecret: deskclerk
 env:
   DESKCLERK_ISSUER: http://oidc-stub
   DESKCLERK_PUBLIC_URL: http://localhost:8000
-  DESKCLERK_ALLOW_UNSCREENED: "true"
