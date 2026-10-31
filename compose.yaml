@@ -59,8 +59,9 @@ services:
       timeout: 5s
       retries: 30
 
-  # Loads servers.toml into the database once, before deskclerk starts. It replaces the server list,
-  # so run it only to reset the list; admins change servers on the /admin page afterwards.
+  # Loads servers.toml into the database when the server list is empty, before deskclerk starts, so
+  # later starts keep what admins changed on the /admin page. To reset the list, run import-servers
+  # without --if-empty.
   import-servers:
     build: .
     network_mode: "service:keycloak"
@@ -68,7 +69,7 @@ services:
     environment:
       DESKCLERK_ISSUER: http://localhost:8080/realms/deskclerk
       DESKCLERK_DATABASE_URL: postgresql://deskclerk:deskclerk@127.0.0.1:5432/deskclerk
-    command: ["python", "-m", "deskclerk", "import-servers", "/servers.toml"]
+    command: ["python", "-m", "deskclerk", "import-servers", "--if-empty", "/servers.toml"]
     volumes:
       - type: bind
         source: ./servers.toml
@@ -91,6 +92,8 @@ services:
       DESKCLERK_HOST: 0.0.0.0
       DESKCLERK_ISSUER: http://localhost:8080/realms/deskclerk
       DESKCLERK_DATABASE_URL: postgresql://deskclerk:deskclerk@127.0.0.1:5432/deskclerk
+    volumes:
+      - deskclerk-data:/var/lib/deskclerk
     depends_on:
       keycloak:
         condition: service_healthy
@@ -100,3 +103,6 @@ services:
         condition: service_healthy
       import-servers:
         condition: service_completed_successfully
+
+volumes:
+  deskclerk-data:

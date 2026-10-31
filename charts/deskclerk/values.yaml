@@ -1,0 +1,59 @@
+# The chart installs the deskclerk app only. Postgres and the OpenID Connect login server are yours.
+
+# How many copies run. They share the one database and may start together.
+replicaCount: 1
+
+image:
+  # The image to run.
+  repository: ghcr.io/jiacwng/deskclerk
+  # The image tag. Empty uses the chart appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# Secrets to pull the image with, if the registry is private.
+imagePullSecrets: []
+
+# An existing Secret in this namespace, required. Every key becomes an environment variable, so
+# name the keys DESKCLERK_DATABASE_URL, DESKCLERK_TOKEN_KEY, DESKCLERK_SESSION_KEY and the key of
+# your model provider such as ANTHROPIC_API_KEY. Any other secret setting goes in it the same way.
+existingSecret: ""
+
+# Plain settings, one environment variable each. The chart sets DESKCLERK_HOST and DESKCLERK_PORT.
+env:
+  # The OpenID Connect login server employees sign in with, required.
+  DESKCLERK_ISSUER: ""
+  # The address employees open. Register <it>/login/callback with the login server.
+  DESKCLERK_PUBLIC_URL: "http://localhost:8000"
+
+# Servers live in the database. Add them on /admin or with
+# kubectl exec deploy/<release> -- python -m deskclerk import-servers <file>
+
+service:
+  type: ClusterIP
+  # The port the Service listens on.
+  port: 80
+
+ingress:
+  # Create an Ingress for the Service.
+  enabled: false
+  # The ingress class, such as nginx. Empty uses the cluster default.
+  className: ""
+  # Annotations to put on the Ingress.
+  annotations: {}
+  # The host name that routes to the app.
+  host: deskclerk.example.com
+  # The Secret that holds the TLS certificate for the host. Empty serves plain http.
+  tlsSecretName: ""
+
+# CPU and memory the app asks for and may use.
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 512Mi
+
+# Where the pods may run.
+nodeSelector: {}
+tolerations: []
+affinity: {}

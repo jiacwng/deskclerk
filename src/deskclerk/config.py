@@ -3,6 +3,7 @@
 # holds all state, how long conversations are kept and the session of the web front, the SCIM
 # endpoints that offboard a leaver and the group allowed to open /admin.
 
+from pathlib import Path
 from typing import Any
 
 from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_validator
@@ -36,6 +37,7 @@ class Settings(BaseSettings):
     audit_text: bool = False
     audit_key: SecretStr | None = None
     requests_per_minute: int = 20
+    data_dir: Path = Path("data")
     database_url: SecretStr
     token_key: SecretStr | None = None
     step_limit: int = 8
@@ -43,7 +45,6 @@ class Settings(BaseSettings):
     tool_output_chars: int = Field(default=DEFAULT_TOOL_OUTPUT_CHARS, gt=0)
     history_tokens: int = Field(default=DEFAULT_HISTORY_TOKENS, gt=0)
     tool_selection: bool = False
-    allow_unscreened: bool = False
     public_url: str = "http://localhost:8000"
     session_key: SecretStr | None = None
     session_hours: int = 8

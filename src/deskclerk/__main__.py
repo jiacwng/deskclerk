@@ -3,8 +3,9 @@
 # <user_id> deletes one employee's tokens, conversations and spending rows instead. python -m
 # deskclerk usage [--month YYYY-MM] prints each employee's spend for a month as tab separated
 # lines. python -m deskclerk rotate-key re-encrypts every stored value with the newest key in
-# DESKCLERK_TOKEN_KEY. python -m deskclerk import-servers <file> replaces the server list with a
-# TOML or mcpServers JSON file, and python -m deskclerk export-servers prints it as TOML.
+# DESKCLERK_TOKEN_KEY. python -m deskclerk import-servers [--if-empty] <file> replaces the server
+# list with a TOML or mcpServers JSON file, or changes nothing with --if-empty when the list has
+# servers, and python -m deskclerk export-servers prints it as TOML.
 
 import argparse
 import sys
@@ -24,6 +25,7 @@ from deskclerk.config import Settings, load_settings
 from deskclerk.connections import OAuthConnections
 from deskclerk.database import Database
 from deskclerk.erasure import erase_user
+from deskclerk.generated_keys import fill_missing_keys
 from deskclerk.jev import jev_from_environment
 from deskclerk.providers import MissingApiKey, ProviderNotInstalled, chat_model
 from deskclerk.rotation import rotate_key
@@ -38,10 +40,6 @@ from deskclerk.writecheck import write_check
 
 FLOW_TIMEOUT_SECONDS = 600
 MCP_CLIENT_NAME = "deskclerk"
-
-
-class UnscreenedRefused(Exception):
-    pass
 
 
 def open_database(settings: Settings) -> Database:
@@ -89,16 +87,20 @@ def rotate() -> None:
     database.close()
 
 
-def import_servers(file: Path) -> None:
+def import_servers(file: Path, if_empty: bool) -> None:
     try:
         settings = load_settings()
         entries = read_entries(file)
     except (ValidationError, ServersError) as error:
         sys.exit(f"deskclerk: {error}")
     database = open_database(settings)
-    ServerStore(database).replace_all(entries)
+    store = ServerStore(database)
+    if if_empty and store.entries():
+        print("deskclerk: the server list already has servers, so nothing was imported")
+    else:
+        store.replace_all(entries)
+        print(f"deskclerk: imported {len(entries)} servers from {file}")
     database.close()
-    print(f"deskclerk: imported {len(entries)} servers from {file}")
 
 
 def export_servers() -> None:
@@ -146,14 +148,19 @@ def main(argv: Sequence[str] = ()) -> None:
         "--month", type=month_argument
     )
     commands.add_parser("rotate-key", help="re-encrypt everything with the newest token key")
-    commands.add_parser(
+    import_parser = commands.add_parser(
         "import-servers", help="replace the server list with a TOML or mcpServers JSON file"
-    ).add_argument("file", type=Path)
+    )
+    import_parser.add_argument("file", type=Path)
+    import_parser.add_argument(
+        "--if-empty", action="store_true", help="change nothing when the list has servers"
+    )
     commands.add_parser("export-servers", help="print the server list as TOML")
     arguments = parser.parse_args(argv)
     try:
         read_secret_files()
-    except SecretFileError as error:
+        fill_missing_keys()
+    except (SecretFileError, OSError) as error:
         sys.exit(f"deskclerk: {error}")
     if arguments.command == "erase":
         erase(arguments.user_id)
@@ -165,7 +172,7 @@ def main(argv: Sequence[str] = ()) -> None:
         usage(arguments.month)
         return
     if arguments.command == "import-servers":
-        import_servers(arguments.file)
+        import_servers(arguments.file, arguments.if_empty)
         return
     if arguments.command == "export-servers":
         export_servers()
@@ -176,12 +183,6 @@ def main(argv: Sequence[str] = ()) -> None:
             raise TokenKeyError("DESKCLERK_TOKEN_KEY is not set; put it in .env")
         jev = jev_from_environment()
         if jev is None:
-            if not settings.allow_unscreened:
-                raise UnscreenedRefused(
-                    "TYPESAFE_API_KEY is not set, so tool outputs cannot be screened for prompt "
-                    "injection. Set it, or set DESKCLERK_ALLOW_UNSCREENED=true to start "
-                    "without the screen."
-                )
             print(
                 "deskclerk: TYPESAFE_API_KEY is not set, "
                 "so tool outputs are not screened for prompt injection",
@@ -231,7 +232,6 @@ def main(argv: Sequence[str] = ()) -> None:
         ProviderNotInstalled,
         AuthUnavailable,
         TracingNotInstalled,
-        UnscreenedRefused,
         ValueError,
     ) as error:
         sys.exit(f"deskclerk: {error}")

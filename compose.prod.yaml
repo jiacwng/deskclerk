@@ -28,6 +28,8 @@ services:
       DESKCLERK_DATABASE_URL: postgresql://deskclerk:${POSTGRES_PASSWORD}@postgres:5432/deskclerk
     ports:
       - "127.0.0.1:8000:8000"
+    volumes:
+      - deskclerk-data:/var/lib/deskclerk
     depends_on:
       postgres:
         condition: service_healthy
@@ -40,3 +42,4 @@ services:
 
 volumes:
   postgres-data:
+  deskclerk-data:

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
 
+import tomli_w
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -230,24 +231,8 @@ def read_entries(path: Path) -> list[ServerEntry]:
 
 
 def toml_text(entries: list[ServerEntry]) -> str:
-    blocks = []
-    for entry in entries:
-        fields = {"name": entry.name, **entry.model_dump(exclude_defaults=True)}
-        lines = ["[[server]]"]
-        lines.extend(f"{name} = {_toml_value(value)}" for name, value in fields.items())
-        blocks.append("\n".join(lines))
-    return "\n\n".join(blocks) + "\n"
-
-
-def _toml_value(value: Any) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, str):
-        return json.dumps(value, ensure_ascii=False)
-    if isinstance(value, list):
-        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
-    pairs = (f"{json.dumps(key)} = {_toml_value(item)}" for key, item in value.items())
-    return "{ " + ", ".join(pairs) + " }"
+    servers = [{"name": entry.name, **entry.model_dump(exclude_defaults=True)} for entry in entries]
+    return tomli_w.dumps({"server": servers})
 
 
 def resolve_servers(

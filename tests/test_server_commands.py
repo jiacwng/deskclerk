@@ -69,3 +69,18 @@ async def test_a_stored_entry_that_cannot_be_loaded_leaves_the_previous_list(
     store.add(broken)
     await catalog.refresh()
     assert [server.name for server in catalog.servers] == ["first"]
+
+
+@pytest.mark.usefixtures("database")
+def test_import_if_empty_keeps_an_admin_edit_and_a_plain_import_replaces_it(
+    database: Database, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    entry.main(["import-servers", "--if-empty", str(EXAMPLE)])
+    first = read_entries(EXAMPLE)[0]
+    ServerStore(database).update(first.model_copy(update={"title": "Edited by an admin"}))
+    capsys.readouterr()
+    entry.main(["import-servers", "--if-empty", str(EXAMPLE)])
+    assert "already has servers" in capsys.readouterr().out
+    assert export(tmp_path, capsys)[0].title == "Edited by an admin"
+    entry.main(["import-servers", str(EXAMPLE)])
+    assert export(tmp_path, capsys) == read_entries(EXAMPLE)
