@@ -27,6 +27,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Stre
 from fastapi.sse import KEEPALIVE_COMMENT, format_sse_event
 from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -88,6 +89,7 @@ from deskclerk.database import Database
 from deskclerk.erasure import erase_user
 from deskclerk.instructions import system_prompt
 from deskclerk.jev import Jev
+from deskclerk.metrics import Metrics
 from deskclerk.pinning import MenuEntry, allowed_tool_names, read_menu, revoke_tool
 from deskclerk.providers import BudgetExceeded, Usage, cost_of
 from deskclerk.quota import Quota
@@ -381,6 +383,7 @@ def create_app(
     gate: Gate,
     jev: Jev | None,
     signing_key: SigningKeyLookup,
+    registry: CollectorRegistry,
     tracing: Tracing | None = None,
     idp_transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
@@ -392,6 +395,7 @@ def create_app(
     cost_of(settings.price_model, Usage(0, 0, 0, 0))
     quota = Quota(database, settings.requests_per_minute)
     audit = Audit(settings.audit_text, settings.audit_key)
+    metrics = Metrics(registry)
     discovered: dict[str, oidc.Endpoints] = {}
     ask_failures: tuple[type[Exception], ...] = (
         McpServerFailed,
@@ -522,6 +526,10 @@ def create_app(
     @app.get("/livez")
     async def livez() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/metrics")
+    async def prometheus_metrics() -> Response:
+        return Response(metrics.render(), media_type=CONTENT_TYPE_LATEST)
 
     @app.get("/readyz")
     async def readyz() -> JSONResponse:
@@ -980,6 +988,7 @@ def create_app(
                 entry=entry,
                 edit_of=edit_of,
             )
+            metrics.ask_finished(outcome, started, 0.0, (), None)
             raise HTTPException(status, detail, headers)
 
         if not await quota.allows(identity.user_id):
@@ -1036,7 +1045,7 @@ def create_app(
                             settings.step_limit,
                             spending.record,
                             trace.config if trace else None,
-                            trace.tool_span if trace else no_tool_span,
+                            metrics.timed(trace.tool_span if trace else no_tool_span),
                             jev_tool_selection(jev, settings.tool_selection, spending.record_jev),
                             tool_output_chars=settings.tool_output_chars,
                             history_tokens=settings.history_tokens,
@@ -1063,6 +1072,9 @@ def create_app(
                     "wrong_decisions",
                 )
             except asyncio.CancelledError:
+                metrics.ask_finished(
+                    "cancelled", started, spending.cost_usd - spent_before, executed, None
+                )
                 audit.asked(
                     identity,
                     conversation,
@@ -1097,6 +1109,7 @@ def create_app(
                     executed,
                     edit_of,
                 )
+                metrics.ask_finished("timed_out", started, cost, executed, None)
                 raise FailedTurn(504, detail, executed) from None
             except ask_failures as error:
                 cost = spending.cost_usd - spent_before
@@ -1135,6 +1148,7 @@ def create_app(
             executed=result.executed,
             edit_of=edit_of,
         )
+        metrics.ask_finished(outcome, started, cost, result.executed, result)
         for call in result.pending:
             emit(StreamEvent("pending", PendingOut(**vars(call))))
         return AskOut(
@@ -1177,6 +1191,7 @@ def create_app(
             executed,
             edit_of,
         )
+        metrics.ask_finished("upstream_error", started, cost, executed, None)
         return FailedTurn(502, detail, executed)
 
     return app

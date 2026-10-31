@@ -103,6 +103,9 @@ keys in `.env` first, because each copy would otherwise make its own.
   the container.
 - To upgrade, run `git pull`, then `docker compose -f compose.prod.yaml up -d --build`.
 - `/livez` answers while the process runs, and `/readyz` once it can serve.
+- `/metrics` serves Prometheus metrics: asks, tool calls, approvals, screen flags, cost and
+  durations, with no employee names. It needs no sign-in, so block it at the reverse proxy if it
+  must stay private.
 - Sign-in and connection failures are logged with their reason. The audit log is one JSON line per
   request on standard output.
 
