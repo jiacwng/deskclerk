@@ -1,6 +1,6 @@
 # The deskclerk web app, installed from hash-locked requirements. Settings come from DESKCLERK_*
-# variables, the server list is mounted at /app/servers.toml and all state lives in Postgres
-# except the keys made on the first start, which sit in /var/lib/deskclerk.
+# variables, the server list and all other state live in Postgres except the keys made on the
+# first start, which sit in /var/lib/deskclerk.
 FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

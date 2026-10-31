@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- The admin page: servers, usage this month and recent activity, read only. Everything is set with textContent. -->
+<!-- The admin page: servers with their controls, usage this month and recent activity. Everything is set with textContent. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -93,6 +93,15 @@ td.num, th.num { text-align: right; white-space: nowrap; }
 td.mono { font-family: var(--mono); font-size: 0.8125rem; }
 td.over { color: var(--warn); font-weight: 600; }
 .empty { padding: 0.75rem; color: var(--muted); }
+.actions { white-space: nowrap; }
+button { font: inherit; font-size: 0.8125rem; color: var(--fg); background: var(--surface); border: 1px solid var(--edge); border-radius: 4px; padding: 0.2rem 0.6rem; cursor: pointer; }
+button:hover { background: var(--sunk); }
+button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+button.danger { color: var(--bad); border-color: var(--bad); }
+.editor, .revoke { display: grid; gap: 0.5rem; margin-top: 0.75rem; }
+.editor textarea, .revoke input { font: 0.8125rem/1.4 var(--mono); color: var(--fg); background: var(--surface); border: 1px solid var(--edge); border-radius: 4px; padding: 0.5rem; width: 100%; }
+.editor textarea { min-height: 16rem; }
+.row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 </style>
 </head>
 <body>
@@ -107,9 +116,25 @@ td.over { color: var(--warn); font-weight: 600; }
   <section aria-labelledby="servers-title">
     <h2 id="servers-title">Servers</h2>
     <div class="scroll"><table>
-      <thead><tr><th>Name</th><th>URL</th><th>Auth</th><th class="num">Employees connected</th><th class="num">Allowlisted tools</th></tr></thead>
+      <thead><tr><th>Name</th><th>URL</th><th>Auth</th><th class="num">Employees connected</th><th class="num">Allowlisted tools</th><th>Status</th><th></th></tr></thead>
       <tbody id="servers"></tbody>
     </table></div>
+    <div class="row note"><button type="button" id="add" class="primary">Add a server</button></div>
+    <form id="editor" class="editor" hidden>
+      <label for="entry" class="muted small" id="editor-title"></label>
+      <textarea id="entry" spellcheck="false"></textarea>
+      <p class="muted small">One server as JSON. Secrets are references: client_secret_env names an environment variable, and a header value may hold ${env:NAME}.</p>
+      <div class="row"><button type="submit" class="primary">Save</button><button type="button" id="cancel">Cancel</button></div>
+    </form>
+  </section>
+  <section aria-labelledby="revoke-title">
+    <h2 id="revoke-title">Revoke an employee</h2>
+    <p class="muted small">Deletes the employee's stored sign-ins to every server and ends their browser sessions, so their next request is refused.</p>
+    <form id="revoke" class="revoke">
+      <input id="revoke-user" type="text" placeholder="Employee id" aria-label="Employee id" required>
+      <div class="row"><button type="submit" class="danger">Revoke</button></div>
+    </form>
+    <p id="revoked" class="note muted small" role="status"></p>
   </section>
   <section aria-labelledby="usage-title">
     <h2 id="usage-title">Usage <span id="month"></span></h2>
@@ -155,6 +180,115 @@ function fill(id, rows, columns) {
   }
 }
 
+const WRITE_HEADERS = { "X-Requested-With": "deskclerk", "Content-Type": "application/json" };
+let editing = null;
+
+function showError(text) {
+  el("error").textContent = text;
+  el("error").hidden = text === "";
+}
+
+async function failure(response) {
+  const body = await response.json().catch(() => null);
+  const detail = body && body.detail;
+  if (Array.isArray(detail)) return detail.map((d) => d.msg).join("; ");
+  return typeof detail === "string" ? detail : "The change was refused (" + response.status + ").";
+}
+
+async function write(method, path, body) {
+  const options = { method, headers: WRITE_HEADERS };
+  if (body !== undefined) options.body = JSON.stringify(body);
+  const response = await fetch(path, options);
+  if (!response.ok) {
+    showError(await failure(response));
+    return null;
+  }
+  showError("");
+  return response;
+}
+
+const serverPath = (name) => "/admin/servers/" + encodeURIComponent(name);
+
+function button(label, className, onClick) {
+  const element = document.createElement("button");
+  element.type = "button";
+  element.textContent = label;
+  if (className) element.className = className;
+  element.addEventListener("click", onClick);
+  return element;
+}
+
+function openEditor(title, entry, name) {
+  editing = name;
+  el("editor-title").textContent = title;
+  el("entry").value = JSON.stringify(entry, null, 2);
+  el("editor").hidden = false;
+  el("entry").focus();
+}
+
+async function editServer(name) {
+  const response = await fetch(serverPath(name));
+  if (!response.ok) {
+    showError(await failure(response));
+    return;
+  }
+  openEditor("Edit " + name, await response.json(), name);
+}
+
+async function toggleServer(server) {
+  const action = server.paused ? "/resume" : "/pause";
+  if (await write("POST", serverPath(server.name) + action)) await load();
+}
+
+async function removeServer(name) {
+  if (!window.confirm("Remove " + name + "? Employees keep their stored sign-ins, but the agent stops offering it.")) return;
+  if (await write("DELETE", serverPath(name))) await load();
+}
+
+function actions(server) {
+  const td = document.createElement("td");
+  td.className = "actions";
+  td.append(
+    button("Edit", "", () => editServer(server.name)),
+    " ",
+    button(server.paused ? "Resume" : "Pause", "", () => toggleServer(server)),
+    " ",
+    button("Remove", "danger", () => removeServer(server.name)),
+  );
+  return td;
+}
+
+el("add").addEventListener("click", () => openEditor("New server", { name: "", url: "" }, null));
+el("cancel").addEventListener("click", () => { el("editor").hidden = true; });
+el("editor").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  let entry;
+  try {
+    entry = JSON.parse(el("entry").value);
+  } catch (error) {
+    showError("The server is not valid JSON: " + error.message);
+    return;
+  }
+  const saved = editing === null
+    ? await write("POST", "/admin/servers", entry)
+    : await write("PUT", serverPath(editing), entry);
+  if (saved) {
+    el("editor").hidden = true;
+    await load();
+  }
+});
+el("revoke").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const user = el("revoke-user").value.trim();
+  if (!window.confirm("Revoke " + user + "?")) return;
+  const response = await write("POST", "/admin/employees/revoke", { user_id: user });
+  if (!response) return;
+  const done = await response.json();
+  el("revoked").textContent = "Revoked " + user + ": " + done.tokens + " sign-ins deleted, " + done.sessions + " sessions ended.";
+  el("revoke-user").value = "";
+  await load();
+});
+
 const money = (value) => "$" + value.toFixed(4);
 const count = (value) => (value === null ? "n/a" : String(value));
 
@@ -175,7 +309,8 @@ async function load() {
     cell(s.name), cell(s.url, "mono"), cell(s.auth),
     cell(count(s.employees_connected), "num"),
     cell(s.allowlist_size === null ? "all" : String(s.allowlist_size), "num"),
-  ]), 5);
+    cell(s.paused ? "paused" : "active"), actions(s),
+  ]), 7);
   fill("usage", summary.usage.map((u) => [
     cell(u.user_id), cell(String(u.calls), "num"),
     cell(money(u.spent_usd), u.spent_usd >= u.budget_usd ? "num over" : "num"),

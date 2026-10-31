@@ -1,5 +1,5 @@
 # Prometheus counters and histograms for /metrics. Labels hold only bounded values: an outcome, a
-# decision or the name of a server from the admin's servers file, never an employee or any text.
+# decision or the name of an MCP server an admin set, never an employee or any text.
 
 import time
 from collections.abc import Iterator, Sequence

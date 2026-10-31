@@ -1,6 +1,7 @@
-# Copy to servers.toml. Each [[server]] is one MCP server the agent may use. A name uses letters,
-# digits, hyphens and single underscores. DESKCLERK_SERVERS_FILE can name a .json file in the
-# mcpServers format instead.
+# Copy to servers.toml and load it with: python -m deskclerk import-servers servers.toml
+# Each [[server]] is one MCP server the agent may use. A name uses letters, digits, hyphens and
+# single underscores. import-servers also reads a .json file in the mcpServers format. After the
+# import, admins change servers on the /admin page.
 [[server]]
 name = "repo"
 url = "http://localhost:8100/mcp"

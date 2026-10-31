@@ -1,5 +1,6 @@
-# The baseline migration builds the schema the modules used to create themselves, and several
-# copies of the app starting at once on an empty database all succeed.
+# The baseline migration builds the schema the modules used to create themselves, the servers
+# migration adds the table of MCP servers, and several copies of the app starting at once on an
+# empty database all succeed.
 
 from concurrent.futures import ThreadPoolExecutor
 
@@ -8,6 +9,7 @@ from psycopg.rows import tuple_row
 
 from conftest import DATABASE_URL
 from deskclerk.database import Database, sqlalchemy_url
+from deskclerk.servers import ServerEntry
 
 CREATE_STATEMENTS = [
     "CREATE TABLE IF NOT EXISTS oauth_flows ("
@@ -50,7 +52,7 @@ def describe(connection: psycopg.Connection[tuple[object, ...]], schema: str) ->
         str(row[0])
         for row in connection.execute(
             "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema = %s AND table_name <> 'alembic_version'",
+            "WHERE table_schema = %s AND table_name NOT IN ('alembic_version', 'servers')",
             (schema,),
         )
     )
@@ -93,7 +95,7 @@ def test_migrating_again_changes_nothing(database: Database) -> None:
     database.migrate()
     with psycopg.connect(DATABASE_URL) as connection:
         versions = connection.execute("SELECT version_num FROM alembic_version").fetchall()
-    assert versions == [("0001",)]
+    assert versions == [("0002",)]
 
 
 def test_copies_starting_at_once_on_an_empty_database_all_succeed(database: Database) -> None:
@@ -111,7 +113,7 @@ def test_copies_starting_at_once_on_an_empty_database_all_succeed(database: Data
         tables = connection.execute(
             "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'"
         ).fetchone()
-    assert tables == (10,)
+    assert tables == (11,)
 
 
 def test_a_keyword_connection_string_becomes_a_sqlalchemy_url() -> None:
@@ -119,3 +121,13 @@ def test_a_keyword_connection_string_becomes_a_sqlalchemy_url() -> None:
     assert url.render_as_string(hide_password=False) == (
         "postgresql+psycopg://u:p%40ss@db:5433/app?sslmode=require"
     )
+
+
+def test_the_servers_table_has_a_column_for_every_field_of_a_server_entry(
+    database: Database,
+) -> None:
+    with psycopg.connect(DATABASE_URL) as connection:
+        found = connection.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'servers'"
+        ).fetchall()
+    assert {row[0] for row in found} == {"position", *ServerEntry.model_fields}

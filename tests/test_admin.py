@@ -1,6 +1,7 @@
 # The admin page and its summary exist only when DESKCLERK_ADMIN_GROUP is set, open only to members
-# of that group, show servers, this month's usage and the latest conversations from stored data,
-# and change nothing. The main page learns from /me whether to show its Admin link.
+# of that group, show servers, this month's usage and the latest conversations from stored data.
+# The main page learns from /me whether to show its Admin link. The routes that change servers and
+# revoke an employee are in test_admin_servers.py.
 
 import re
 from datetime import UTC, datetime
@@ -113,6 +114,7 @@ def test_a_member_sees_the_servers_usage_and_latest_conversations_that_are_store
             "name": "notes",
             "url": "http://notes.test/mcp",
             "auth": "oauth",
+            "paused": False,
             "employees_connected": 2,
             "allowlist_size": 2,
         },
@@ -120,6 +122,7 @@ def test_a_member_sees_the_servers_usage_and_latest_conversations_that_are_store
             "name": "open",
             "url": "http://open.test/mcp",
             "auth": "none",
+            "paused": False,
             "employees_connected": None,
             "allowlist_size": None,
         },
@@ -150,7 +153,7 @@ def test_recent_activity_is_the_latest_fifty(
     assert titles[0] == "question 0"
 
 
-def test_the_admin_page_cannot_change_anything(
+def test_the_page_and_the_summary_accept_only_get(
     sign_token: Sign,
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,

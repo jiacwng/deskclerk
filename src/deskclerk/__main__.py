@@ -1,13 +1,17 @@
-# Runs the web front: python -m deskclerk reads the settings, the server list and the token
-# store, builds the model, and serves the app with uvicorn. python -m deskclerk erase <user_id>
-# deletes one employee's tokens, conversations and spending rows instead. python -m deskclerk usage
-# [--month YYYY-MM] prints each employee's spend for a month as tab separated lines. python -m
-# deskclerk rotate-key re-encrypts every stored value with the newest key in DESKCLERK_TOKEN_KEY.
+# Runs the web front: python -m deskclerk reads the settings, the server list from Postgres and the
+# token store, builds the model, and serves the app with uvicorn. python -m deskclerk erase
+# <user_id> deletes one employee's tokens, conversations and spending rows instead. python -m
+# deskclerk usage [--month YYYY-MM] prints each employee's spend for a month as tab separated
+# lines. python -m deskclerk rotate-key re-encrypts every stored value with the newest key in
+# DESKCLERK_TOKEN_KEY. python -m deskclerk import-servers [--if-empty] <file> replaces the server
+# list with a TOML or mcpServers JSON file, or changes nothing with --if-empty when the list has
+# servers, and python -m deskclerk export-servers prints it as TOML.
 
 import argparse
 import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
 import psycopg
@@ -27,7 +31,8 @@ from deskclerk.jev import jev_from_environment
 from deskclerk.providers import MissingApiKey, ProviderNotInstalled, chat_model
 from deskclerk.rotation import rotate_key
 from deskclerk.secret_files import SecretFileError, read_secret_files
-from deskclerk.servers import ServersError, load_servers
+from deskclerk.servers import ServersError, read_entries, toml_text
+from deskclerk.serverstore import ServerCatalog, ServerStore
 from deskclerk.sessions import SessionStore
 from deskclerk.spending import SpendingStore, month_of
 from deskclerk.tokens import TokenKeyError, TokenStore
@@ -83,6 +88,33 @@ def rotate() -> None:
     database.close()
 
 
+def import_servers(file: Path, if_empty: bool) -> None:
+    try:
+        settings = load_settings()
+        entries = read_entries(file)
+    except (ValidationError, ServersError) as error:
+        sys.exit(f"deskclerk: {error}")
+    database = open_database(settings)
+    store = ServerStore(database)
+    if if_empty and store.entries():
+        print("deskclerk: the server list already has servers, so nothing was imported")
+    else:
+        store.replace_all(entries)
+        print(f"deskclerk: imported {len(entries)} servers from {file}")
+    database.close()
+
+
+def export_servers() -> None:
+    try:
+        settings = load_settings()
+    except ValidationError as error:
+        sys.exit(f"deskclerk: {error}")
+    database = open_database(settings)
+    entries = ServerStore(database).entries()
+    database.close()
+    print(toml_text(entries), end="")
+
+
 def month_argument(text: str) -> str:
     try:
         return month_of(datetime.strptime(text, "%Y-%m"))
@@ -117,11 +149,19 @@ def main(argv: Sequence[str] = ()) -> None:
         "--month", type=month_argument
     )
     commands.add_parser("rotate-key", help="re-encrypt everything with the newest token key")
+    import_parser = commands.add_parser(
+        "import-servers", help="replace the server list with a TOML or mcpServers JSON file"
+    )
+    import_parser.add_argument("file", type=Path)
+    import_parser.add_argument(
+        "--if-empty", action="store_true", help="change nothing when the list has servers"
+    )
+    commands.add_parser("export-servers", help="print the server list as TOML")
     arguments = parser.parse_args(argv)
     try:
         read_secret_files()
         fill_missing_keys()
-    except (SecretFileError, ServersError, OSError) as error:
+    except (SecretFileError, OSError) as error:
         sys.exit(f"deskclerk: {error}")
     if arguments.command == "erase":
         erase(arguments.user_id)
@@ -131,6 +171,12 @@ def main(argv: Sequence[str] = ()) -> None:
         return
     if arguments.command == "usage":
         usage(arguments.month)
+        return
+    if arguments.command == "import-servers":
+        import_servers(arguments.file, arguments.if_empty)
+        return
+    if arguments.command == "export-servers":
+        export_servers()
         return
     try:
         settings = load_settings()
@@ -143,8 +189,9 @@ def main(argv: Sequence[str] = ()) -> None:
                 "so tool outputs are not screened for prompt injection",
                 file=sys.stderr,
             )
-        servers = load_servers(settings.servers_file)
         database = open_database(settings)
+        catalog = ServerCatalog(database, ServerStore(database))
+        catalog.reload()
         tokens = TokenStore(database, settings.token_key.get_secret_value())
         connections = OAuthConnections(
             tokens,
@@ -166,7 +213,7 @@ def main(argv: Sequence[str] = ()) -> None:
         app = create_app(
             settings,
             database,
-            servers,
+            catalog,
             connections,
             tokens,
             SpendingStore(database),

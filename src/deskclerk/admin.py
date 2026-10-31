@@ -1,4 +1,4 @@
-# The read-only summary behind /admin: each configured server with how many employees have
+# The summary behind /admin: each configured server, paused or not, with how many employees have
 # connected it, what each employee spent this month, and the conversations most recently active.
 # The audit log goes to stdout and is not stored, so recent activity comes from the conversations
 # table, which holds the employee, the title and the time of the last message. A title is the start
@@ -21,6 +21,7 @@ class AdminServer(BaseModel):
     name: str
     url: str
     auth: str
+    paused: bool
     employees_connected: int | None
     allowlist_size: int | None
 
@@ -52,6 +53,7 @@ def server_rows(servers: list[McpServer], tokens: TokenStore) -> list[AdminServe
             name=server.name,
             url=server.url,
             auth=server.auth,
+            paused=server.paused,
             employees_connected=None if server.auth == "none" else counts.get(server.name, 0),
             allowlist_size=None if server.tools is None else len(server.tools),
         )

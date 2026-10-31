@@ -13,8 +13,6 @@ spec:
       {{- include "deskclerk.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      annotations:
-        checksum/servers: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
       labels:
         {{- include "deskclerk.selectorLabels" . | nindent 8 }}
     spec:
@@ -73,16 +71,9 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
-            - name: servers
-              mountPath: /app/servers.toml
-              subPath: servers.toml
-              readOnly: true
             - name: tmp
               mountPath: /tmp
       volumes:
-        - name: servers
-          configMap:
-            name: {{ include "deskclerk.fullname" . }}
         - name: tmp
           emptyDir: {}
       {{- with .Values.nodeSelector }}

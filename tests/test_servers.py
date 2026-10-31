@@ -2,11 +2,16 @@
 # URL is not https, a secret has no client or its environment variable is missing.
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
-from deskclerk.servers import McpServer, ServersError, load_servers
+from deskclerk.servers import McpServer, ServersError, read_entries, resolve_servers, toml_text
+
+
+def load_servers(path: Path, environ: Mapping[str, str]) -> list[McpServer]:
+    return resolve_servers(read_entries(path), environ)
 
 
 def write(tmp_path: Path, text: str) -> Path:
@@ -389,3 +394,42 @@ def test_a_blank_title_description_or_example_is_refused(tmp_path: Path, line: s
     path = write(tmp_path, f'[[server]]\nname = "a"\nurl = "https://a.test/mcp"\n{line}\n')
     with pytest.raises(ServersError, match="need"):
         load_servers(path, {})
+
+
+def test_variables_named_in_a_server_entry_can_come_from_files(tmp_path: Path) -> None:
+    (tmp_path / "pass").write_text("s3cret\n")
+    (tmp_path / "bearer").write_text("tok\n")
+    path = write(
+        tmp_path,
+        '[[server]]\nname = "crm"\nurl = "https://crm.example.com/mcp"\nclient_id = "c"\n'
+        'client_secret_env = "CRM_SECRET"\n'
+        'headers = { X-Api-Key = "${env:CRM_BEARER}" }\n',
+    )
+    environ = {
+        "CRM_SECRET_FILE": str(tmp_path / "pass"),
+        "CRM_BEARER_FILE": str(tmp_path / "bearer"),
+    }
+    [server] = load_servers(path, environ)
+    assert server.client_secret == "s3cret"
+    assert server.headers == (("X-Api-Key", "tok"),)
+
+
+def test_a_server_is_active_unless_the_file_pauses_it(tmp_path: Path) -> None:
+    entry = '[[server]]\nname = "a"\nurl = "https://a.test/mcp"\n'
+    assert load_servers(write(tmp_path, entry), {})[0].paused is False
+    assert load_servers(write(tmp_path, entry + "paused = true\n"), {})[0].paused is True
+
+
+def test_entries_written_as_toml_are_read_back_unchanged(tmp_path: Path) -> None:
+    path = write(
+        tmp_path,
+        '[[server]]\nname = "crm"\nurl = "http://crm.test/mcp"\nplain_http = true\n'
+        'client_id = "c"\nclient_secret_env = "CRM_SECRET"\ntools = ["a", "b"]\n'
+        'headers = { X-Team = "${env:TEAM} \\"quoted\\"" }\ngroups = ["sales"]\n'
+        'always_allow = false\nconfirm_tools = ["send"]\ntrusted = true\ntitle = "CRM"\n'
+        'description = "Accounts"\nexamples = ["Find acme", "Naïve café"]\npaused = true\n'
+        '[[server]]\nname = "open"\nurl = "https://a.test/mcp"\nauth = "none"\ntools = []\n',
+    )
+    entries = read_entries(path)
+    again = write(tmp_path, toml_text(entries))
+    assert read_entries(again) == entries

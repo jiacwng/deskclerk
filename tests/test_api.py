@@ -52,7 +52,8 @@ from deskclerk.database import Database
 from deskclerk.instructions import system_prompt
 from deskclerk.jev import PRICE_PER_INPUT_TOKEN, Jev
 from deskclerk.screen import NOTICE
-from deskclerk.servers import McpServer
+from deskclerk.servers import McpServer, ServerEntry
+from deskclerk.serverstore import ServerCatalog, ServerStore
 from deskclerk.sessions import SessionStore
 from deskclerk.spending import SpendingStore
 from deskclerk.tokens import TokenStore
@@ -73,7 +74,36 @@ class Web:
     client: TestClient
     tokens: TokenStore
     sessions: SessionStore
+    catalog: ServerCatalog
     registry: CollectorRegistry
+
+
+def entry_of(server: McpServer) -> ServerEntry:
+    return ServerEntry(
+        name=server.name,
+        plain_http=True,
+        url=server.url,
+        client_id=server.client_id,
+        auth=server.auth,
+        tools=None if server.tools is None else list(server.tools),
+        headers=dict(server.headers),
+        client_cert=server.client_cert,
+        client_key=server.client_key,
+        groups=None if server.groups is None else list(server.groups),
+        always_allow=server.always_allow,
+        confirm_tools=list(server.confirm_tools),
+        trusted=server.trusted,
+        title=server.title,
+        description=server.description,
+        examples=list(server.examples),
+        paused=server.paused,
+    )
+
+
+def stored_catalog(database: Database, servers: list[McpServer]) -> ServerCatalog:
+    store = ServerStore(database)
+    store.replace_all([entry_of(server) for server in servers])
+    return ServerCatalog(database, store)
 
 
 @pytest.fixture
@@ -113,11 +143,12 @@ def web(
     tokens = TokenStore(database, key or Fernet.generate_key().decode())
     sessions = SessionStore(database)
     connections = OAuthConnections(tokens, REDIRECT, "deskclerk test", 600)
+    catalog = stored_catalog(database, servers)
     registry = CollectorRegistry()
     app = create_app(
         settings,
         database,
-        servers,
+        catalog,
         connections,
         tokens,
         SpendingStore(database),
@@ -131,7 +162,7 @@ def web(
         idp_transport=idp_transport,
     )
     with TestClient(app) as client:
-        yield Web(client, tokens, sessions, registry)
+        yield Web(client, tokens, sessions, catalog, registry)
 
 
 class FakeIdp:

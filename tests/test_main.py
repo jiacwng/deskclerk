@@ -20,7 +20,6 @@ def environment(monkeypatch: pytest.MonkeyPatch, database: Database) -> None:
 @pytest.fixture
 def served(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
     started: list[Any] = []
-    monkeypatch.setattr(entry, "load_servers", lambda path: [])
     monkeypatch.setattr(entry, "discover_jwks_url", lambda settings, client: "http://idp/jwks")
     monkeypatch.setattr(entry, "jwks_signing_key", lambda url: lambda token: None)
     monkeypatch.setattr(entry, "chat_model", lambda settings: object())

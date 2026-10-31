@@ -1,12 +1,10 @@
 # Docker's NAME_FILE convention: for each secret variable NAME, the file named by NAME_FILE
-# supplies its value, so a mounted secret never sits in the process environment listing.
+# supplies its value, so a mounted secret never sits in the process environment listing. The
+# variables a server entry names are read the same way when the server list is loaded.
 
 import os
-from collections.abc import MutableMapping
+from collections.abc import Mapping, MutableMapping
 from pathlib import Path
-
-from deskclerk.config import Settings
-from deskclerk.servers import secret_variables
 
 SECRET_VARIABLES = (
     "DESKCLERK_DATABASE_URL",
@@ -27,21 +25,23 @@ class SecretFileError(Exception):
     pass
 
 
+def file_secret(name: str, environ: Mapping[str, str]) -> str | None:
+    file_name = environ.get(f"{name}_FILE")
+    if file_name is None:
+        return None
+    if name in environ:
+        raise SecretFileError(f"both {name} and {name}_FILE are set; set only one")
+    try:
+        content = Path(file_name).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise SecretFileError(
+            f"{name}_FILE names {file_name}, which cannot be read: {error}"
+        ) from None
+    return content.rstrip("\r\n")
+
+
 def read_secret_files(environ: MutableMapping[str, str] = os.environ) -> None:
-    servers_file = Path(
-        environ.get("DESKCLERK_SERVERS_FILE", str(Settings.model_fields["servers_file"].default))
-    )
-    listed = secret_variables(servers_file) if servers_file.exists() else []
-    for name in dict.fromkeys([*SECRET_VARIABLES, *listed]):
-        file_name = environ.get(f"{name}_FILE")
-        if file_name is None:
-            continue
-        if name in environ:
-            raise SecretFileError(f"both {name} and {name}_FILE are set; set only one")
-        try:
-            content = Path(file_name).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as error:
-            raise SecretFileError(
-                f"{name}_FILE names {file_name}, which cannot be read: {error}"
-            ) from None
-        environ[name] = content.rstrip("\r\n")
+    for name in SECRET_VARIABLES:
+        content = file_secret(name, environ)
+        if content is not None:
+            environ[name] = content

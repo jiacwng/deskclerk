@@ -101,6 +101,12 @@ class TokenStore:
                 (user_id, server_name),
             )
 
+    def delete_user_tokens(self, user_id: str) -> int:
+        with self.database.pool.connection() as connection:
+            return connection.execute(
+                "DELETE FROM secrets WHERE user_id = %s AND kind = 'tokens'", (user_id,)
+            ).rowcount
+
     def delete_user(self, user_id: str) -> int:
         with self.database.pool.connection() as connection:
             return connection.execute("DELETE FROM secrets WHERE user_id = %s", (user_id,)).rowcount

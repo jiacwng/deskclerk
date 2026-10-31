@@ -25,8 +25,8 @@ env:
   # The address employees open. Register <it>/login/callback with the login server.
   DESKCLERK_PUBLIC_URL: "http://localhost:8000"
 
-# The MCP server list as TOML text, mounted at /app/servers.toml. Empty means no servers.
-servers: ""
+# Servers live in the database. Add them on /admin or with
+# kubectl exec deploy/<release> -- python -m deskclerk import-servers <file>
 
 service:
   type: ClusterIP
