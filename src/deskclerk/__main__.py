@@ -21,6 +21,7 @@ from deskclerk.config import Settings, load_settings
 from deskclerk.connections import OAuthConnections
 from deskclerk.database import Database
 from deskclerk.erasure import erase_user
+from deskclerk.generated_keys import fill_missing_keys
 from deskclerk.jev import jev_from_environment
 from deskclerk.providers import MissingApiKey, ProviderNotInstalled, chat_model
 from deskclerk.rotation import rotate_key
@@ -34,10 +35,6 @@ from deskclerk.writecheck import write_check
 
 FLOW_TIMEOUT_SECONDS = 600
 MCP_CLIENT_NAME = "deskclerk"
-
-
-class UnscreenedRefused(Exception):
-    pass
 
 
 def open_database(settings: Settings) -> Database:
@@ -122,7 +119,8 @@ def main(argv: Sequence[str] = ()) -> None:
     arguments = parser.parse_args(argv)
     try:
         read_secret_files()
-    except (SecretFileError, ServersError) as error:
+        fill_missing_keys()
+    except (SecretFileError, ServersError, OSError) as error:
         sys.exit(f"deskclerk: {error}")
     if arguments.command == "erase":
         erase(arguments.user_id)
@@ -139,12 +137,6 @@ def main(argv: Sequence[str] = ()) -> None:
             raise TokenKeyError("DESKCLERK_TOKEN_KEY is not set; put it in .env")
         jev = jev_from_environment()
         if jev is None:
-            if not settings.allow_unscreened:
-                raise UnscreenedRefused(
-                    "TYPESAFE_API_KEY is not set, so tool outputs cannot be screened for prompt "
-                    "injection. Set it, or set DESKCLERK_ALLOW_UNSCREENED=true to start "
-                    "without the screen."
-                )
             print(
                 "deskclerk: TYPESAFE_API_KEY is not set, "
                 "so tool outputs are not screened for prompt injection",
@@ -193,7 +185,6 @@ def main(argv: Sequence[str] = ()) -> None:
         ProviderNotInstalled,
         AuthUnavailable,
         TracingNotInstalled,
-        UnscreenedRefused,
         ValueError,
     ) as error:
         sys.exit(f"deskclerk: {error}")

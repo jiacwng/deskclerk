@@ -32,6 +32,7 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      - deskclerk-data:/var/lib/deskclerk
     depends_on:
       postgres:
         condition: service_healthy
@@ -44,3 +45,4 @@ services:
 
 volumes:
   postgres-data:
+  deskclerk-data:

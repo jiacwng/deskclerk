@@ -127,6 +127,7 @@ textarea { caret-color: var(--accent); }
   .brand { white-space: nowrap; }
   #status { display: none; }
 }
+.banner { background: var(--warn-soft); color: var(--warn); font-size: 0.8125rem; font-weight: 600; padding: 0.4rem 1rem; text-align: center; }
 .budget { font-size: 0.8125rem; margin-bottom: 1rem; }
 .budget[data-level="warn"] { color: var(--warn); font-weight: 600; }
 .heading { font-size: 0.8125rem; font-weight: 600; color: var(--muted); margin-bottom: 0.5rem; }
@@ -363,6 +364,7 @@ textarea::placeholder { color: var(--muted); }
     </div>
   </div>
 </header>
+<p id="unscreened" class="banner" role="status" hidden>Tool results are not screened for prompt injection. Set TYPESAFE_API_KEY to turn the screen on.</p>
 
 <section id="signin" class="signin" hidden>
   <h2 class="signin-title">Sign in to continue</h2>
@@ -1646,6 +1648,7 @@ async function start() {
   const me = await response.json();
   el("status").textContent = "Signed in as " + me.name;
   el("admin-link").hidden = !me.admin;
+  el("unscreened").hidden = !me.unscreened;
   showBudget(me.spent_usd, me.budget_usd);
   el("who").hidden = false;
   el("app").hidden = false;

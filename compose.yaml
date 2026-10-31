@@ -77,6 +77,7 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      - deskclerk-data:/var/lib/deskclerk
     depends_on:
       keycloak:
         condition: service_healthy
@@ -84,3 +85,6 @@ services:
         condition: service_healthy
       demo:
         condition: service_healthy
+
+volumes:
+  deskclerk-data:
