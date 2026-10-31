@@ -705,6 +705,7 @@ def create_app(
             "spent_usd": spent,
             "budget_usd": settings.budget_usd,
             "admin": is_admin(who.identity),
+            "unscreened": jev is None,
         }
 
     @app.get("/servers")

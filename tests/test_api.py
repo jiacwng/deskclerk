@@ -243,6 +243,36 @@ def test_the_app_needs_a_session_key(
             pass
 
 
+def test_me_says_whether_tool_results_are_unscreened(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    key = Fernet.generate_key().decode()
+    ada = as_user(sign_token, "ada")
+    with web(
+        make_settings(token_settings), [], script(), token_signing_key, database, key=key
+    ) as site:
+        assert site.client.get("/me", headers=ada).json()["unscreened"] is True
+    with web(
+        make_settings(token_settings),
+        [],
+        script(),
+        token_signing_key,
+        database,
+        key=key,
+        jev=object(),  # type: ignore[arg-type]
+    ) as site:
+        assert site.client.get("/me", headers=ada).json()["unscreened"] is False
+
+
+def test_the_page_has_a_banner_for_unscreened_results() -> None:
+    page = resources.files("deskclerk").joinpath("static/index.html").read_text(encoding="utf-8")
+    assert 'id="unscreened"' in page
+    assert "me.unscreened" in page
+
+
 def test_the_client_metadata_document_is_served_without_sign_in(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
@@ -318,6 +348,7 @@ def test_a_bad_bearer_token_is_refused_and_a_good_one_names_the_employee(
             "spent_usd": 0.0,
             "budget_usd": 2.0,
             "admin": False,
+            "unscreened": True,
         }
 
 
@@ -881,6 +912,7 @@ def test_a_cookie_post_needs_the_custom_header_and_a_bearer_post_does_not(
             "spent_usd": 0.0,
             "budget_usd": 2.0,
             "admin": False,
+            "unscreened": True,
         }
         assert ask(site, {}).status_code == 403
         assert ask(site, {CSRF_HEADER: "something else"}).status_code == 403
@@ -1204,6 +1236,7 @@ def test_the_session_lasts_the_session_hours_after_the_id_token_expires(
             "spent_usd": 0.0,
             "budget_usd": 2.0,
             "admin": False,
+            "unscreened": True,
         }
         now = time.time()
         monkeypatch.setattr(sessions, "time", SimpleNamespace(time=lambda: now + 10))
@@ -1213,6 +1246,7 @@ def test_the_session_lasts_the_session_hours_after_the_id_token_expires(
             "spent_usd": 0.0,
             "budget_usd": 2.0,
             "admin": False,
+            "unscreened": True,
         }
         later = now + 8 * 3600 + 10
         monkeypatch.setattr(sessions, "time", SimpleNamespace(time=lambda: later))
@@ -1237,6 +1271,7 @@ def test_sign_in_works_when_the_access_token_is_opaque(
             "spent_usd": 0.0,
             "budget_usd": 2.0,
             "admin": False,
+            "unscreened": True,
         }
 
 
@@ -1610,6 +1645,7 @@ def test_logging_out_clears_the_session_cookie(
             "spent_usd": 0.0,
             "budget_usd": 2.0,
             "admin": False,
+            "unscreened": True,
         }
         loggedout = site.client.post("/logout", headers={CSRF_HEADER: CSRF_VALUE})
         assert loggedout.status_code == 204
@@ -1812,6 +1848,7 @@ def test_a_renamed_employee_keeps_the_same_conversation(
         "spent_usd": 0.0,
         "budget_usd": 2.0,
         "admin": False,
+        "unscreened": True,
     }
 
 
