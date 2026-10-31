@@ -22,7 +22,7 @@ import anthropic
 import anyio.from_thread
 import httpx
 import psycopg
-from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.sse import KEEPALIVE_COMMENT, format_sse_event
 from langchain_core.language_models import BaseChatModel
@@ -32,7 +32,15 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from deskclerk import cookies, oidc
-from deskclerk.admin import AdminSummary, recent_rows, server_rows, usage_rows
+from deskclerk.admin import (
+    AdminAuditPage,
+    AdminSummary,
+    audit_page,
+    audit_row,
+    recent_rows,
+    server_rows,
+    usage_rows,
+)
 from deskclerk.agent import (
     AlwaysAllowRefused,
     CallEnded,
@@ -51,6 +59,7 @@ from deskclerk.agent import (
     waiting_calls,
 )
 from deskclerk.audit import Audit
+from deskclerk.auditstore import AuditFilter, AuditStore
 from deskclerk.auth import (
     AuthError,
     AuthUnavailable,
@@ -93,7 +102,12 @@ from deskclerk.metrics import Metrics
 from deskclerk.pinning import MenuEntry, allowed_tool_names, read_menu, revoke_tool
 from deskclerk.providers import BudgetExceeded, Usage, cost_of
 from deskclerk.quota import Quota
-from deskclerk.retention import delete_old_threads, delete_old_threads_daily
+from deskclerk.retention import (
+    delete_old_audit_rows,
+    delete_old_audit_rows_daily,
+    delete_old_threads,
+    delete_old_threads_daily,
+)
 from deskclerk.scim import ScimUsers, mount_scim
 from deskclerk.scope import jev_tool_selection
 from deskclerk.screen import jev_screen
@@ -109,6 +123,8 @@ LOGIN_COOKIE = "deskclerk_login"
 CSRF_HEADER = "X-Requested-With"
 CSRF_VALUE = "deskclerk"
 MAX_REQUEST_CHARS = 4000
+AUDIT_PAGE_SIZE = 50
+AUDIT_PAGE_MAXIMUM = 200
 LOGIN_LIFETIME_SECONDS = 600
 SECONDS_PER_HOUR = 3600
 BEARER = {"WWW-Authenticate": "Bearer"}
@@ -406,7 +422,8 @@ def create_app(
     session_seconds = settings.session_hours * SECONDS_PER_HOUR
     cost_of(settings.price_model, Usage(0, 0, 0, 0))
     quota = Quota(database, settings.requests_per_minute)
-    audit = Audit(settings.audit_text, settings.audit_key)
+    audit_store = AuditStore(database)
+    audit = Audit(settings.audit_text, settings.audit_key, audit_store)
     metrics = Metrics(registry)
     discovered: dict[str, oidc.Endpoints] = {}
     ask_failures: tuple[type[Exception], ...] = (
@@ -436,14 +453,20 @@ def create_app(
         async with database.serving(), connections.listening(), catalog.listening():
             checkpointer = await open_checkpointer(database, tokens.fernet)
             app.state.checkpointer = checkpointer
-            sweep = None
+            sweeps: list[asyncio.Task[None]] = []
             if settings.retention_days > 0:
                 await delete_old_threads(database, checkpointer, settings.retention_days)
-                sweep = asyncio.create_task(
-                    delete_old_threads_daily(database, checkpointer, settings.retention_days)
-                )
+                await delete_old_audit_rows(audit_store, settings.retention_days)
+                sweeps = [
+                    asyncio.create_task(
+                        delete_old_threads_daily(database, checkpointer, settings.retention_days)
+                    ),
+                    asyncio.create_task(
+                        delete_old_audit_rows_daily(audit_store, settings.retention_days)
+                    ),
+                ]
             yield
-            if sweep is not None:
+            for sweep in sweeps:
                 sweep.cancel()
 
     app = FastAPI(
@@ -590,6 +613,37 @@ def create_app(
                     usage_rows, spending_store, month, settings.budget_usd
                 ),
                 recent=await recent_rows(database, settings.audit_text),
+            )
+
+        def audit_filter(
+            employee: str | None = None,
+            entry: str | None = None,
+            server: str | None = None,
+            tool: str | None = None,
+            decision: str | None = None,
+            since: datetime | None = None,
+            until: datetime | None = None,
+        ) -> AuditFilter:
+            return AuditFilter(employee, entry, server, tool, decision, since, until)
+
+        @app.get("/admin/audit")
+        async def admin_audit(
+            found: AuditFilter = Depends(audit_filter),
+            limit: int = Query(AUDIT_PAGE_SIZE, ge=1, le=AUDIT_PAGE_MAXIMUM),
+            cursor: int | None = None,
+            _: Caller = Depends(admin_caller),
+        ) -> AdminAuditPage:
+            return audit_page(await run_in_threadpool(audit_store.search, found, limit, cursor))
+
+        @app.get("/admin/audit/download")
+        async def admin_audit_download(
+            found: AuditFilter = Depends(audit_filter), _: Caller = Depends(admin_caller)
+        ) -> StreamingResponse:
+            lines = (audit_row(row).model_dump_json() + "\n" for row in audit_store.rows(found))
+            return StreamingResponse(
+                lines,
+                media_type="application/x-ndjson",
+                headers={"Content-Disposition": 'attachment; filename="audit.jsonl"'},
             )
 
         def refuse_unusable(entry: ServerEntry) -> None:

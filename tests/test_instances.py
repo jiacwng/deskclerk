@@ -1,7 +1,8 @@
 # Two copies of the app on one Postgres database, as behind a load balancer: they share an
 # employee's session, conversation and budget, a second ask of one employee waits for the first,
 # the request quota counts both, an OAuth callback that lands on the other copy still completes
-# the flow, and a server an admin changes on one copy reaches the other without a restart.
+# the flow, a server an admin changes on one copy reaches the other without a restart, and audit
+# lines written by both at once leave one intact hash chain.
 
 import itertools
 import threading
@@ -13,6 +14,7 @@ from langchain_core.messages.ai import UsageMetadata
 
 from conftest import DATABASE_URL
 from deskclerk.api import SESSION_COOKIE
+from deskclerk.auditstore import AuditStore
 from deskclerk.auth import SigningKeyLookup
 from deskclerk.config import Settings
 from deskclerk.database import Database
@@ -21,6 +23,7 @@ from test_admin import GROUP, bearer
 from test_agent import ScriptedModel, answer, script
 from test_api import (
     Sign,
+    Web,
     as_user,
     ask,
     make_settings,
@@ -207,3 +210,34 @@ def test_a_server_changed_on_one_instance_reaches_the_other_without_a_restart(
     assert (added.status_code, paused.status_code) == (204, 204)
     assert seen_added
     assert seen_paused
+
+
+def test_audit_lines_written_by_two_instances_at_once_leave_an_intact_chain(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+    other_database: Database,
+) -> None:
+    settings = make_settings(token_settings, admin_group=GROUP)
+    admin = bearer(sign_token, "root", [GROUP])
+
+    def revoke_many(site: Web, prefix: str) -> None:
+        for number in range(15):
+            body = {"user_id": f"{prefix}{number}"}
+            assert site.client.post("/admin/employees/revoke", json=body, headers=admin).is_success
+
+    with (
+        web(settings, [], script(), token_signing_key, database, key=KEY) as a,
+        web(settings, [], script(), token_signing_key, other_database, key=KEY) as b,
+    ):
+        threads = [
+            threading.Thread(target=revoke_many, args=(a, "a")),
+            threading.Thread(target=revoke_many, args=(b, "b")),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(60)
+        report = AuditStore(database).verify()
+    assert (report.rows, report.broken_at) == (30, None)

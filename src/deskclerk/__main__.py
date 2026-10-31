@@ -5,7 +5,9 @@
 # lines. python -m deskclerk rotate-key re-encrypts every stored value with the newest key in
 # DESKCLERK_TOKEN_KEY. python -m deskclerk import-servers [--if-empty] <file> replaces the server
 # list with a TOML or mcpServers JSON file, or changes nothing with --if-empty when the list has
-# servers, and python -m deskclerk export-servers prints it as TOML.
+# servers, and python -m deskclerk export-servers prints it as TOML. python -m deskclerk
+# verify-audit walks the audit log's hash chain and exits with 1 at the first row that does not
+# match.
 
 import argparse
 import sys
@@ -21,6 +23,7 @@ from pydantic import ValidationError
 
 from deskclerk.api import MissingSessionKey, create_app
 from deskclerk.audit import Audit, log_to_stdout
+from deskclerk.auditstore import AuditStore
 from deskclerk.auth import AuthUnavailable, discover_jwks_url, jwks_signing_key
 from deskclerk.config import Settings, load_settings
 from deskclerk.connections import OAuthConnections
@@ -65,7 +68,7 @@ def erase(user_id: str) -> None:
         tokens,
         SessionStore(database),
         SpendingStore(database),
-        Audit(settings.audit_text, settings.audit_key),
+        Audit(settings.audit_text, settings.audit_key, AuditStore(database)),
     )
     database.close()
     print(
@@ -115,6 +118,19 @@ def export_servers() -> None:
     print(toml_text(entries), end="")
 
 
+def verify_audit() -> None:
+    try:
+        settings = load_settings()
+    except ValidationError as error:
+        sys.exit(f"deskclerk: {error}")
+    database = open_database(settings)
+    report = AuditStore(database).verify()
+    database.close()
+    if report.broken_at is not None:
+        sys.exit(f"deskclerk: the audit chain breaks at row {report.broken_at}")
+    print(f"deskclerk: the audit chain is intact, {report.rows} rows")
+
+
 def month_argument(text: str) -> str:
     try:
         return month_of(datetime.strptime(text, "%Y-%m"))
@@ -157,6 +173,7 @@ def main(argv: Sequence[str] = ()) -> None:
         "--if-empty", action="store_true", help="change nothing when the list has servers"
     )
     commands.add_parser("export-servers", help="print the server list as TOML")
+    commands.add_parser("verify-audit", help="check the audit log's hash chain")
     arguments = parser.parse_args(argv)
     try:
         read_secret_files()
@@ -177,6 +194,9 @@ def main(argv: Sequence[str] = ()) -> None:
         return
     if arguments.command == "export-servers":
         export_servers()
+        return
+    if arguments.command == "verify-audit":
+        verify_audit()
         return
     try:
         settings = load_settings()
