@@ -11,8 +11,9 @@ from cryptography.fernet import Fernet
 
 from deskclerk.connections import OAuthConnections
 from deskclerk.database import Database
-from deskclerk.servers import McpServer, load_servers
+from deskclerk.servers import McpServer
 from test_connections import serving_connections
+from test_servers import load_servers
 
 ROOT = Path(__file__).parent.parent
 SANDBOX = "/sandbox/deskclerk"

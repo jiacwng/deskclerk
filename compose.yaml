@@ -59,6 +59,27 @@ services:
       timeout: 5s
       retries: 30
 
+  # Loads servers.toml into the database once, before deskclerk starts. It replaces the server list,
+  # so run it only to reset the list; admins change servers on the /admin page afterwards.
+  import-servers:
+    build: .
+    network_mode: "service:keycloak"
+    env_file: .env
+    environment:
+      DESKCLERK_ISSUER: http://localhost:8080/realms/deskclerk
+      DESKCLERK_DATABASE_URL: postgresql://deskclerk:deskclerk@127.0.0.1:5432/deskclerk
+    command: ["python", "-m", "deskclerk", "import-servers", "/servers.toml"]
+    volumes:
+      - type: bind
+        source: ./servers.toml
+        target: /servers.toml
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   # The web app on http://localhost:8000. It shares keycloak's network, so the issuer, the
   # sign-in redirect and MCP servers on localhost keep the addresses the browser uses. keycloak
   # publishes ports 8000 and 8100 for it and for demo.
@@ -70,13 +91,6 @@ services:
       DESKCLERK_HOST: 0.0.0.0
       DESKCLERK_ISSUER: http://localhost:8080/realms/deskclerk
       DESKCLERK_DATABASE_URL: postgresql://deskclerk:deskclerk@127.0.0.1:5432/deskclerk
-    volumes:
-      - type: bind
-        source: ./servers.toml
-        target: /app/servers.toml
-        read_only: true
-        bind:
-          create_host_path: false
     depends_on:
       keycloak:
         condition: service_healthy
@@ -84,3 +98,5 @@ services:
         condition: service_healthy
       demo:
         condition: service_healthy
+      import-servers:
+        condition: service_completed_successfully

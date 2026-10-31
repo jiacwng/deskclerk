@@ -1,5 +1,6 @@
-# Reads the MCP servers the company admin lists in a TOML or mcpServers JSON file
-# and checks each entry.
+# Checks each MCP server entry the company admin gives, reads a list of entries from a TOML or
+# mcpServers JSON file, writes entries back as TOML and turns stored entries into servers whose
+# secrets are read from the environment.
 
 import json
 import os
@@ -19,6 +20,8 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+from deskclerk.secret_files import SecretFileError, file_secret
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1"}
 ENV_REFERENCE = re.compile(r"\$\{env:([^}]+)\}")
@@ -47,12 +50,13 @@ class McpServer:
     title: str | None = None
     description: str | None = None
     examples: tuple[str, ...] = ()
+    paused: bool = False
 
     def open_to(self, groups: frozenset[str]) -> bool:
         return self.groups is None or not groups.isdisjoint(self.groups)
 
 
-class _ServerEntry(BaseModel):
+class ServerEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
@@ -72,6 +76,7 @@ class _ServerEntry(BaseModel):
     title: str | None = None
     description: str | None = None
     examples: list[str] = []
+    paused: bool = False
 
     @field_validator("name")
     @classmethod
@@ -131,13 +136,13 @@ class _ServerEntry(BaseModel):
         )
 
     @model_validator(mode="after")
-    def _certificate_and_key_come_together(self) -> "_ServerEntry":
+    def _certificate_and_key_come_together(self) -> "ServerEntry":
         if (self.client_cert is None) != (self.client_key is None):
             raise ValueError(f"server {self.name!r} needs client_cert and client_key together")
         return self
 
     @model_validator(mode="after")
-    def _oauth_owns_the_authorization_header(self) -> "_ServerEntry":
+    def _oauth_owns_the_authorization_header(self) -> "ServerEntry":
         if self.auth == "oauth" and any(name.lower() == "authorization" for name in self.headers):
             raise ValueError(
                 f'server {self.name!r} sets an Authorization header with auth = "oauth"'
@@ -145,13 +150,13 @@ class _ServerEntry(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _secret_needs_client_id(self) -> "_ServerEntry":
+    def _secret_needs_client_id(self) -> "ServerEntry":
         if self.client_secret_env is not None and self.client_id is None:
             raise ValueError(f"server {self.name!r} sets client_secret_env without client_id")
         return self
 
     @model_validator(mode="after")
-    def _no_sign_in_needs_no_client(self) -> "_ServerEntry":
+    def _no_sign_in_needs_no_client(self) -> "ServerEntry":
         if self.auth == "none" and (self.client_id is not None or self.client_secret_env):
             raise ValueError(f'server {self.name!r} has auth = "none" and a client')
         return self
@@ -166,11 +171,11 @@ class _McpJsonFile(BaseModel):
 class _ServersFile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    server: list[_ServerEntry] = []
+    server: list[ServerEntry] = []
 
     @field_validator("server")
     @classmethod
-    def _names_are_unique(cls, entries: list[_ServerEntry]) -> list[_ServerEntry]:
+    def _names_are_unique(cls, entries: list[ServerEntry]) -> list[ServerEntry]:
         seen: set[str] = set()
         for entry in entries:
             if entry.name in seen:
@@ -213,34 +218,46 @@ def _read_mcp_json(path: Path) -> dict[str, Any]:
     return {"server": servers}
 
 
-def _parse(path: Path) -> _ServersFile:
+def read_entries(path: Path) -> list[ServerEntry]:
     if path.suffix == ".json":
         raw = _read_mcp_json(path)
     else:
         raw = _read_toml(path)
     try:
-        return _ServersFile.model_validate(raw)
+        return _ServersFile.model_validate(raw).server
     except ValidationError as error:
         raise ServersError(f"{path} is not a valid server list: {error}") from None
 
 
-def secret_variables(path: Path) -> list[str]:
-    names = []
-    for entry in _parse(path).server:
-        if entry.client_secret_env is not None:
-            names.append(entry.client_secret_env)
-        for value in entry.headers.values():
-            names.extend(ENV_REFERENCE.findall(value))
-    return names
+def toml_text(entries: list[ServerEntry]) -> str:
+    blocks = []
+    for entry in entries:
+        fields = {"name": entry.name, **entry.model_dump(exclude_defaults=True)}
+        lines = ["[[server]]"]
+        lines.extend(f"{name} = {_toml_value(value)}" for name, value in fields.items())
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks) + "\n"
 
 
-def load_servers(path: Path, environ: Mapping[str, str] = os.environ) -> list[McpServer]:
-    parsed = _parse(path)
+def _toml_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
+    pairs = (f"{json.dumps(key)} = {_toml_value(item)}" for key, item in value.items())
+    return "{ " + ", ".join(pairs) + " }"
+
+
+def resolve_servers(
+    entries: list[ServerEntry], environ: Mapping[str, str] = os.environ
+) -> list[McpServer]:
     servers = []
-    for entry in parsed.server:
+    for entry in entries:
         secret = None
         if entry.client_secret_env is not None:
-            secret = environ.get(entry.client_secret_env)
+            secret = _secret(entry.client_secret_env, environ)
             if secret is None:
                 raise ServersError(
                     f"server {entry.name!r} reads its client secret from the environment "
@@ -272,20 +289,30 @@ def load_servers(path: Path, environ: Mapping[str, str] = os.environ) -> list[Mc
                 entry.title,
                 entry.description,
                 tuple(entry.examples),
+                entry.paused,
             )
         )
     return servers
 
 
+def _secret(variable: str, environ: Mapping[str, str]) -> str | None:
+    try:
+        from_file = file_secret(variable, environ)
+    except SecretFileError as error:
+        raise ServersError(str(error)) from None
+    return environ.get(variable) if from_file is None else from_file
+
+
 def _fill_environment(server: str, header: str, value: str, environ: Mapping[str, str]) -> str:
     def replace(match: re.Match[str]) -> str:
         variable = match.group(1)
-        if variable not in environ:
+        secret = _secret(variable, environ)
+        if secret is None:
             raise ServersError(
                 f"server {server!r} header {header!r} reads the environment variable "
                 f"{variable}, which is not set"
             )
-        return environ[variable]
+        return secret
 
     return ENV_REFERENCE.sub(replace, value)
 

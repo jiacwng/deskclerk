@@ -43,6 +43,7 @@ from test_api import (
     make_settings,
     notes,
     open_notes,
+    stored_catalog,
     web,
 )
 from test_connections import REDIRECT
@@ -275,7 +276,7 @@ def listening(
     app = create_app(
         settings,
         database,
-        servers,
+        stored_catalog(database, servers),
         OAuthConnections(tokens, REDIRECT, "deskclerk test", 600),
         tokens,
         SpendingStore(database),

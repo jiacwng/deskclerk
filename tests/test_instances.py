@@ -1,12 +1,12 @@
 # Two copies of the app on one Postgres database, as behind a load balancer: they share an
 # employee's session, conversation and budget, a second ask of one employee waits for the first,
-# the request quota counts both, and an OAuth callback that lands on the other copy still
-# completes the flow.
+# the request quota counts both, an OAuth callback that lands on the other copy still completes
+# the flow, and a server an admin changes on one copy reaches the other without a restart.
 
 import itertools
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 import pytest
 from langchain_core.messages.ai import UsageMetadata
@@ -17,6 +17,7 @@ from deskclerk.auth import SigningKeyLookup
 from deskclerk.config import Settings
 from deskclerk.database import Database
 from mcp_server import RunningServer
+from test_admin import GROUP, bearer
 from test_agent import ScriptedModel, answer, script
 from test_api import (
     Sign,
@@ -169,3 +170,40 @@ def test_an_oauth_callback_received_by_another_instance_completes_the_flow(
         connected = a.tokens.get("ada", "notes", "tokens") is not None
     assert (finished.status_code, finished.headers["location"]) == (303, "/")
     assert connected
+
+
+def wait_until(condition: Callable[[], bool]) -> bool:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def test_a_server_changed_on_one_instance_reaches_the_other_without_a_restart(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+    other_database: Database,
+) -> None:
+    settings = make_settings(token_settings, admin_group=GROUP)
+    admin = bearer(sign_token, "root", [GROUP])
+    ada = as_user(sign_token, "ada")
+    wiki = {"name": "wiki", "url": "http://127.0.0.1:9/mcp", "auth": "none"}
+    with (
+        web(settings, [], script(), token_signing_key, database, key=KEY) as a,
+        web(settings, [], script(), token_signing_key, other_database, key=KEY) as b,
+    ):
+
+        def b_offers() -> list[str]:
+            return [row["name"] for row in b.client.get("/servers", headers=ada).json()]
+
+        added = a.client.post("/admin/servers", json=wiki, headers=admin)
+        seen_added = wait_until(lambda: b_offers() == ["wiki"])
+        paused = a.client.post("/admin/servers/wiki/pause", headers=admin)
+        seen_paused = wait_until(lambda: b_offers() == [])
+    assert (added.status_code, paused.status_code) == (204, 204)
+    assert seen_added
+    assert seen_paused

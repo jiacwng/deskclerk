@@ -1,6 +1,9 @@
 # The web app and its database for a company deploy, reachable from this machine only. Point .env at
 # your own login server and set POSTGRES_PASSWORD there, without characters that need escaping in a
-# URL. Several copies of the app can share the one database.
+# URL. Several copies of the app can share the one database. The server list lives in the database:
+# load a first one with
+#   docker compose -f compose.prod.yaml run --rm -v ./servers.toml:/servers.toml:ro deskclerk python -m deskclerk import-servers /servers.toml
+# and change it afterwards on the /admin page.
 services:
   postgres:
     image: postgres:17-alpine
@@ -25,13 +28,6 @@ services:
       DESKCLERK_DATABASE_URL: postgresql://deskclerk:${POSTGRES_PASSWORD}@postgres:5432/deskclerk
     ports:
       - "127.0.0.1:8000:8000"
-    volumes:
-      - type: bind
-        source: ./servers.toml
-        target: /app/servers.toml
-        read_only: true
-        bind:
-          create_host_path: false
     depends_on:
       postgres:
         condition: service_healthy

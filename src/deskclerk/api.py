@@ -95,7 +95,8 @@ from deskclerk.retention import delete_old_threads, delete_old_threads_daily
 from deskclerk.scim import ScimUsers, mount_scim
 from deskclerk.scope import jev_tool_selection
 from deskclerk.screen import jev_screen
-from deskclerk.servers import McpServer
+from deskclerk.servers import McpServer, ServerEntry, ServersError
+from deskclerk.serverstore import NoSuchServer, ServerCatalog, ServerExists
 from deskclerk.sessions import SessionStore
 from deskclerk.spending import Spending, SpendingStore, month_of
 from deskclerk.tokens import TokenStore
@@ -192,6 +193,17 @@ class ServerOut(BaseModel):
     connected: bool
     tools: list[MenuEntry]
     always_allowed: list[str]
+
+
+class RevokeBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str = Field(min_length=1)
+
+
+class RevokeOut(BaseModel):
+    tokens: int
+    sessions: int
 
 
 class ConnectOut(BaseModel):
@@ -372,7 +384,7 @@ def _content_security_policy(page: str, vendor: dict[str, bytes]) -> str:
 def create_app(
     settings: Settings,
     database: Database,
-    servers: list[McpServer],
+    catalog: ServerCatalog,
     connections: OAuthConnections,
     tokens: TokenStore,
     spending_store: SpendingStore,
@@ -398,7 +410,6 @@ def create_app(
         *MODEL_ERRORS,
         *UPSTREAM_ERRORS,
     )
-    server_by_name = {server.name: server for server in servers}
     page = resources.files("deskclerk").joinpath("static/index.html").read_text(encoding="utf-8")
     vendor = {
         name: resources.files("deskclerk").joinpath(f"static/vendor/{name}").read_bytes()
@@ -418,7 +429,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        async with database.serving(), connections.listening():
+        async with database.serving(), connections.listening(), catalog.listening():
             checkpointer = await open_checkpointer(database, tokens.fernet)
             app.state.checkpointer = checkpointer
             sweep = None
@@ -490,11 +501,16 @@ def create_app(
             raise HTTPException(403, "this page is for the admins group")
         return who
 
+    async def admin_posting_caller(who: Caller = Depends(posting_caller)) -> Caller:
+        if not is_admin(who.identity):
+            raise HTTPException(403, "this page is for the admins group")
+        return who
+
     def known_server(name: str, identity: Identity) -> McpServer:
-        server = server_by_name.get(name)
-        if server is None or not server.open_to(identity.groups):
-            raise HTTPException(404, f"no server named {name}")
-        return server
+        for server in catalog.offered:
+            if server.name == name and server.open_to(identity.groups):
+                return server
+        raise HTTPException(404, f"no server named {name}")
 
     def idp_client() -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=idp_transport, timeout=oidc.TIMEOUT_SECONDS)
@@ -561,12 +577,93 @@ def create_app(
             month = month_of(datetime.now(UTC))
             return AdminSummary(
                 month=month,
-                servers=await run_in_threadpool(server_rows, servers, tokens),
+                servers=await run_in_threadpool(server_rows, list(catalog.servers), tokens),
                 usage=await run_in_threadpool(
                     usage_rows, spending_store, month, settings.budget_usd
                 ),
                 recent=await recent_rows(database, settings.audit_text),
             )
+
+        def refuse_unusable(entry: ServerEntry) -> None:
+            try:
+                catalog.check(entry)
+            except ServersError as error:
+                raise HTTPException(422, str(error)) from None
+
+        async def change_servers(
+            who: Caller, action: str, target: str, change: Callable[[], None]
+        ) -> Response:
+            try:
+                await run_in_threadpool(change)
+            except ServerExists as error:
+                raise HTTPException(409, str(error)) from None
+            except NoSuchServer as error:
+                raise HTTPException(404, str(error)) from None
+            await catalog.refresh()
+            audit.admin_action(who.identity, action, target)
+            return Response(status_code=204)
+
+        @app.get("/admin/servers/{name}")
+        async def admin_server(name: str, _: Caller = Depends(admin_caller)) -> ServerEntry:
+            try:
+                return await run_in_threadpool(catalog.store.entry, name)
+            except NoSuchServer as error:
+                raise HTTPException(404, str(error)) from None
+
+        @app.post("/admin/servers", status_code=204)
+        async def admin_add_server(
+            entry: ServerEntry, who: Caller = Depends(admin_posting_caller)
+        ) -> Response:
+            refuse_unusable(entry)
+            return await change_servers(
+                who, "add_server", entry.name, lambda: catalog.store.add(entry)
+            )
+
+        @app.put("/admin/servers/{name}", status_code=204)
+        async def admin_edit_server(
+            name: str, entry: ServerEntry, who: Caller = Depends(admin_posting_caller)
+        ) -> Response:
+            if entry.name != name:
+                raise HTTPException(422, f"the body names {entry.name}, not {name}")
+            refuse_unusable(entry)
+            return await change_servers(
+                who, "edit_server", name, lambda: catalog.store.update(entry)
+            )
+
+        @app.post("/admin/servers/{name}/pause", status_code=204)
+        async def admin_pause_server(
+            name: str, who: Caller = Depends(admin_posting_caller)
+        ) -> Response:
+            return await change_servers(
+                who, "pause_server", name, lambda: catalog.store.set_paused(name, True)
+            )
+
+        @app.post("/admin/servers/{name}/resume", status_code=204)
+        async def admin_resume_server(
+            name: str, who: Caller = Depends(admin_posting_caller)
+        ) -> Response:
+            return await change_servers(
+                who, "resume_server", name, lambda: catalog.store.set_paused(name, False)
+            )
+
+        @app.delete("/admin/servers/{name}", status_code=204)
+        async def admin_remove_server(
+            name: str, who: Caller = Depends(admin_posting_caller)
+        ) -> Response:
+            return await change_servers(
+                who, "remove_server", name, lambda: catalog.store.remove(name)
+            )
+
+        @app.post("/admin/employees/revoke")
+        async def admin_revoke_employee(
+            body: RevokeBody, who: Caller = Depends(admin_posting_caller)
+        ) -> RevokeOut:
+            async with database.user_lock(body.user_id):
+                await connections.cancel_all_for(body.user_id)
+                revoked = await run_in_threadpool(tokens.delete_user_tokens, body.user_id)
+                ended = await run_in_threadpool(sessions.delete_user, body.user_id)
+            audit.admin_action(who.identity, "revoke_employee", body.user_id)
+            return RevokeOut(tokens=revoked, sessions=ended)
 
     @app.get("/vendor/{name}")
     async def vendor_script(name: str) -> Response:
@@ -703,7 +800,7 @@ def create_app(
     async def list_servers(who: Caller = Depends(caller)) -> list[ServerOut]:
         user = who.identity.user_id
         listed = []
-        for server in servers:
+        for server in catalog.offered:
             if not server.open_to(who.identity.groups):
                 continue
             connected = (
@@ -843,7 +940,7 @@ def create_app(
             raise HTTPException(404, "no such conversation")
         waiting = await waiting_calls(
             who.identity.user_id,
-            [s for s in servers if s.open_to(who.identity.groups)],
+            [s for s in catalog.offered if s.open_to(who.identity.groups)],
             connections,
             tokens,
             checkpointer,
@@ -1023,7 +1120,7 @@ def create_app(
                             identity.user_id,
                             text,
                             system_prompt(datetime.now(UTC).date()),
-                            [s for s in servers if s.open_to(identity.groups)],
+                            [s for s in catalog.offered if s.open_to(identity.groups)],
                             connections,
                             tokens,
                             checkpointer,
