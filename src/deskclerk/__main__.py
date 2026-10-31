@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 import httpx
 import psycopg
 import uvicorn
+from prometheus_client import CollectorRegistry
 from pydantic import ValidationError
 
 from deskclerk.api import MissingSessionKey, create_app
@@ -182,6 +183,7 @@ def main(argv: Sequence[str] = ()) -> None:
             write_check(),
             jev,
             jwks_signing_key(jwks_url),
+            CollectorRegistry(),
             tracing,
         )
     except (
