@@ -18,7 +18,6 @@ dependencies = [
     "genai-prices>=0.1.13",
     "typesafe-sdk>=0.7",
     "pydantic-settings>=2.16",
-    "limits>=5.8",
     "mcp>=2.3",
     "jsonschema>=4.26",
     "fastapi>=0.142",
