@@ -59,7 +59,7 @@ from deskclerk.agent import (
     waiting_calls,
 )
 from deskclerk.audit import Audit
-from deskclerk.auditstore import AuditFilter, AuditStore
+from deskclerk.auditstore import AuditFilter, AuditStore, chain_key_of
 from deskclerk.auth import (
     AuthError,
     AuthUnavailable,
@@ -422,7 +422,7 @@ def create_app(
     session_seconds = settings.session_hours * SECONDS_PER_HOUR
     cost_of(settings.price_model, Usage(0, 0, 0, 0))
     quota = Quota(database, settings.requests_per_minute)
-    audit_store = AuditStore(database)
+    audit_store = AuditStore(database, chain_key_of(settings))
     audit = Audit(settings.audit_text, settings.audit_key, audit_store)
     metrics = Metrics(registry)
     discovered: dict[str, oidc.Endpoints] = {}

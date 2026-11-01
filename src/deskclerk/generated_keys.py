@@ -1,5 +1,6 @@
-# Makes the token key and the session key on the first start when their variables are unset, keeps
-# each in a file in the data directory, and reads that file on every later start.
+# Makes the token key, the session key and the audit chain key on the first start when their
+# variables are unset, keeps each in a file in the data directory, and reads that file on every
+# later start.
 
 import base64
 import os
@@ -20,9 +21,12 @@ def new_session_key() -> str:
     return secrets.token_urlsafe(32)
 
 
+AUDIT_CHAIN_KEY_FILE = "audit_chain_key"
+
 GENERATED_KEYS: tuple[tuple[str, str, Callable[[], str]], ...] = (
     ("DESKCLERK_TOKEN_KEY", "token_key", new_token_key),
     ("DESKCLERK_SESSION_KEY", "session_key", new_session_key),
+    ("DESKCLERK_AUDIT_CHAIN_KEY", AUDIT_CHAIN_KEY_FILE, new_session_key),
 )
 
 

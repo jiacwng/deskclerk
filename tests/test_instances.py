@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterator
 import pytest
 from langchain_core.messages.ai import UsageMetadata
 
-from conftest import DATABASE_URL
+from conftest import CHAIN_KEY, DATABASE_URL
 from deskclerk.api import SESSION_COOKIE
 from deskclerk.auditstore import AuditStore
 from deskclerk.auth import SigningKeyLookup
@@ -239,5 +239,5 @@ def test_audit_lines_written_by_two_instances_at_once_leave_an_intact_chain(
             thread.start()
         for thread in threads:
             thread.join(60)
-        report = AuditStore(database).verify()
+        report = AuditStore(database, CHAIN_KEY).verify()
     assert (report.rows, report.broken_at) == (30, None)

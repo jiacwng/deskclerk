@@ -113,7 +113,15 @@ each copy would otherwise make its own.
   durations, with no employee names. It needs no sign-in, so block it at the reverse proxy if it
   must stay private.
 - Sign-in and connection failures are logged with their reason. The audit log is one JSON line per
-  request on standard output.
+  request on standard output, and each line is also stored in Postgres. The admin page searches the
+  stored lines and downloads the result.
+- Each stored line carries an HMAC of the line before it, under the chain key in
+  `DESKCLERK_AUDIT_CHAIN_KEY` or `/var/lib/deskclerk/audit_chain_key`.
+  `... python -m deskclerk verify-audit` names the first line that was edited or removed. Whoever
+  holds the key can rewrite the chain, and removing the newest lines is not detected, so ship the
+  lines on standard output to your log system to keep a copy outside the database.
+- Erasing an employee keeps their audit lines. With `DESKCLERK_AUDIT_TEXT` set, those lines hold
+  what they asked, so set `DESKCLERK_RETENTION_DAYS` too.
 
 ## Results
 

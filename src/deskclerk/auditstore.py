@@ -1,9 +1,11 @@
 # The audit log kept in Postgres: every line the audit log prints is also one row, with a few
 # columns pulled from the line for search and a hash chain over the lines. A row's hash is the
-# SHA-256 of the previous row's hash followed by its line, so a changed or removed row shows when
-# the chain is walked. The checkpoint row holds the hash that the oldest kept row chains from.
+# HMAC-SHA256, under the chain key that the database never holds, of the previous row's hash
+# followed by its line, so a changed or removed row shows when the chain is walked. The checkpoint
+# row holds the hash that the oldest kept row chains from.
 
 import hashlib
+import hmac
 import json
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -11,6 +13,7 @@ from datetime import datetime
 
 from psycopg.rows import dict_row
 
+from deskclerk.config import Settings
 from deskclerk.database import Database, lock_key
 
 CHAIN_LOCK = lock_key("audit_chain")
@@ -25,6 +28,16 @@ NEWEST_HASH = (
     "SELECT COALESCE((SELECT hash FROM audit_log ORDER BY id DESC LIMIT 1), "
     "(SELECT hash FROM audit_checkpoint)) AS hash"
 )
+
+
+class MissingChainKey(RuntimeError):
+    pass
+
+
+def chain_key_of(settings: Settings) -> bytes:
+    if settings.audit_chain_key is None or not settings.audit_chain_key.get_secret_value():
+        raise MissingChainKey("DESKCLERK_AUDIT_CHAIN_KEY is not set; put it in .env")
+    return settings.audit_chain_key.get_secret_value().encode()
 
 
 @dataclass(frozen=True)
@@ -63,8 +76,8 @@ class ChainReport:
     broken_at: int | None
 
 
-def chain_hash(previous: str, line: str) -> str:
-    return hashlib.sha256((previous + line).encode()).hexdigest()
+def chain_hash(key: bytes, previous: str, line: str) -> str:
+    return hmac.new(key, (previous + line).encode(), hashlib.sha256).hexdigest()
 
 
 def _columns(line: str) -> dict[str, object]:
@@ -106,14 +119,18 @@ def _where(found: AuditFilter) -> tuple[str, list[object]]:
 
 
 class AuditStore:
-    def __init__(self, database: Database) -> None:
+    def __init__(self, database: Database, chain_key: bytes) -> None:
         self._pool = database.pool
+        self._chain_key = chain_key
 
     def append(self, line: str) -> None:
         with self._pool.connection() as connection:
             connection.execute("SELECT pg_advisory_xact_lock(%s)", (CHAIN_LOCK,))
             [newest] = connection.cursor(row_factory=dict_row).execute(NEWEST_HASH).fetchall()
-            columns = _columns(line) | {"line": line, "hash": chain_hash(newest["hash"], line)}
+            columns = _columns(line) | {
+                "line": line,
+                "hash": chain_hash(self._chain_key, newest["hash"], line),
+            }
             connection.execute(INSERT, columns)
 
     def search(self, found: AuditFilter, limit: int, cursor: int | None) -> AuditPage:
@@ -150,7 +167,7 @@ class AuditStore:
                     "FROM audit_log ORDER BY id"
                 )
                 for row in cursor:
-                    if chain_hash(previous, row["line"]) != row["hash"]:
+                    if chain_hash(self._chain_key, previous, row["line"]) != row["hash"]:
                         return ChainReport(checked, row["id"])
                     columns = _columns(row["line"])
                     if any(row[name] != value for name, value in columns.items()):

@@ -15,6 +15,14 @@ def test_the_file_sets_the_variable_and_a_trailing_newline_is_stripped(tmp_path:
     assert environ["DESKCLERK_TOKEN_KEY"] == "the-key"
 
 
+def test_the_audit_chain_key_can_come_from_a_file(tmp_path: Path) -> None:
+    secret = tmp_path / "audit_chain_key"
+    secret.write_text("the-chain-key\n")
+    environ = {"DESKCLERK_AUDIT_CHAIN_KEY_FILE": str(secret)}
+    read_secret_files(environ)
+    assert environ["DESKCLERK_AUDIT_CHAIN_KEY"] == "the-chain-key"
+
+
 def test_setting_both_is_an_error_naming_both(tmp_path: Path) -> None:
     secret = tmp_path / "token_key"
     secret.write_text("the-key")
