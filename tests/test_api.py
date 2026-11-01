@@ -33,6 +33,7 @@ from langchain_core.messages.ai import UsageMetadata
 from prometheus_client import CollectorRegistry
 from pydantic import SecretStr
 
+from conftest import CHAIN_KEY
 from deskclerk import cookies, sessions
 from deskclerk.api import (
     CSRF_HEADER,
@@ -1175,7 +1176,9 @@ def test_the_page_names_each_server_in_its_connect_and_disconnect_buttons(
 
 @pytest.mark.keycloak
 def test_an_employee_signs_in_through_keycloak_and_asks(database: Database) -> None:
-    settings = Settings(session_key=SecretStr(SESSION_KEY))
+    settings = Settings(
+        session_key=SecretStr(SESSION_KEY), audit_chain_key=SecretStr(CHAIN_KEY.decode())
+    )
     with httpx.Client() as discovery:
         signing_key = jwks_signing_key(discover_jwks_url(settings, discovery))
     model = script(answer("hello analyst"))

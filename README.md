@@ -40,9 +40,9 @@ OpenAI or AWS Bedrock. This runs deskclerk, a development Keycloak and a demo Gi
 8000, 8080 and 8100.
 
 1. Copy `.env.example` to `.env`. Fill in `ANTHROPIC_API_KEY`, or set `DESKCLERK_MODEL` and your
-   provider's key as `.env.example` shows. The first start makes the token key and the session
-   key and keeps them in the `deskclerk-data` volume. Without a TypeSafe key, the page warns that
-   tool results are not screened.
+   provider's key as `.env.example` shows. The first start makes the token key, the session key
+   and the audit chain key and keeps them in the `deskclerk-data` volume. Without a TypeSafe key,
+   the page warns that tool results are not screened.
 2. Copy `servers.example.toml` to `servers.toml`. The first start imports it into the database.
    It lists the demo Git server, the official MCP Git server running on a copy of this repository
    inside its container. It needs no account. The
@@ -90,8 +90,8 @@ All state lives in one Postgres database. `compose.prod.yaml` starts it and sets
 `DESKCLERK_DATABASE_URL` from `POSTGRES_PASSWORD`, which you set in `.env` with letters and digits
 only. To use your own Postgres, set `DESKCLERK_DATABASE_URL` instead. Several copies of deskclerk
 can run behind a load balancer on one database, and each copy opens up to 42 connections. A change
-on the admin page reaches every copy without a restart. Set both keys in `.env` first, because
-each copy would otherwise make its own.
+on the admin page reaches every copy without a restart. Set the three keys in `.env` first,
+because each copy would otherwise make its own.
 
 ## Operate it
 
@@ -113,7 +113,15 @@ each copy would otherwise make its own.
   durations, with no employee names. It needs no sign-in, so block it at the reverse proxy if it
   must stay private.
 - Sign-in and connection failures are logged with their reason. The audit log is one JSON line per
-  request on standard output.
+  request on standard output, and each line is also stored in Postgres. The admin page searches the
+  stored lines and downloads the result.
+- Each stored line carries an HMAC of the line before it, under the chain key in
+  `DESKCLERK_AUDIT_CHAIN_KEY` or `/var/lib/deskclerk/audit_chain_key`.
+  `... python -m deskclerk verify-audit` names the first line that was edited or removed. Whoever
+  holds the key can rewrite the chain, and removing the newest lines is not detected, so ship the
+  lines on standard output to your log system to keep a copy outside the database.
+- Erasing an employee keeps their audit lines. With `DESKCLERK_AUDIT_TEXT` set, those lines hold
+  what they asked, so set `DESKCLERK_RETENTION_DAYS` too.
 
 ## Why not an existing tool
 

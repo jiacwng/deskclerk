@@ -66,6 +66,7 @@ jobs:
             --from-literal=DESKCLERK_DATABASE_URL=postgresql://deskclerk:ci@postgres:5432/deskclerk \
             --from-literal=DESKCLERK_TOKEN_KEY="$(python3 -c 'import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')" \
             --from-literal=DESKCLERK_SESSION_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" \
+            --from-literal=DESKCLERK_AUDIT_CHAIN_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" \
             --from-literal=ANTHROPIC_API_KEY=unused
           helm install deskclerk charts/deskclerk -f charts/deskclerk/ci/values.yaml --wait --timeout 3m
       - name: livez answers
