@@ -40,9 +40,9 @@ OpenAI or AWS Bedrock. This runs deskclerk, a development Keycloak and a demo Gi
 8000, 8080 and 8100.
 
 1. Copy `.env.example` to `.env`. Fill in `ANTHROPIC_API_KEY`, or set `DESKCLERK_MODEL` and your
-   provider's key as `.env.example` shows. The first start makes the token key and the session
-   key and keeps them in the `deskclerk-data` volume. Without a TypeSafe key, the page warns that
-   tool results are not screened.
+   provider's key as `.env.example` shows. The first start makes the token key, the session key
+   and the audit chain key and keeps them in the `deskclerk-data` volume. Without a TypeSafe key,
+   the page warns that tool results are not screened.
 2. Copy `servers.example.toml` to `servers.toml`. The first start imports it into the database.
    It lists the demo Git server, the official MCP Git server running on a copy of this repository
    inside its container. It needs no account. The
@@ -90,8 +90,8 @@ All state lives in one Postgres database. `compose.prod.yaml` starts it and sets
 `DESKCLERK_DATABASE_URL` from `POSTGRES_PASSWORD`, which you set in `.env` with letters and digits
 only. To use your own Postgres, set `DESKCLERK_DATABASE_URL` instead. Several copies of deskclerk
 can run behind a load balancer on one database, and each copy opens up to 42 connections. A change
-on the admin page reaches every copy without a restart. Set both keys in `.env` first, because
-each copy would otherwise make its own.
+on the admin page reaches every copy without a restart. Set the three keys in `.env` first,
+because each copy would otherwise make its own.
 
 ## Operate it
 
