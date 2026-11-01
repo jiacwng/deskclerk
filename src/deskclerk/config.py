@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     tool_selection: bool = False
     public_url: str = "http://localhost:8000"
     session_key: SecretStr | None = None
+    audit_chain_key: SecretStr | None = None
     session_hours: int = 8
     scim_token: SecretStr | None = None
     retention_days: int = Field(default=0, ge=0)

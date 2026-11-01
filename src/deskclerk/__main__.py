@@ -5,7 +5,9 @@
 # lines. python -m deskclerk rotate-key re-encrypts every stored value with the newest key in
 # DESKCLERK_TOKEN_KEY. python -m deskclerk import-servers [--if-empty] <file> replaces the server
 # list with a TOML or mcpServers JSON file, or changes nothing with --if-empty when the list has
-# servers, and python -m deskclerk export-servers prints it as TOML.
+# servers, and python -m deskclerk export-servers prints it as TOML. python -m deskclerk
+# verify-audit walks the audit log's hash chain and exits with 1 at the first row that does not
+# match. It never makes the audit chain key and exits with 2 when it has none.
 
 import argparse
 import sys
@@ -21,12 +23,13 @@ from pydantic import ValidationError
 
 from deskclerk.api import MissingSessionKey, create_app
 from deskclerk.audit import Audit, log_to_stdout
+from deskclerk.auditstore import AuditStore, MissingChainKey, chain_key_of
 from deskclerk.auth import AuthUnavailable, discover_jwks_url, jwks_signing_key
 from deskclerk.config import Settings, load_settings
 from deskclerk.connections import OAuthConnections
 from deskclerk.database import Database
 from deskclerk.erasure import erase_user
-from deskclerk.generated_keys import fill_missing_keys
+from deskclerk.generated_keys import AUDIT_CHAIN_KEY_FILE, fill_missing_keys
 from deskclerk.jev import jev_from_environment
 from deskclerk.providers import MissingApiKey, ProviderNotInstalled, chat_model
 from deskclerk.rotation import rotate_key
@@ -57,7 +60,8 @@ def erase(user_id: str) -> None:
             raise TokenKeyError("DESKCLERK_TOKEN_KEY is not set; put it in .env")
         database = open_database(settings)
         tokens = TokenStore(database, settings.token_key.get_secret_value())
-    except (ValidationError, TokenKeyError) as error:
+        audit_store = AuditStore(database, chain_key_of(settings))
+    except (ValidationError, TokenKeyError, MissingChainKey) as error:
         sys.exit(f"deskclerk: {error}")
     log_to_stdout()
     erased = erase_user(
@@ -65,7 +69,7 @@ def erase(user_id: str) -> None:
         tokens,
         SessionStore(database),
         SpendingStore(database),
-        Audit(settings.audit_text, settings.audit_key),
+        Audit(settings.audit_text, settings.audit_key, audit_store),
     )
     database.close()
     print(
@@ -115,6 +119,38 @@ def export_servers() -> None:
     print(toml_text(entries), end="")
 
 
+def stored_chain_key(settings: Settings) -> bytes | None:
+    try:
+        return chain_key_of(settings)
+    except MissingChainKey:
+        pass
+    path = settings.data_dir / AUDIT_CHAIN_KEY_FILE
+    if not path.exists():
+        return None
+    return path.read_text(encoding="utf-8").strip().encode()
+
+
+def verify_audit() -> None:
+    try:
+        settings = load_settings()
+    except ValidationError as error:
+        sys.exit(f"deskclerk: {error}")
+    chain_key = stored_chain_key(settings)
+    if chain_key is None:
+        print(
+            "deskclerk: no audit chain key; set DESKCLERK_AUDIT_CHAIN_KEY or keep "
+            f"{AUDIT_CHAIN_KEY_FILE} in the data directory",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    database = open_database(settings)
+    report = AuditStore(database, chain_key).verify()
+    database.close()
+    if report.broken_at is not None:
+        sys.exit(f"deskclerk: the audit chain breaks at row {report.broken_at}")
+    print(f"deskclerk: the audit chain is intact, {report.rows} rows")
+
+
 def month_argument(text: str) -> str:
     try:
         return month_of(datetime.strptime(text, "%Y-%m"))
@@ -157,10 +193,12 @@ def main(argv: Sequence[str] = ()) -> None:
         "--if-empty", action="store_true", help="change nothing when the list has servers"
     )
     commands.add_parser("export-servers", help="print the server list as TOML")
+    commands.add_parser("verify-audit", help="check the audit log's hash chain")
     arguments = parser.parse_args(argv)
     try:
         read_secret_files()
-        fill_missing_keys()
+        if arguments.command != "verify-audit":
+            fill_missing_keys()
     except (SecretFileError, OSError) as error:
         sys.exit(f"deskclerk: {error}")
     if arguments.command == "erase":
@@ -177,6 +215,9 @@ def main(argv: Sequence[str] = ()) -> None:
         return
     if arguments.command == "export-servers":
         export_servers()
+        return
+    if arguments.command == "verify-audit":
+        verify_audit()
         return
     try:
         settings = load_settings()
@@ -230,6 +271,7 @@ def main(argv: Sequence[str] = ()) -> None:
         ServersError,
         TokenKeyError,
         MissingSessionKey,
+        MissingChainKey,
         MissingApiKey,
         ProviderNotInstalled,
         AuthUnavailable,
