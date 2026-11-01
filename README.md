@@ -115,6 +115,14 @@ each copy would otherwise make its own.
 - Sign-in and connection failures are logged with their reason. The audit log is one JSON line per
   request on standard output.
 
+## Why not an existing tool
+
+Open WebUI and LibreChat are chat front ends for many models. Both connect each user's own
+account on an MCP server. Obot, IBM ContextForge and Docker MCP Gateway are gateways that sit
+between MCP clients and MCP servers. deskclerk puts the controls an agent needs on one path:
+approval of every call that changes data, tool pinning, prompt injection screening of tool results
+and a monthly budget per employee.
+
 ## Results
 
 Claude Haiku 5.5 is the agent in every run.
