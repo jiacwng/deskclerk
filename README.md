@@ -123,6 +123,14 @@ because each copy would otherwise make its own.
 - Erasing an employee keeps their audit lines. With `DESKCLERK_AUDIT_TEXT` set, those lines hold
   what they asked, so set `DESKCLERK_RETENTION_DAYS` too.
 
+## Why not an existing tool
+
+Open WebUI and LibreChat are chat front ends for many models. Both connect each user's own
+account on an MCP server. Obot, IBM ContextForge and Docker MCP Gateway are gateways that sit
+between MCP clients and MCP servers. deskclerk puts the controls an agent needs on one path:
+approval of every call that changes data, tool pinning, prompt injection screening of tool results
+and a monthly budget per employee.
+
 ## Results
 
 Claude Haiku 5.5 is the agent in every run.
