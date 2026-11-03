@@ -14,8 +14,9 @@ image:
 imagePullSecrets: []
 
 # An existing Secret in this namespace, required. Every key becomes an environment variable, so
-# name the keys DESKCLERK_DATABASE_URL, DESKCLERK_TOKEN_KEY, DESKCLERK_SESSION_KEY and the key of
-# your model provider such as ANTHROPIC_API_KEY. Any other secret setting goes in it the same way.
+# name the keys DESKCLERK_DATABASE_URL, DESKCLERK_TOKEN_KEY, DESKCLERK_SESSION_KEY,
+# DESKCLERK_AUDIT_CHAIN_KEY and the key of your model provider such as ANTHROPIC_API_KEY. Any
+# other secret setting goes in it the same way.
 existingSecret: ""
 
 # Plain settings, one environment variable each. The chart sets DESKCLERK_HOST and DESKCLERK_PORT.

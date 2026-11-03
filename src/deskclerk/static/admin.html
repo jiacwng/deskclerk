@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- The admin page: servers with their controls, usage this month and recent activity. Everything is set with textContent. -->
+<!-- The admin page: servers with their controls, usage this month, the searchable audit log and recent activity. Everything is set with textContent. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -102,6 +102,10 @@ button.danger { color: var(--bad); border-color: var(--bad); }
 .editor textarea, .revoke input { font: 0.8125rem/1.4 var(--mono); color: var(--fg); background: var(--surface); border: 1px solid var(--edge); border-radius: 4px; padding: 0.5rem; width: 100%; }
 .editor textarea { min-height: 16rem; }
 .row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.filters { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: end; margin-bottom: 0.75rem; }
+.filters label { display: grid; gap: 0.15rem; font-size: 0.75rem; color: var(--muted); }
+.filters input, .filters select { font: inherit; font-size: 0.8125rem; color: var(--fg); background: var(--surface); border: 1px solid var(--edge); border-radius: 4px; padding: 0.25rem 0.4rem; }
+pre { margin: 0.25rem 0 0; font: 0.75rem/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
@@ -143,13 +147,36 @@ button.danger { color: var(--bad); border-color: var(--bad); }
       <tbody id="usage"></tbody>
     </table></div>
   </section>
+  <section aria-labelledby="audit-title">
+    <h2 id="audit-title">Audit log</h2>
+    <form id="audit-filter" class="filters">
+      <label>Employee<input id="audit-employee" type="text"></label>
+      <label>Kind<select id="audit-entry">
+        <option value="">any</option>
+        <option>ask</option><option>confirm</option><option>connect</option><option>disconnect</option><option>admin</option><option>erase</option>
+      </select></label>
+      <label>Server<input id="audit-server" type="text"></label>
+      <label>Tool<input id="audit-tool" type="text"></label>
+      <label>Decision<input id="audit-decision" type="text" placeholder="approve, reject, answered"></label>
+      <label>From<input id="audit-since" type="datetime-local"></label>
+      <label>Until<input id="audit-until" type="datetime-local"></label>
+      <button type="submit" class="primary">Search</button>
+      <button type="button" id="audit-download">Download</button>
+    </form>
+    <div class="scroll"><table>
+      <thead><tr><th>Time</th><th>Employee</th><th>Kind</th><th>Servers</th><th>Tools</th><th>Decisions</th><th>Line</th></tr></thead>
+      <tbody id="audit"></tbody>
+    </table></div>
+    <div class="row note"><button type="button" id="audit-more" hidden>Older rows</button></div>
+    <p class="note muted small">Newest first. Each row is chained by hash to the one before it, and python -m deskclerk verify-audit checks the chain.</p>
+  </section>
   <section aria-labelledby="recent-title">
     <h2 id="recent-title">Recent activity</h2>
     <div class="scroll"><table>
       <thead><tr><th>Employee</th><th>Conversation title</th><th>Last message</th></tr></thead>
       <tbody id="recent"></tbody>
     </table></div>
-    <p class="note muted small">The audit log is written to stdout and is not stored, so this lists the latest 50 conversations by last message.</p>
+    <p class="note muted small">The latest 50 conversations by last message.</p>
   </section>
 </main>
 <script>
@@ -160,6 +187,14 @@ function cell(text, className) {
   td.textContent = text;
   if (className) td.className = className;
   return td;
+}
+
+function addRows(body, rows) {
+  for (const cells of rows) {
+    const row = document.createElement("tr");
+    row.append(...cells);
+    body.append(row);
+  }
 }
 
 function fill(id, rows, columns) {
@@ -173,11 +208,7 @@ function fill(id, rows, columns) {
     body.append(row);
     return;
   }
-  for (const cells of rows) {
-    const row = document.createElement("tr");
-    row.append(...cells);
-    body.append(row);
-  }
+  addRows(body, rows);
 }
 
 const WRITE_HEADERS = { "X-Requested-With": "deskclerk", "Content-Type": "application/json" };
@@ -289,6 +320,63 @@ el("revoke").addEventListener("submit", async (event) => {
   await load();
 });
 
+let auditCursor = null;
+
+function auditQuery() {
+  const params = new URLSearchParams();
+  for (const name of ["employee", "entry", "server", "tool", "decision"]) {
+    const value = el("audit-" + name).value.trim();
+    if (value !== "") params.set(name, value);
+  }
+  for (const name of ["since", "until"]) {
+    const value = el("audit-" + name).value;
+    if (value !== "") params.set(name, new Date(value).toISOString());
+  }
+  return params;
+}
+
+function lineCell(text) {
+  const td = document.createElement("td");
+  const details = document.createElement("details");
+  const summary = document.createElement("summary");
+  summary.textContent = "Show";
+  const pre = document.createElement("pre");
+  pre.textContent = text;
+  details.append(summary, pre);
+  td.append(details);
+  return td;
+}
+
+async function loadAudit(older) {
+  const params = auditQuery();
+  if (older) params.set("cursor", auditCursor);
+  const response = await fetch("/admin/audit?" + params);
+  if (!response.ok) {
+    showError(await failure(response));
+    return;
+  }
+  showError("");
+  const page = await response.json();
+  const rows = page.rows.map((r) => [
+    cell(new Date(r.time).toLocaleString()), cell(r.user), cell(r.entry),
+    cell(r.servers.join(", ")), cell(r.tools.join(", ")), cell(r.decisions.join(", ")),
+    lineCell(r.line),
+  ]);
+  if (older) addRows(el("audit"), rows);
+  else fill("audit", rows, 7);
+  auditCursor = page.next_cursor;
+  el("audit-more").hidden = auditCursor === null;
+}
+
+el("audit-filter").addEventListener("submit", (event) => {
+  event.preventDefault();
+  loadAudit(false);
+});
+el("audit-more").addEventListener("click", () => loadAudit(true));
+el("audit-download").addEventListener("click", () => {
+  window.location.assign("/admin/audit/download?" + auditQuery());
+});
+
 const money = (value) => "$" + value.toFixed(4);
 const count = (value) => (value === null ? "n/a" : String(value));
 
@@ -322,6 +410,7 @@ async function load() {
 }
 
 load();
+loadAudit(false);
 </script>
 </body>
 </html>

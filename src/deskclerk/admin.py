@@ -1,13 +1,14 @@
 # The summary behind /admin: each configured server, paused or not, with how many employees have
 # connected it, what each employee spent this month, and the conversations most recently active.
-# The audit log goes to stdout and is not stored, so recent activity comes from the conversations
-# table, which holds the employee, the title and the time of the last message. A title is the start
-# of a request, so it is shown only when DESKCLERK_AUDIT_TEXT allows request text in the logs.
+# Recent activity comes from the conversations table, which holds the employee, the title and the
+# time of the last message. A title is the start of a request, so it is shown only when
+# DESKCLERK_AUDIT_TEXT allows request text in the logs. The audit routes read the audit table.
 
 from datetime import datetime
 
 from pydantic import BaseModel
 
+from deskclerk.auditstore import AuditPage, AuditRow
 from deskclerk.conversations import recent_conversations
 from deskclerk.database import Database
 from deskclerk.servers import McpServer
@@ -46,6 +47,23 @@ class AdminSummary(BaseModel):
     recent: list[AdminActivity]
 
 
+class AdminAuditRow(BaseModel):
+    id: int
+    time: datetime
+    user: str
+    entry: str
+    servers: list[str]
+    tools: list[str]
+    decisions: list[str]
+    hash: str
+    line: str
+
+
+class AdminAuditPage(BaseModel):
+    rows: list[AdminAuditRow]
+    next_cursor: int | None
+
+
 def server_rows(servers: list[McpServer], tokens: TokenStore) -> list[AdminServer]:
     counts = tokens.connected_counts()
     return [
@@ -78,3 +96,11 @@ async def recent_rows(database: Database, show_titles: bool) -> list[AdminActivi
         )
         for c in found
     ]
+
+
+def audit_row(row: AuditRow) -> AdminAuditRow:
+    return AdminAuditRow(**vars(row))
+
+
+def audit_page(page: AuditPage) -> AdminAuditPage:
+    return AdminAuditPage(rows=[audit_row(row) for row in page.rows], next_cursor=page.next_cursor)

@@ -1,15 +1,17 @@
 # Conversation retention: a thread whose newest checkpoint is older than the retention period is
 # deleted with its row in the conversations table. A checkpoint id is a uuid6, so its age is read
-# from the id without decrypting anything.
+# from the id without decrypting anything. Audit rows older than the period are deleted too.
 
 import asyncio
 import logging
 import time
+from datetime import UTC, datetime, timedelta
 
 import psycopg
 from langgraph.checkpoint.base.id import UUID
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
+from deskclerk.auditstore import AuditStore
 from deskclerk.database import Database
 
 _log = logging.getLogger(__name__)
@@ -52,3 +54,17 @@ async def delete_old_threads_daily(
             await delete_old_threads(database, checkpointer, retention_days)
         except psycopg.Error:
             _log.exception("retention sweep failed")
+
+
+async def delete_old_audit_rows(store: AuditStore, retention_days: int) -> int:
+    cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+    return await asyncio.to_thread(store.delete_before, cutoff)
+
+
+async def delete_old_audit_rows_daily(store: AuditStore, retention_days: int) -> None:
+    while True:
+        await asyncio.sleep(SECONDS_PER_DAY)
+        try:
+            await delete_old_audit_rows(store, retention_days)
+        except psycopg.Error:
+            _log.exception("audit retention sweep failed")

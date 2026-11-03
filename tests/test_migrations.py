@@ -1,5 +1,6 @@
 # The baseline migration builds the schema the modules used to create themselves, the servers
-# migration adds the table of MCP servers, and several copies of the app starting at once on an
+# migration adds the table of MCP servers, the audit migration adds the audit log and its
+# checkpoint, and several copies of the app starting at once on an
 # empty database all succeed.
 
 from concurrent.futures import ThreadPoolExecutor
@@ -52,7 +53,8 @@ def describe(connection: psycopg.Connection[tuple[object, ...]], schema: str) ->
         str(row[0])
         for row in connection.execute(
             "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema = %s AND table_name NOT IN ('alembic_version', 'servers')",
+            "WHERE table_schema = %s AND table_name NOT IN "
+            "('alembic_version', 'servers', 'audit_log', 'audit_checkpoint')",
             (schema,),
         )
     )
@@ -95,7 +97,7 @@ def test_migrating_again_changes_nothing(database: Database) -> None:
     database.migrate()
     with psycopg.connect(DATABASE_URL) as connection:
         versions = connection.execute("SELECT version_num FROM alembic_version").fetchall()
-    assert versions == [("0002",)]
+    assert versions == [("0003",)]
 
 
 def test_copies_starting_at_once_on_an_empty_database_all_succeed(database: Database) -> None:
@@ -113,7 +115,7 @@ def test_copies_starting_at_once_on_an_empty_database_all_succeed(database: Data
         tables = connection.execute(
             "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'"
         ).fetchone()
-    assert tables == (11,)
+    assert tables == (13,)
 
 
 def test_a_keyword_connection_string_becomes_a_sqlalchemy_url() -> None:

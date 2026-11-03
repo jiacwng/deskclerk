@@ -13,6 +13,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from jwt.algorithms import RSAAlgorithm
 from psycopg.conninfo import make_conninfo
+from pydantic import SecretStr
 
 from deskclerk.auth import SigningKeyLookup
 from deskclerk.config import Settings, load_settings
@@ -21,6 +22,7 @@ from deskclerk.database import Database
 APP_DATABASE_URL = os.environ.get(
     "DESKCLERK_DATABASE_URL", "postgresql://deskclerk:deskclerk@127.0.0.1:5432/deskclerk"
 )
+CHAIN_KEY = b"a-chain-key-for-the-tests"
 TEST_DATABASE = "deskclerk_test"
 DATABASE_URL = make_conninfo(APP_DATABASE_URL, dbname=TEST_DATABASE)
 os.environ["DESKCLERK_DATABASE_URL"] = DATABASE_URL
@@ -38,6 +40,7 @@ def token_settings() -> Settings:
             "client_id": "deskclerk-api",
             "audience": "deskclerk-api",
             "requests_per_minute": 10_000,
+            "audit_chain_key": SecretStr(CHAIN_KEY.decode()),
         }
     )
 
@@ -106,3 +109,4 @@ def generated_keys_stay_in_a_temporary_directory(
     for variable in ("DESKCLERK_TOKEN_KEY", "DESKCLERK_SESSION_KEY"):
         monkeypatch.setenv(variable, "placeholder")
         monkeypatch.delenv(variable)
+    monkeypatch.setenv("DESKCLERK_AUDIT_CHAIN_KEY", CHAIN_KEY.decode())

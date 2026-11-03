@@ -5,7 +5,8 @@
 # to the servers or to an employee's access is one line naming the admin, the action and its target.
 # The request, each call's arguments and results, and a gate's reason are logged only when
 # DESKCLERK_AUDIT_TEXT is set; otherwise only the request's length and, when DESKCLERK_AUDIT_KEY is
-# set, its HMAC-SHA256. Tokens are never logged.
+# set, its HMAC-SHA256. Tokens are never logged. Each line is printed to stdout and also stored as a
+# row in the audit table, which is searched from the admin page and checked by verify-audit.
 
 import hashlib
 import hmac
@@ -21,6 +22,7 @@ from uuid import UUID
 from pydantic import SecretStr
 
 from deskclerk.agent import AgentResult, BlockedCall, DecidedCall, ExecutedCall, PendingCall
+from deskclerk.auditstore import AuditStore
 from deskclerk.auth import Identity
 
 _log = logging.getLogger(__name__)
@@ -31,9 +33,10 @@ def hmac_hex(key: SecretStr, text: str) -> str:
 
 
 class Audit:
-    def __init__(self, include_text: bool, key: SecretStr | None) -> None:
+    def __init__(self, include_text: bool, key: SecretStr | None, store: AuditStore) -> None:
         self.include_text = include_text
         self.key = key
+        self.store = store
 
     def asked(
         self,
@@ -78,7 +81,7 @@ class Audit:
             line["edit_of"] = edit_of
         if self.include_text:
             line["text"] = request
-        _log.info(json.dumps(line))
+        self._write(line)
 
     def gateway_call(
         self,
@@ -110,13 +113,13 @@ class Audit:
     def connection(self, identity: Identity, action: str, server_name: str) -> None:
         line = self._line(identity, action)
         line["server"] = server_name
-        _log.info(json.dumps(line))
+        self._write(line)
 
     def admin_action(self, identity: Identity, action: str, target: str) -> None:
         line = self._line(identity, "admin")
         line["action"] = action
         line["target"] = target
-        _log.info(json.dumps(line))
+        self._write(line)
 
     def erased(self, user_id: str, secrets: int, sessions: int, threads: int, costs: int) -> None:
         line = {
@@ -128,7 +131,12 @@ class Audit:
             "threads": threads,
             "costs": costs,
         }
-        _log.info(json.dumps(line))
+        self._write(line)
+
+    def _write(self, line: dict[str, Any]) -> None:
+        text = json.dumps(line)
+        _log.info(text)
+        self.store.append(text)
 
     def _line(self, identity: Identity, entry: str) -> dict[str, Any]:
         return {
