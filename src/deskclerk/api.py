@@ -30,6 +30,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
+from starlette.routing import Route
 
 from deskclerk import cookies, oidc
 from deskclerk.admin import AdminSummary, recent_rows, server_rows, usage_rows
@@ -87,6 +88,7 @@ from deskclerk.conversations import (
 )
 from deskclerk.database import Database
 from deskclerk.erasure import erase_user
+from deskclerk.gateway import Gateway
 from deskclerk.instructions import system_prompt
 from deskclerk.jev import Jev
 from deskclerk.metrics import Metrics
@@ -433,7 +435,12 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        async with database.serving(), connections.listening(), catalog.listening():
+        async with (
+            database.serving(),
+            connections.listening(),
+            catalog.listening(),
+            gateway.running(),
+        ):
             checkpointer = await open_checkpointer(database, tokens.fernet)
             app.state.checkpointer = checkpointer
             sweep = None
@@ -463,6 +470,22 @@ def create_app(
         return scim_users is not None and await run_in_threadpool(
             scim_users.is_deactivated, user_id
         )
+
+    gateway = Gateway(
+        settings,
+        catalog,
+        connections,
+        tokens,
+        quota,
+        audit,
+        metrics,
+        gate,
+        jev_screen(jev),
+        signing_key,
+        is_deactivated,
+    )
+    app.router.routes.append(Route("/mcp", gateway.app))
+    app.router.routes.append(Route("/.well-known/oauth-protected-resource/mcp", gateway.app))
 
     async def refuse_deactivated(user_id: str) -> None:
         if await is_deactivated(user_id):
