@@ -26,6 +26,7 @@ flowchart LR
 - Each employee's own accounts on each MCP server through OAuth, with tokens encrypted at rest
   and a rotatable key.
 - Approval of every call that changes data, with editable arguments.
+- An MCP server at `/mcp`, so employees can use the same tools from their own MCP client.
 - Tool pinning: a tool whose definition changes is withheld.
 - Tool allowlists, access by group, and tools that always ask first.
 - Prompt injection screening of tool results.
@@ -91,7 +92,17 @@ All state lives in one Postgres database. `compose.prod.yaml` starts it and sets
 only. To use your own Postgres, set `DESKCLERK_DATABASE_URL` instead. Several copies of deskclerk
 can run behind a load balancer on one database, and each copy opens up to 42 connections. A change
 on the admin page reaches every copy without a restart. Set the three keys in `.env` first,
-because each copy would otherwise make its own.
+because each copy would otherwise make its own. With several copies, the load balancer must send
+all requests with the same `Mcp-Session-Id` header to the same copy, because `/mcp` keeps each
+session in one copy's memory.
+
+Employees can also add `https://<your deskclerk>/mcp` to their own MCP client. The client signs in
+with an access token from your login server, for the audience in `DESKCLERK_AUDIENCE` or else the
+client ID. It sees the tools of the servers the employee connected on the page. Each call gets the
+same approvals, screen, budget and audit as the page. A call that changes data asks the employee
+through MCP elicitation. A client that cannot ask, or that uses MCP revision 2026-07-28, gets those
+calls refused, and reads still work. The write check only sees tool results that came through
+deskclerk.
 
 ## Operate it
 
