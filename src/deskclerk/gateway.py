@@ -11,6 +11,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from functools import partial
 from typing import Any
 from weakref import WeakKeyDictionary
@@ -57,10 +58,13 @@ from deskclerk.audit import Audit
 from deskclerk.auth import AuthError, AuthUnavailable, Identity, SigningKeyLookup, authenticate
 from deskclerk.config import Settings
 from deskclerk.connections import UPSTREAM_ERRORS, NotConnected, OAuthConnections
+from deskclerk.jev import Jev
 from deskclerk.metrics import Metrics
+from deskclerk.providers import BudgetExceeded
 from deskclerk.quota import Quota
-from deskclerk.screen import Screen, is_flagged
+from deskclerk.screen import is_flagged, jev_screen
 from deskclerk.serverstore import ServerCatalog
+from deskclerk.spending import Spending, SpendingStore, month_of
 from deskclerk.tokens import TokenStore
 
 _log = logging.getLogger(__name__)
@@ -150,7 +154,8 @@ class Gateway:
         audit: Audit,
         metrics: Metrics,
         gate: Gate,
-        screen: Screen,
+        jev: Jev | None,
+        spending_store: SpendingStore,
         signing_key: SigningKeyLookup,
         is_deactivated: Callable[[str], Awaitable[bool]],
     ) -> None:
@@ -162,7 +167,8 @@ class Gateway:
         self._audit = audit
         self._metrics = metrics
         self._gate = gate
-        self._screen = screen
+        self._jev = jev
+        self._spending_store = spending_store
         self._timed = metrics.timed(no_tool_span)
         self._seen: WeakKeyDictionary[ServerSession, list[str]] = WeakKeyDictionary()
         self._server: Server[Any] = Server(
@@ -235,6 +241,17 @@ class Gateway:
     ) -> _Done:
         if not await self._quota.allows(identity.user_id):
             return _Done("rate_limited", f"at most {self._settings.requests_per_minute} a minute")
+        spending = Spending(
+            self._settings.price_model,
+            self._settings.budget_usd,
+            self._spending_store,
+            identity.user_id,
+            month_of(datetime.now(UTC)),
+        )
+        try:
+            spending.check()
+        except BudgetExceeded as error:
+            return _Done("over_budget", str(error))
         try:
             offer = await self._offer(identity)
         except McpServerFailed as failure:
@@ -242,7 +259,9 @@ class Gateway:
         tool = offer.tools.get(name)
         if tool is None:
             return _Done("unknown_tool", self._unknown_tool_text(name, offer))
-        return await self._call_offered(ctx, identity, name, tool, arguments, name in offer.always)
+        return await self._call_offered(
+            ctx, identity, name, tool, arguments, name in offer.always, spending
+        )
 
     def _unknown_tool_text(self, name: str, offer: Offer) -> str:
         text = f"There is no tool named {name}."
@@ -261,6 +280,7 @@ class Gateway:
         tool: OfferedTool,
         arguments: dict[str, Any],
         always_allowed: bool,
+        spending: Spending,
     ) -> _Done:
         server_name, info = tool.server.name, tool.info
         finish = partial(_Done, server=server_name, tool=info.name)
@@ -291,7 +311,8 @@ class Gateway:
                 raise
             return finish("upstream_error", str(failure), decision=decision)
         asked = f"call {name} with {json.dumps(arguments)}"
-        text = await self._screen(asked, cut_output(result.text, self._settings.tool_output_chars))
+        screen = jev_screen(self._jev, spending.record_jev)
+        text = await screen(asked, cut_output(result.text, self._settings.tool_output_chars))
         seen.append(text)
         return finish(
             "tool_error" if result.is_error else "ok",

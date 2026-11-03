@@ -503,7 +503,8 @@ def create_app(
         audit,
         metrics,
         gate,
-        jev_screen(jev),
+        jev,
+        spending_store,
         signing_key,
         is_deactivated,
     )

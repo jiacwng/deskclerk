@@ -84,8 +84,11 @@ def _columns(line: str) -> dict[str, object]:
     fields = json.loads(line)
     calls = [call for name in CALL_LISTS for call in fields.get(name, [])]
     servers = {call["server"] for call in calls}
+    tools = {call["tool"] for call in calls}
     if "server" in fields:
         servers.add(fields["server"])
+    if fields["entry"] == "mcp_call" and fields["tool"]:
+        tools.add(fields["tool"])
     decisions = {call["decision"] for call in fields.get("decided", [])}
     if "outcome" in fields:
         decisions.add(fields["outcome"])
@@ -94,7 +97,7 @@ def _columns(line: str) -> dict[str, object]:
         "user_id": fields["user"],
         "entry": fields["entry"],
         "servers": sorted(servers),
-        "tools": sorted({call["tool"] for call in calls}),
+        "tools": sorted(tools),
         "decisions": sorted(decisions),
     }
 

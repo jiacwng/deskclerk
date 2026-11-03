@@ -108,7 +108,7 @@ class Audit:
         )
         if self.include_text:
             line.update({"arguments": arguments, "result": result})
-        _log.info(json.dumps(line))
+        self._write(line)
 
     def connection(self, identity: Identity, action: str, server_name: str) -> None:
         line = self._line(identity, action)

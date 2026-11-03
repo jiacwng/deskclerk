@@ -9,6 +9,7 @@ import time
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import Any, Literal
 from urllib.parse import parse_qs, urlparse
 
@@ -28,10 +29,11 @@ from deskclerk.auth import SigningKeyLookup
 from deskclerk.config import Settings
 from deskclerk.connections import OAuthConnections
 from deskclerk.database import Database
-from deskclerk.jev import Jev
+from deskclerk.jev import PRICE_PER_INPUT_TOKEN, Jev
+from deskclerk.providers import Usage
 from deskclerk.screen import NOTICE
 from deskclerk.sessions import SessionStore
-from deskclerk.spending import SpendingStore
+from deskclerk.spending import SpendingStore, month_of
 from deskclerk.tokens import TokenStore
 from deskclerk.writecheck import write_check
 from mcp_server import RunningServer
@@ -334,3 +336,56 @@ async def test_calls_beyond_the_per_minute_quota_are_refused(
     assert not first.is_error
     assert second.is_error
     assert "a minute" in text_of(second)
+
+
+@pytest.mark.anyio
+async def test_a_call_by_an_employee_over_budget_is_refused_before_anything_runs(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,  # noqa: F811
+    database: Database,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="deskclerk.audit")
+    settings = make_settings(token_settings, budget_usd=0.5)
+    SpendingStore(database).add("ada", month_of(datetime.now(UTC)), "model", Usage(0, 0, 0, 0), 0.5)
+    fake = FakeJev(0.0)
+    ada = token_of(sign_token, "ada")
+    with serving(
+        settings, [notes(notes_server)], token_signing_key, database, as_jev(fake)
+    ) as site:
+        connect(site, ada)
+        async with mcp_client(site, ada, answering([])) as client:
+            read = await client.call_tool("notes__read_note", {})
+            write = await client.call_tool("notes__write_note", {"text": "late"})
+        for refused in (read, write):
+            assert refused.is_error
+            assert "DESKCLERK_BUDGET_USD" in text_of(refused)
+        counted = site.registry.get_sample_value
+        assert counted("deskclerk_gateway_calls_total", {"outcome": "over_budget"}) == 2
+    assert notes_server.notes == []
+    assert fake.asked == []
+    lines = [line for line in audit_lines(caplog) if line["entry"] == "mcp_call"]
+    assert [line["outcome"] for line in lines] == ["over_budget", "over_budget"]
+
+
+@pytest.mark.anyio
+async def test_the_injection_screen_on_a_call_is_charged_to_the_monthly_budget(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,  # noqa: F811
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings)
+    fake = FakeJev(0.0, tokens=1_000_000)
+    ada = token_of(sign_token, "ada")
+    with serving(
+        settings, [notes(notes_server)], token_signing_key, database, as_jev(fake)
+    ) as site:
+        connect(site, ada)
+        async with mcp_client(site, ada) as client:
+            await client.call_tool("notes__read_note", {})
+    spent = SpendingStore(database).load("ada", month_of(datetime.now(UTC)))
+    assert spent == pytest.approx(1_000_000 * PRICE_PER_INPUT_TOKEN)
