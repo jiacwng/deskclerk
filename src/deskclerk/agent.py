@@ -218,7 +218,7 @@ class McpServerFailed(Exception):
         self.cause = cause
 
 
-def _server_failure(server_name: str, error: BaseException) -> McpServerFailed | None:
+def server_failure(server_name: str, error: BaseException) -> McpServerFailed | None:
     if isinstance(error, BaseExceptionGroup):
         matching = error.subgroup(UPSTREAM_ERRORS)
         if matching is None:
@@ -234,7 +234,7 @@ def _is_upstream_error(error: BaseException) -> bool:
 
 
 @dataclass(frozen=True)
-class _Tool:
+class OfferedTool:
     server: McpServer
     info: ToolInfo
 
@@ -294,7 +294,7 @@ async def _list_tools(
     except TimeoutError:
         return _Listing(server, [], True, McpServerFailed(server.name, "TimeoutError"))
     except (*UPSTREAM_ERRORS, BaseExceptionGroup) as error:
-        failure = _server_failure(server.name, error)
+        failure = server_failure(server.name, error)
         if failure is None:
             raise
         return _Listing(server, [], True, failure)
@@ -304,7 +304,7 @@ async def _list_tools(
 class _Shared:
     request: str
     earlier: tuple[str, ...]
-    offered: dict[str, _Tool]
+    offered: dict[str, OfferedTool]
     gate: Gate
     screen: Screen
     tool_span: ToolSpan
@@ -398,7 +398,11 @@ class _Guard(AgentMiddleware[AgentState[Any], None, Any]):
 
 
 async def _refusal(
-    shared: _Shared, tool: _Tool, call_id: str, arguments: dict[str, Any], typed: tuple[str, ...]
+    shared: _Shared,
+    tool: OfferedTool,
+    call_id: str,
+    arguments: dict[str, Any],
+    typed: tuple[str, ...],
 ) -> ToolMessage | None:
     proposed = ProposedCall(
         shared.request,
@@ -449,14 +453,14 @@ class _Run(AgentMiddleware[AgentState[Any], None, Any]):
                 try:
                     reply = await handler(request)
                 except Exception as error:
-                    failure = _server_failure(server_name, error)
+                    failure = server_failure(server_name, error)
                     if failure is None or not _is_upstream_error(error):
                         raise
                     raise failure from None
                 if not isinstance(reply, ToolMessage):
                     raise TypeError(f"the tool returned a {type(reply).__name__}")
                 result_text = await shared.screen(
-                    shared.request, _cut(str(reply.content), shared.tool_output_chars)
+                    shared.request, cut_output(str(reply.content), shared.tool_output_chars)
                 )
                 record_output(result_text)
             is_error = bool(reply.artifact)
@@ -482,29 +486,29 @@ def _hit_output_limit(metadata: dict[str, Any]) -> bool:
     )
 
 
-def _cut(text: str, limit: int) -> str:
+def cut_output(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return f"{text[:limit]}\n[deskclerk: {limit:,} of {len(text):,} characters shown]"
 
 
 @dataclass(frozen=True)
-class _Offer:
-    tools: dict[str, _Tool]
+class Offer:
+    tools: dict[str, OfferedTool]
     always: set[str]
     not_connected: list[str]
     unavailable: tuple[str, ...]
     changed_tools: list[str]
 
 
-async def _offer(
+async def offer_tools(
     user_id: str,
     servers: list[McpServer],
     connections: OAuthConnections,
     tokens: TokenStore,
     listing_seconds: float,
-) -> _Offer:
-    tools: dict[str, _Tool] = {}
+) -> Offer:
+    tools: dict[str, OfferedTool] = {}
     not_connected: list[str] = []
     unavailable: list[McpServerFailed] = []
     always: set[str] = set()
@@ -530,7 +534,7 @@ async def _offer(
         kept = tuple(_confirming(server, pinned.kept))
         save_menu(tokens, user_id, server.name, kept)
         for info in kept:
-            tools[f"{server.name}__{info.name}"] = _Tool(server, info)
+            tools[f"{server.name}__{info.name}"] = OfferedTool(server, info)
         for info in allowed_tools(tokens, user_id, server.name, kept):
             if server.always_allow and not info.destructive:
                 always.add(f"{server.name}__{info.name}")
@@ -539,7 +543,7 @@ async def _offer(
         names = ", ".join(failure.server_name for failure in unavailable)
         raise McpServerFailed(names, unavailable[0].cause)
     unavailable_names = tuple(failure.server_name for failure in unavailable)
-    return _Offer(tools, always, not_connected, unavailable_names, changed_tools)
+    return Offer(tools, always, not_connected, unavailable_names, changed_tools)
 
 
 async def run_agent(
@@ -571,7 +575,7 @@ async def run_agent(
     running: Callable[[], None] = lambda: None,
     fork_from: str | None = None,
 ) -> AgentResult:
-    offer = await _offer(user_id, servers, connections, tokens, listing_seconds)
+    offer = await offer_tools(user_id, servers, connections, tokens, listing_seconds)
     tools, always = offer.tools, offer.always
     not_connected, unavailable_names, changed_tools = (
         offer.not_connected,
@@ -708,7 +712,7 @@ _DESCRIPTION_CHARS = 160
 
 
 def _confirmation(
-    tools: dict[str, _Tool], always: frozenset[str], shared: _Shared
+    tools: dict[str, OfferedTool], always: frozenset[str], shared: _Shared
 ) -> HumanInTheLoopMiddleware:
     def after_a_flag(request: ToolCallRequest) -> bool:
         return shared.flag_raised
@@ -743,7 +747,7 @@ def _resume_value(choice: Decision, tool_name: str) -> dict[str, Any]:
 def _flag_before_pause(
     messages: list[AnyMessage],
     waiting: dict[str, Interrupt],
-    tools: dict[str, _Tool],
+    tools: dict[str, OfferedTool],
     always: frozenset[str],
 ) -> bool:
     asked = max(
@@ -760,7 +764,7 @@ def _flag_before_pause(
     )
 
 
-def _pending_call(interrupt: Interrupt, tools: dict[str, _Tool]) -> PendingCall:
+def _pending_call(interrupt: Interrupt, tools: dict[str, OfferedTool]) -> PendingCall:
     name: str = interrupt.value["name"]
     waiting_tool = tools.get(name)
     server, tool = (
@@ -795,7 +799,7 @@ def _first_sentence(description: str) -> str:
 def _decided_calls(
     new_messages: list[AnyMessage],
     waiting: dict[str, Interrupt],
-    tools: dict[str, _Tool],
+    tools: dict[str, OfferedTool],
     chosen: dict[str, Decision],
 ) -> list[tuple[PendingCall, DecisionName]]:
     waiting_by_call = {interrupt.value["tool_call_id"]: interrupt for interrupt in waiting.values()}
@@ -820,7 +824,7 @@ async def _close_open_calls(agent: Any, config: RunnableConfig) -> None:
 
 
 def _langchain_tool(
-    name: str, tool: _Tool, user_id: str, connections: OAuthConnections
+    name: str, tool: OfferedTool, user_id: str, connections: OAuthConnections
 ) -> BaseTool:
     async def call_server(**arguments: Any) -> tuple[str, bool]:
         result = await connections.call(user_id, tool.server, tool.info.name, arguments)
@@ -855,5 +859,5 @@ async def waiting_calls(
     ]
     if not interrupts:
         return ()
-    tools = (await _offer(user_id, servers, connections, tokens, listing_seconds)).tools
+    tools = (await offer_tools(user_id, servers, connections, tokens, listing_seconds)).tools
     return tuple(_pending_call(interrupt, tools) for interrupt in interrupts)

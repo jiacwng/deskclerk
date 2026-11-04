@@ -37,6 +37,12 @@ class Metrics:
             "Tool results flagged by the injection screen",
             registry=registry,
         )
+        self._gateway_calls = Counter(
+            "deskclerk_gateway_calls",
+            "Tool calls made through the MCP gateway, by outcome",
+            ["outcome"],
+            registry=registry,
+        )
         self._cost = Counter(
             "deskclerk_model_cost_usd", "Model and screen cost in US dollars", registry=registry
         )
@@ -69,6 +75,17 @@ class Metrics:
             self._screen_flags.inc(result.flagged)
             for decided in result.decided:
                 self._confirmations.labels(decided.decision).inc()
+
+    def gateway_call_finished(
+        self, outcome: str, executed: ExecutedCall | None, decision: str | None, flagged: bool
+    ) -> None:
+        self._gateway_calls.labels(outcome).inc()
+        if executed is not None:
+            self._tool_calls.labels(executed.server, "error" if executed.is_error else "ok").inc()
+        if decision is not None:
+            self._confirmations.labels(decision).inc()
+        if flagged:
+            self._screen_flags.inc()
 
     def timed(self, inner: ToolSpan) -> ToolSpan:
         @contextmanager
