@@ -30,6 +30,7 @@ dependencies = [
     "sqlalchemy>=2.0.54",
     "tomli-w>=1.2",
     "prometheus-client>=0.26",
+    "tzdata>=2026.1",
 ]
 
 [project.optional-dependencies]
