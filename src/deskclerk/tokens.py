@@ -1,5 +1,6 @@
 # A Postgres table holding each employee's OAuth tokens, client registrations, pinned tool
-# definitions and always allowed tools for each MCP server, encrypted with Fernet.
+# definitions and always allowed tools for each MCP server, and the refresh token of their
+# deskclerk sign-in (under the empty server name), encrypted with Fernet.
 
 from typing import Literal
 
@@ -11,7 +12,8 @@ from pydantic import BaseModel
 from deskclerk.database import Database
 from deskclerk.servers import McpServer
 
-Kind = Literal["tokens", "client", "tool_pins", "always_allowed", "tool_menu"]
+Kind = Literal["tokens", "client", "tool_pins", "always_allowed", "tool_menu", "refresh"]
+LOGIN = ""
 
 KEY_CHECK_TEXT = b"deskclerk"
 
@@ -106,6 +108,13 @@ class TokenStore:
             return connection.execute(
                 "DELETE FROM secrets WHERE user_id = %s AND kind = 'tokens'", (user_id,)
             ).rowcount
+
+    def delete_refresh(self, user_id: str) -> None:
+        with self.database.pool.connection() as connection:
+            connection.execute(
+                "DELETE FROM secrets WHERE user_id = %s AND server_name = %s AND kind = 'refresh'",
+                (user_id, LOGIN),
+            )
 
     def delete_user(self, user_id: str) -> int:
         with self.database.pool.connection() as connection:

@@ -1309,7 +1309,7 @@ def test_sign_in_works_when_the_access_token_is_opaque(
         }
 
 
-def test_the_authorize_url_carries_the_nonce_and_the_three_scopes(
+def test_the_authorize_url_carries_the_nonce_and_the_four_scopes(
     token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
     settings = make_settings(token_settings)
@@ -1320,7 +1320,7 @@ def test_the_authorize_url_carries_the_nonce_and_the_three_scopes(
         query = parse_qs(urlparse(start.headers["location"]).query)
         pending = cookies.unsign(SESSION_KEY.encode(), "login", site.client.cookies[LOGIN_COOKIE])
     assert pending is not None
-    assert query["scope"] == ["openid profile email"]
+    assert query["scope"] == ["openid profile email offline_access"]
     assert query["nonce"] == [pending["nonce"]]
     assert len(pending["nonce"]) >= 32
 

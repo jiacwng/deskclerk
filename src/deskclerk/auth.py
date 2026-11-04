@@ -147,8 +147,11 @@ def identify(
     id_token: str,
     settings: Settings,
     signing_key: SigningKeyLookup,
-    nonce: str,
+    nonce: str | None,
 ) -> Identity:
+    required = ["exp", "iat", "iss", "aud", settings.user_claim]
+    if nonce is not None:
+        required.append("nonce")
     try:
         claims = jwt.decode(
             id_token,
@@ -157,18 +160,20 @@ def identify(
             audience=settings.client_id,
             issuer=settings.issuer,
             leeway=CLOCK_SKEW_SECONDS,
-            options={"require": ["exp", "iat", "iss", "aud", "nonce", settings.user_claim]},
+            options={"require": required},
         )
     except jwt.PyJWKClientConnectionError as error:
         raise AuthUnavailable(f"cannot fetch the signing keys: {error}") from error
     except jwt.PyJWTError as error:
         raise AuthError(f"invalid token: {error}") from error
 
-    sent_nonce = claims["nonce"]
-    if not isinstance(sent_nonce, str) or not hmac.compare_digest(
-        sent_nonce.encode(), nonce.encode()
-    ):
-        raise AuthError("nonce does not match the sign-in")
+    # a refreshed ID token need not repeat the nonce, so a refresh passes None
+    if nonce is not None:
+        sent_nonce = claims["nonce"]
+        if not isinstance(sent_nonce, str) or not hmac.compare_digest(
+            sent_nonce.encode(), nonce.encode()
+        ):
+            raise AuthError("nonce does not match the sign-in")
     if isinstance(claims["aud"], list) and len(claims["aud"]) > 1:
         if claims.get("azp") != settings.client_id:
             raise AuthError("azp must be this client when the token has several audiences")

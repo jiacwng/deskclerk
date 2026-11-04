@@ -54,7 +54,7 @@ def describe(connection: psycopg.Connection[tuple[object, ...]], schema: str) ->
         for row in connection.execute(
             "SELECT table_name FROM information_schema.tables "
             "WHERE table_schema = %s AND table_name NOT IN "
-            "('alembic_version', 'servers', 'audit_log', 'audit_checkpoint')",
+            "('alembic_version', 'servers', 'audit_log', 'audit_checkpoint', 'routines')",
             (schema,),
         )
     )
@@ -97,7 +97,7 @@ def test_migrating_again_changes_nothing(database: Database) -> None:
     database.migrate()
     with psycopg.connect(DATABASE_URL) as connection:
         versions = connection.execute("SELECT version_num FROM alembic_version").fetchall()
-    assert versions == [("0003",)]
+    assert versions == [("0004",)]
 
 
 def test_copies_starting_at_once_on_an_empty_database_all_succeed(database: Database) -> None:
@@ -115,7 +115,7 @@ def test_copies_starting_at_once_on_an_empty_database_all_succeed(database: Data
         tables = connection.execute(
             "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'"
         ).fetchone()
-    assert tables == (13,)
+    assert tables == (14,)
 
 
 def test_a_keyword_connection_string_becomes_a_sqlalchemy_url() -> None:

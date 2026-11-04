@@ -33,6 +33,7 @@ from deskclerk.generated_keys import AUDIT_CHAIN_KEY_FILE, fill_missing_keys
 from deskclerk.jev import jev_from_environment
 from deskclerk.providers import MissingApiKey, ProviderNotInstalled, chat_model
 from deskclerk.rotation import rotate_key
+from deskclerk.routines import RoutineStore
 from deskclerk.secret_files import SecretFileError, read_secret_files
 from deskclerk.servers import ServersError, read_entries, toml_text
 from deskclerk.serverstore import ServerCatalog, ServerStore
@@ -67,6 +68,7 @@ def erase(user_id: str) -> None:
     erased = erase_user(
         user_id,
         tokens,
+        RoutineStore(database, tokens),
         SessionStore(database),
         SpendingStore(database),
         Audit(settings.audit_text, settings.audit_key, audit_store),

@@ -13,6 +13,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMe
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.serde.encrypted import EncryptedSerializer
+from langgraph.checkpoint.serde.types import INTERRUPT
 
 from deskclerk.database import Database
 
@@ -79,6 +80,21 @@ async def list_conversations(database: Database, user_id: str) -> list[Conversat
         )
         found = await cursor.fetchall()
     return [ConversationSummary(row["id"], row["title"], row["updated_at"]) for row in found]
+
+
+async def waiting_conversations(database: Database, user_id: str) -> set[UUID]:
+    prefix = f"{user_id}/"
+    async with database.async_pool.connection() as connection:
+        cursor = await connection.execute(
+            "SELECT DISTINCT w.thread_id FROM checkpoint_writes w "
+            "WHERE length(w.thread_id) = %s AND starts_with(w.thread_id, %s) "
+            "AND w.checkpoint_ns = '' AND w.channel = %s AND w.checkpoint_id = ("
+            "SELECT max(c.checkpoint_id) FROM checkpoints c "
+            "WHERE c.thread_id = w.thread_id AND c.checkpoint_ns = '')",
+            (len(prefix) + UUID_LENGTH, prefix, INTERRUPT),
+        )
+        found = await cursor.fetchall()
+    return {UUID(row["thread_id"][len(prefix) :]) for row in found}
 
 
 @dataclass(frozen=True)

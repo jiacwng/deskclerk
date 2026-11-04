@@ -163,6 +163,15 @@ button.conv-delete:hover:not(:disabled) { color: var(--bad); }
 .conv-confirm { flex: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem; padding: 0.3rem 0.5rem; border: 1px solid var(--bad); border-radius: 4px; }
 .conv-confirm .small { flex-basis: 100%; }
 .conv-empty { padding-block: 0.25rem; }
+.conv-waiting { font-size: 0.75rem; font-weight: 600; color: var(--warn); }
+.routine-list { display: grid; gap: 0.5rem; margin-bottom: 0.75rem; }
+.routine { display: grid; gap: 0.125rem; padding: 0.4rem 0.5rem; border: 1px solid var(--line-soft); border-radius: 4px; font-size: 0.8125rem; }
+.routine-request { font-weight: 600; overflow-wrap: anywhere; }
+.routine-actions { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.25rem; }
+.routine-form { display: grid; gap: 0.375rem; margin-bottom: 1.25rem; }
+.routine-form textarea, .routine-form input[type="time"] { font: inherit; font-size: 0.8125rem; padding: 0.375rem 0.5rem; border-radius: 4px; border: 1px solid var(--edge); background: var(--surface); color: var(--fg); }
+.routine-days { display: flex; flex-wrap: wrap; gap: 0.25rem 0.5rem; border: 0; padding: 0; margin: 0; font-size: 0.8125rem; }
+.routine-days label { display: inline-flex; align-items: center; gap: 0.2rem; }
 
 .servers { display: grid; }
 .server { padding-block: 0.625rem; border-top: 1px solid var(--line-soft); display: grid; gap: 0.25rem; }
@@ -380,6 +389,27 @@ textarea::placeholder { color: var(--muted); }
       <h2 id="conversations-title" class="heading">Conversations</h2>
       <button id="new-conversation" class="small conv-new" type="button">New conversation</button>
       <ul id="conversation-list" class="conv-list"></ul>
+    </section>
+    <section aria-labelledby="routines-title">
+      <h2 id="routines-title" class="heading">Routines</h2>
+      <ul id="routine-list" class="routine-list"></ul>
+      <form id="routine-form" class="routine-form">
+        <label for="routine-request" class="sr-only">Request to repeat</label>
+        <textarea id="routine-request" maxlength="4000" rows="2" placeholder="Request to repeat" required></textarea>
+        <fieldset class="routine-days">
+          <legend class="sr-only">Days</legend>
+          <label><input type="checkbox" value="0" checked>Mon</label>
+          <label><input type="checkbox" value="1" checked>Tue</label>
+          <label><input type="checkbox" value="2" checked>Wed</label>
+          <label><input type="checkbox" value="3" checked>Thu</label>
+          <label><input type="checkbox" value="4" checked>Fri</label>
+          <label><input type="checkbox" value="5">Sat</label>
+          <label><input type="checkbox" value="6">Sun</label>
+        </fieldset>
+        <label class="small" for="routine-time">Time <input id="routine-time" type="time" value="09:00" required></label>
+        <button id="routine-add" class="small" type="submit">Add routine</button>
+        <p id="routine-error" class="error small" role="alert" hidden></p>
+      </form>
     </section>
     <section aria-labelledby="rail-summary">
       <h2 id="rail-summary" class="heading">Connected apps</h2>
@@ -1150,6 +1180,7 @@ function conversationItem(item) {
   const open = make("button", "conv-open");
   open.type = "button";
   open.append(make("span", "conv-title", item.title), make("span", "conv-time", ageOf(item.updated_at)));
+  if (item.waiting) open.append(make("span", "conv-waiting", "Waiting for your approval"));
   open.title = new Date(item.updated_at).toLocaleString();
   if (item.id === conversation) open.setAttribute("aria-current", "true");
   open.addEventListener("click", () => chooseConversation(item.id));
@@ -1181,6 +1212,88 @@ async function loadConversations() {
   if (!response.ok) return;
   listed = await response.json();
   renderConversations(null, false);
+}
+
+const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const ROUTINE_OUTCOMES = {
+  answered: "answered",
+  awaiting_confirmation: "waiting for your approval",
+  sign_in_needed: "sign in again, then resume",
+  deactivated: "account deactivated",
+  over_budget: "over budget",
+  rate_limited: "rate limited",
+  previous_run_waiting: "skipped, the last run still waits for approval",
+  login_unreachable: "skipped, the login server did not answer",
+  timed_out: "took too long",
+  upstream_error: "a server did not answer",
+  failed: "failed",
+};
+
+function scheduleOf(routine) {
+  const days = routine.days.length === 7 ? "Every day" : routine.days.map((day) => WEEKDAYS[day]).join(", ");
+  return days + " at " + routine.time + " (" + routine.time_zone + ")";
+}
+
+function routineItem(routine) {
+  const row = make("li", "routine");
+  row.append(make("span", "routine-request", routine.request), make("span", "muted", scheduleOf(routine)));
+  row.append(make("span", "muted", routine.paused ? "Paused" : "Next run " + new Date(routine.next_run_at).toLocaleString()));
+  if (routine.last_outcome) {
+    row.append(make("span", "muted", "Last run: " + (ROUTINE_OUTCOMES[routine.last_outcome] ?? routine.last_outcome)));
+  }
+  const actions = make("div", "routine-actions");
+  if (routine.last_conversation) {
+    actions.append(button("Open last conversation", () => chooseConversation(routine.last_conversation), "small"));
+  }
+  const toggle = routine.paused ? "resume" : "pause";
+  actions.append(button(routine.paused ? "Resume" : "Pause", () => changeRoutine("POST", routine.id + "/" + toggle), "small"));
+  actions.append(button("Delete", () => changeRoutine("DELETE", routine.id), "small"));
+  row.append(actions);
+  return row;
+}
+
+async function loadRoutines() {
+  const response = await api("/routines");
+  if (!response.ok) return;
+  const routines = await response.json();
+  const list = el("routine-list");
+  if (routines.length === 0) list.replaceChildren(make("li", "conv-empty muted small", "No routines yet"));
+  else list.replaceChildren(...routines.map(routineItem));
+}
+
+async function changeRoutine(method, path) {
+  showRoutineError("");
+  const response = await api("/routines/" + path, { method, headers: { "X-Requested-With": "deskclerk" } });
+  if (!response.ok) showRoutineError(detail(await failureBody(response), response.statusText));
+  await loadRoutines();
+}
+
+function showRoutineError(text) {
+  el("routine-error").textContent = text;
+  el("routine-error").hidden = text === "";
+}
+
+async function addRoutine(event) {
+  event.preventDefault();
+  showRoutineError("");
+  const days = [...el("routine-form").querySelectorAll(".routine-days input:checked")].map((box) => Number(box.value));
+  if (days.length === 0) return showRoutineError("Choose at least one day");
+  const response = await post("/routines", {
+    request: el("routine-request").value,
+    days,
+    time: el("routine-time").value,
+    time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  });
+  if (!response.ok) return showRoutineError(detail(await failureBody(response), response.statusText));
+  el("routine-request").value = "";
+  await loadRoutines();
+}
+
+const POLL_MILLISECONDS = 60000;
+function refreshRail() {
+  if (document.visibilityState !== "visible") return;
+  if (!el("routine-list").contains(document.activeElement)) loadRoutines();
+  if (confirming === null && !el("conversation-list").contains(document.activeElement)) loadConversations();
 }
 
 function askDelete(id) {
@@ -1704,6 +1817,9 @@ async function start() {
   });
   loadServers();
   loadConversations();
+  loadRoutines();
+  el("routine-form").addEventListener("submit", addRoutine);
+  setInterval(refreshRail, POLL_MILLISECONDS);
   const linked = remembered();
   if (linked !== null) openConversation(linked);
   if (linkError !== "") showError(linkError);
