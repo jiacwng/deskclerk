@@ -815,12 +815,12 @@ def create_app(
         return _link_failure(code)
 
     @app.get("/login")
-    async def login() -> Response:
+    async def login(offline: bool = False) -> Response:
         try:
             found = await endpoints()
         except AuthUnavailable as unreachable:
             return sign_in_failed("login_unreachable", str(unreachable))
-        begun = oidc.start(settings, found)
+        begun = oidc.start(settings, found, offline)
         pending = {"state": begun.state, "verifier": begun.verifier, "nonce": begun.nonce}
         value = cookies.sign(session_key, "login", pending, LOGIN_LIFETIME_SECONDS)
         response = RedirectResponse(begun.url, status_code=302)
@@ -930,6 +930,8 @@ def create_app(
     async def me(who: Caller = Depends(caller)) -> dict[str, str | float | bool]:
         month = month_of(datetime.now(UTC))
         spent = await run_in_threadpool(spending_store.load, who.identity.user_id, month)
+        stored = await run_in_threadpool(tokens.get, who.identity.user_id, LOGIN, "refresh")
+        has_refresh_token = stored is not None
         return {
             "user": who.identity.user_id,
             "name": who.identity.display_name,
@@ -937,6 +939,7 @@ def create_app(
             "budget_usd": settings.budget_usd,
             "admin": is_admin(who.identity),
             "unscreened": jev is None,
+            "offline_access": has_refresh_token,
         }
 
     @app.get("/servers")
@@ -1511,9 +1514,10 @@ def create_app(
         if await run_in_threadpool(tokens.get, user_id, LOGIN, "refresh") is None:
             raise HTTPException(
                 409,
-                "deskclerk holds no offline access for you, so it cannot run requests while you "
-                "are away; sign in again, and if this stays so the login server must grant "
-                "the offline_access scope to this client",
+                "deskclerk holds no offline_access grant from you, so it cannot run requests "
+                "while you are away; press Allow routines while you are away in the Routines "
+                "panel, and if that fails the login server must allow offline_access for "
+                "this client",
             )
 
     @app.get("/routines")

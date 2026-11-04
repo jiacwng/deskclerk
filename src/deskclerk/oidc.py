@@ -15,7 +15,8 @@ from deskclerk.auth import AuthUnavailable
 from deskclerk.config import Settings
 
 TIMEOUT_SECONDS = 10
-LOGIN_SCOPE = "openid profile email offline_access"
+LOGIN_SCOPE = "openid profile email"
+OFFLINE_SCOPE = LOGIN_SCOPE + " offline_access"
 MAX_REASON_CHARS = 200
 
 
@@ -61,7 +62,7 @@ async def discover(settings: Settings, client: httpx.AsyncClient) -> Endpoints:
     return Endpoints(authorization, token)
 
 
-def start(settings: Settings, endpoints: Endpoints) -> SignInStart:
+def start(settings: Settings, endpoints: Endpoints, offline: bool = False) -> SignInStart:
     state = secrets.token_urlsafe(24)
     verifier = secrets.token_urlsafe(48)
     nonce = secrets.token_urlsafe(24)
@@ -71,7 +72,7 @@ def start(settings: Settings, endpoints: Endpoints) -> SignInStart:
             "response_type": "code",
             "client_id": settings.client_id,
             "redirect_uri": settings.sign_in_redirect_url,
-            "scope": LOGIN_SCOPE,
+            "scope": OFFLINE_SCOPE if offline else LOGIN_SCOPE,
             "state": state,
             "nonce": nonce,
             "code_challenge": challenge.decode().rstrip("="),
@@ -136,5 +137,6 @@ async def refresh(
         "grant_type": "refresh_token",
         "client_id": settings.client_id,
         "refresh_token": refresh_token,
+        "scope": OFFLINE_SCOPE,
     }
     return await _token_request(settings, endpoints, client, form)

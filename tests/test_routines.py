@@ -163,6 +163,7 @@ def test_a_due_routine_runs_as_the_employee_and_its_read_result_reaches_the_conv
     ]
     assert "the note" in str(model.seen[1][-1].content)
     assert [call["grant_type"] for call in idp.token_calls] == ["refresh_token"]
+    assert idp.token_calls[0]["scope"] == "openid profile email offline_access"
     assert stored == "rt-2"
     assert 'deskclerk_routine_runs_total{outcome="answered"} 1.0' in metrics
     [line] = [line for line in audit_lines(caplog) if line["entry"] == "routine"]
@@ -485,6 +486,29 @@ def test_signing_in_stores_the_refresh_token_encrypted_and_replaces_the_old_one(
     assert b"rt-1" not in bytes(raw[0][0])
 
 
+def test_only_the_routines_sign_in_asks_for_offline_access_and_me_says_whether_it_was_given(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings)
+    idp = OfflineIdp(settings.issuer)
+    ada = as_user(sign_token, "ada")
+    with web(settings, [], script(), token_signing_key, database, idp.transport) as site:
+        normal = site.client.get("/login", follow_redirects=False)
+        routines = site.client.get("/login?offline=1", follow_redirects=False)
+        before = site.client.get("/me", headers=ada).json()["offline_access"]
+        site.tokens.put("ada", LOGIN, "refresh", "rt-1")
+        after = site.client.get("/me", headers=ada).json()["offline_access"]
+    scopes = [
+        parse_qs(urlparse(response.headers["location"]).query)["scope"]
+        for response in (normal, routines)
+    ]
+    assert scopes == [["openid profile email"], ["openid profile email offline_access"]]
+    assert (before, after) == (False, True)
+
+
 def test_saving_a_routine_without_a_refresh_token_is_refused_naming_offline_access(
     sign_token: Sign,
     token_settings: Settings,
@@ -500,6 +524,7 @@ def test_saving_a_routine_without_a_refresh_token_is_refused_naming_offline_acce
         refused = site.client.post("/routines", json=body, headers=grace)
     assert refused.status_code == 409
     assert "offline_access" in refused.json()["detail"]
+    assert "Allow routines while you are away" in refused.json()["detail"]
 
 
 def test_the_routine_routes_validate_the_schedule_and_keep_routines_private(
@@ -551,6 +576,8 @@ def test_the_page_has_a_routines_panel_and_marks_a_conversation_that_waits() -> 
     assert 'id="routine-list"' in page
     assert "Open last conversation" in page
     assert "item.waiting" in page
+    assert 'href="/login?offline=1"' in page
+    assert "Allow routines while you are away" in page
 
 
 def keycloak_admin_token(browser: httpx.Client, base: str) -> dict[str, str]:
@@ -575,7 +602,8 @@ def test_a_routine_runs_through_keycloak_and_pauses_once_the_user_is_disabled(
     headers = {CSRF_HEADER: CSRF_VALUE}
     with web(settings, [], model, signing_key, database) as site, httpx.Client() as browser:
         site.client.follow_redirects = False
-        authorization_url = site.client.get("/login").headers["location"]
+        authorization_url = site.client.get("/login?offline=1").headers["location"]
+        assert "offline_access" in parse_qs(urlparse(authorization_url).query)["scope"][0]
         login_page = browser.get(authorization_url)
         for cookie in browser.cookies.jar:
             cookie.secure = False
