@@ -569,6 +569,7 @@ async def run_agent(
     listing_seconds: float = DEFAULT_LISTING_SECONDS,
     *,
     confirm_writes: bool,
+    every_write_waits: bool = False,
     decisions: dict[str, Decision] | None = None,
     executed: list[ExecutedCall] | None = None,
     emit: Emit = ignore_events,
@@ -596,7 +597,9 @@ async def run_agent(
         emit=emit,
         executed=[] if executed is None else executed,
     )
-    confirmation = _confirmation(tools, frozenset(always), shared)
+    confirmation = _confirmation(
+        tools, frozenset() if every_write_waits else frozenset(always), shared
+    )
     read_only_names: list[BaseTool | str] = [
         name for name, tool in tools.items() if tool.info.read_only
     ]

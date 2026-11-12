@@ -14,9 +14,11 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from datetime import time as clock_time
 from importlib import resources
-from typing import Any, Literal, NoReturn
+from typing import Annotated, Any, Literal, NoReturn
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import anthropic
 import anyio.from_thread
@@ -94,6 +96,7 @@ from deskclerk.conversations import (
     record_turn,
     saved_messages,
     thread_id,
+    waiting_conversations,
 )
 from deskclerk.database import Database
 from deskclerk.erasure import erase_user
@@ -110,6 +113,7 @@ from deskclerk.retention import (
     delete_old_threads,
     delete_old_threads_daily,
 )
+from deskclerk.routines import Routine, RoutineStore, Scheduler
 from deskclerk.scim import ScimUsers, mount_scim
 from deskclerk.scope import jev_tool_selection
 from deskclerk.screen import jev_screen
@@ -117,7 +121,7 @@ from deskclerk.servers import McpServer, ServerEntry, ServersError
 from deskclerk.serverstore import NoSuchServer, ServerCatalog, ServerExists
 from deskclerk.sessions import SessionStore
 from deskclerk.spending import Spending, SpendingStore, month_of
-from deskclerk.tokens import TokenStore
+from deskclerk.tokens import LOGIN, TokenStore
 from deskclerk.tracing import Tracing
 
 SESSION_COOKIE = "deskclerk_session"
@@ -132,6 +136,7 @@ SECONDS_PER_HOUR = 3600
 BEARER = {"WWW-Authenticate": "Bearer"}
 MAX_REASON_CHARS = 200
 STREAM_PING_SECONDS = 15.0
+ROUTINE_REFUSALS = {402: "over_budget", 403: "deactivated", 429: "rate_limited"}
 
 _log = logging.getLogger(__name__)
 
@@ -204,6 +209,43 @@ class ConfirmBody(BaseModel):
     decisions: dict[str, Literal["approve", "approve_always", "reject"] | EditIn]
 
 
+class RoutineBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request: str = Field(min_length=1, max_length=MAX_REQUEST_CHARS)
+    days: list[Annotated[int, Field(ge=0, le=6)]] = Field(min_length=1, max_length=7)
+    time: clock_time
+    time_zone: str = Field(min_length=1, max_length=64)
+
+
+class RoutineOut(BaseModel):
+    id: UUID
+    request: str
+    days: list[int]
+    time: str
+    time_zone: str
+    next_run_at: datetime
+    paused: bool
+    last_run_at: datetime | None
+    last_outcome: str | None
+    last_conversation: UUID | None
+
+
+def _routine_out(routine: Routine) -> RoutineOut:
+    return RoutineOut(
+        id=routine.id,
+        request=routine.request,
+        days=list(routine.days),
+        time=routine.time_of_day.strftime("%H:%M"),
+        time_zone=routine.time_zone,
+        next_run_at=routine.next_run_at,
+        paused=routine.paused,
+        last_run_at=routine.last_run_at,
+        last_outcome=routine.last_outcome,
+        last_conversation=routine.last_conversation,
+    )
+
+
 class ServerOut(BaseModel):
     name: str
     url: str
@@ -271,6 +313,7 @@ class ConversationSummaryOut(BaseModel):
     id: UUID
     title: str
     updated_at: datetime
+    waiting: bool
 
 
 class AskOut(BaseModel):
@@ -427,6 +470,7 @@ def create_app(
     audit_store = AuditStore(database, chain_key_of(settings))
     audit = Audit(settings.audit_text, settings.audit_key, audit_store)
     metrics = Metrics(registry)
+    routine_store = RoutineStore(database, tokens)
     discovered: dict[str, oidc.Endpoints] = {}
     ask_failures: tuple[type[Exception], ...] = (
         McpServerFailed,
@@ -472,7 +516,8 @@ def create_app(
                         delete_old_audit_rows_daily(audit_store, settings.retention_days)
                     ),
                 ]
-            yield
+            async with scheduler.running():
+                yield
             for sweep in sweeps:
                 sweep.cancel()
 
@@ -575,7 +620,9 @@ def create_app(
     async def erase_when_idle(user_id: str) -> None:
         async with database.user_lock(user_id):
             await connections.cancel_all_for(user_id)
-            await run_in_threadpool(erase_user, user_id, tokens, sessions, spending_store, audit)
+            await run_in_threadpool(
+                erase_user, user_id, tokens, routine_store, sessions, spending_store, audit
+            )
 
     if settings.scim_token is not None and scim_users is not None:
         mount_scim(
@@ -747,6 +794,7 @@ def create_app(
             async with database.user_lock(body.user_id):
                 await connections.cancel_all_for(body.user_id)
                 revoked = await run_in_threadpool(tokens.delete_user_tokens, body.user_id)
+                await run_in_threadpool(routine_store.delete_user, body.user_id)
                 ended = await run_in_threadpool(sessions.delete_user, body.user_id)
             audit.admin_action(who.identity, "revoke_employee", body.user_id)
             return RevokeOut(tokens=revoked, sessions=ended)
@@ -767,12 +815,12 @@ def create_app(
         return _link_failure(code)
 
     @app.get("/login")
-    async def login() -> Response:
+    async def login(offline: bool = False) -> Response:
         try:
             found = await endpoints()
         except AuthUnavailable as unreachable:
             return sign_in_failed("login_unreachable", str(unreachable))
-        begun = oidc.start(settings, found)
+        begun = oidc.start(settings, found, offline)
         pending = {"state": begun.state, "verifier": begun.verifier, "nonce": begun.nonce}
         value = cookies.sign(session_key, "login", pending, LOGIN_LIFETIME_SECONDS)
         response = RedirectResponse(begun.url, status_code=302)
@@ -818,7 +866,7 @@ def create_app(
         async with idp_client() as client:
             try:
                 verifier = str(pending.get("verifier", ""))
-                token = await oidc.exchange_code(settings, found, client, code, verifier)
+                login_tokens = await oidc.exchange_code(settings, found, client, code, verifier)
             except oidc.SignInRefused as refused:
                 return sign_in_failed("sign_in_refused", str(refused))
             except oidc.NoIdToken as missing:
@@ -827,7 +875,11 @@ def create_app(
                 return sign_in_failed("login_unreachable", str(unreachable))
         try:
             identity = await run_in_threadpool(
-                identify, token, settings, signing_key, str(pending.get("nonce", ""))
+                identify,
+                login_tokens.id_token,
+                settings,
+                signing_key,
+                str(pending.get("nonce", "")),
             )
         except AuthError as refused:
             return sign_in_failed("sign_in_refused", f"the ID token was refused: {refused}")
@@ -835,6 +887,10 @@ def create_app(
             return sign_in_failed("login_unreachable", str(unreachable))
         if await is_deactivated(identity.user_id):
             return sign_in_failed("sign_in_refused", "account deactivated")
+        if login_tokens.refresh_token is not None:
+            await run_in_threadpool(
+                tokens.put, identity.user_id, LOGIN, "refresh", login_tokens.refresh_token
+            )
         session = await run_in_threadpool(sessions.create, identity, session_seconds)
         response = RedirectResponse("/", status_code=303)
         response.delete_cookie(LOGIN_COOKIE, path="/login")
@@ -874,6 +930,8 @@ def create_app(
     async def me(who: Caller = Depends(caller)) -> dict[str, str | float | bool]:
         month = month_of(datetime.now(UTC))
         spent = await run_in_threadpool(spending_store.load, who.identity.user_id, month)
+        stored = await run_in_threadpool(tokens.get, who.identity.user_id, LOGIN, "refresh")
+        has_refresh_token = stored is not None
         return {
             "user": who.identity.user_id,
             "name": who.identity.display_name,
@@ -881,6 +939,7 @@ def create_app(
             "budget_usd": settings.budget_usd,
             "admin": is_admin(who.identity),
             "unscreened": jev is None,
+            "offline_access": has_refresh_token,
         }
 
     @app.get("/servers")
@@ -1002,7 +1061,11 @@ def create_app(
     @app.get("/conversations")
     async def conversation_list(who: Caller = Depends(caller)) -> list[ConversationSummaryOut]:
         found = await list_conversations(database, who.identity.user_id)
-        return [ConversationSummaryOut(**vars(summary)) for summary in found]
+        waiting = await waiting_conversations(database, who.identity.user_id)
+        return [
+            ConversationSummaryOut(**vars(summary), waiting=summary.id in waiting)
+            for summary in found
+        ]
 
     @app.delete("/conversations/{conversation_id}", status_code=204)
     async def remove_conversation(
@@ -1145,8 +1208,9 @@ def create_app(
         edit_of: int | None,
         emit: Emit,
         running: Callable[[], None],
+        routine: bool = False,
     ) -> AskOut:
-        entry = "ask" if decisions is None else "confirm"
+        entry = "routine" if routine else "ask" if decisions is None else "confirm"
         started = time.monotonic()
 
         def refuse(
@@ -1226,6 +1290,7 @@ def create_app(
                             history_tokens=settings.history_tokens,
                             listing_seconds=settings.listing_seconds,
                             confirm_writes=True,
+                            every_write_waits=routine,
                             decisions=decisions,
                             executed=executed,
                             emit=lambda event: emit(_stream_event(event)),
@@ -1368,5 +1433,135 @@ def create_app(
         )
         metrics.ask_finished("upstream_error", started, cost, executed, None)
         return FailedTurn(502, detail, executed)
+
+    async def routine_identity(routine: Routine) -> Identity:
+        user = routine.user_id
+        async with database.user_lock(user):
+            stored = await run_in_threadpool(tokens.get, user, LOGIN, "refresh")
+            if stored is None:
+                raise oidc.SignInRefused("no refresh token is stored")
+            async with idp_client() as client:
+                refreshed = await oidc.refresh(settings, await endpoints(), client, stored)
+            if refreshed.refresh_token is not None:
+                await run_in_threadpool(tokens.put, user, LOGIN, "refresh", refreshed.refresh_token)
+        identity = await run_in_threadpool(
+            identify, refreshed.id_token, settings, signing_key, None
+        )
+        if identity.user_id != user:
+            raise AuthError("the refreshed ID token names another employee")
+        return identity
+
+    async def finish_routine(routine: Routine, outcome: str, conversation: UUID | None) -> None:
+        metrics.routine_finished(outcome)
+        await run_in_threadpool(
+            routine_store.record, routine.id, outcome, conversation, datetime.now(UTC)
+        )
+
+    async def skip_routine(routine: Routine, outcome: str) -> None:
+        audit.routine_event(routine.user_id, "routine_skipped", routine.id, outcome)
+        await finish_routine(routine, outcome, None)
+
+    async def run_routine(routine: Routine) -> None:
+        user = routine.user_id
+        if await is_deactivated(user):
+            return await skip_routine(routine, "deactivated")
+        try:
+            identity = await routine_identity(routine)
+        except (oidc.SignInRefused, oidc.NoIdToken, AuthError):
+            await run_in_threadpool(routine_store.pause_user, user, "sign_in_needed")
+            audit.routine_event(user, "routine_paused", routine.id, "sign_in_needed")
+            metrics.routine_finished("sign_in_needed")
+            return
+        except AuthUnavailable:
+            return await skip_routine(routine, "login_unreachable")
+        if routine.last_conversation in await waiting_conversations(database, user):
+            return await skip_routine(routine, "previous_run_waiting")
+        conversation: UUID | None = None
+        try:
+            done = await take_turn(
+                identity,
+                None,
+                uuid4(),
+                routine.request,
+                None,
+                None,
+                lambda event: None,
+                lambda: None,
+                routine=True,
+            )
+        except HTTPException as refused:
+            outcome = ROUTINE_REFUSALS.get(refused.status_code, "failed")
+            if refused.status_code == 403:
+                audit.routine_event(user, "routine_skipped", routine.id, outcome)
+        except FailedTurn as failed:
+            outcome = "timed_out" if failed.status == 504 else "upstream_error"
+        else:
+            outcome = "awaiting_confirmation" if done.pending else "answered"
+            conversation = done.conversation
+        await finish_routine(routine, outcome, conversation)
+
+    scheduler = Scheduler(routine_store, run_routine)
+    app.state.scheduler = scheduler
+
+    def known_zone(name: str) -> str:
+        try:
+            ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError, OSError):
+            raise HTTPException(422, f"{name} is not a time zone name") from None
+        return name
+
+    async def require_offline_access(user_id: str) -> None:
+        if await run_in_threadpool(tokens.get, user_id, LOGIN, "refresh") is None:
+            raise HTTPException(
+                409,
+                "deskclerk holds no offline_access grant from you, so it cannot run requests "
+                "while you are away; press Allow routines while you are away in the Routines "
+                "panel, and if that fails the login server must allow offline_access for "
+                "this client",
+            )
+
+    @app.get("/routines")
+    async def routine_list(who: Caller = Depends(caller)) -> list[RoutineOut]:
+        found = await run_in_threadpool(routine_store.of_user, who.identity.user_id)
+        return [_routine_out(routine) for routine in found]
+
+    @app.post("/routines", status_code=201)
+    async def add_routine(body: RoutineBody, who: Caller = Depends(posting_caller)) -> RoutineOut:
+        zone = known_zone(body.time_zone)
+        user = who.identity.user_id
+        await require_offline_access(user)
+        at = body.time.replace(second=0, microsecond=0, tzinfo=None)
+        added = await run_in_threadpool(
+            routine_store.add,
+            user,
+            body.request,
+            tuple(sorted(set(body.days))),
+            at,
+            zone,
+            datetime.now(UTC),
+        )
+        return _routine_out(added)
+
+    @app.post("/routines/{routine_id}/pause", status_code=204)
+    async def pause_routine(routine_id: UUID, who: Caller = Depends(posting_caller)) -> Response:
+        if not await run_in_threadpool(routine_store.pause, who.identity.user_id, routine_id):
+            raise HTTPException(404, "no such routine")
+        return Response(status_code=204)
+
+    @app.post("/routines/{routine_id}/resume", status_code=204)
+    async def resume_routine(routine_id: UUID, who: Caller = Depends(posting_caller)) -> Response:
+        await require_offline_access(who.identity.user_id)
+        resumed = await run_in_threadpool(
+            routine_store.resume, who.identity.user_id, routine_id, datetime.now(UTC)
+        )
+        if not resumed:
+            raise HTTPException(404, "no such routine")
+        return Response(status_code=204)
+
+    @app.delete("/routines/{routine_id}", status_code=204)
+    async def remove_routine(routine_id: UUID, who: Caller = Depends(posting_caller)) -> Response:
+        if not await run_in_threadpool(routine_store.delete, who.identity.user_id, routine_id):
+            raise HTTPException(404, "no such routine")
+        return Response(status_code=204)
 
     return app

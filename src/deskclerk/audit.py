@@ -1,6 +1,8 @@
 # The audit log: one JSON line per ask or confirmation, one per tool call a client makes through the
 # MCP gateway and one per connect or disconnect, naming who did it, which tools the agent called,
 # which calls wait for the employee and what was decided.
+# A scheduled request that runs is an ask line whose entry is routine; one that is skipped or
+# paused is one line with the routine's id and the reason.
 # An erase of an employee is one line with the row counts removed and no content. An admin's change
 # to the servers or to an employee's access is one line naming the admin, the action and its target.
 # The request, each call's arguments and results, and a gate's reason are logged only when
@@ -130,6 +132,16 @@ class Audit:
             "sessions": sessions,
             "threads": threads,
             "costs": costs,
+        }
+        self._write(line)
+
+    def routine_event(self, user_id: str, entry: str, routine_id: UUID, outcome: str) -> None:
+        line = {
+            "time": datetime.now(UTC).isoformat(timespec="milliseconds"),
+            "user": user_id,
+            "entry": entry,
+            "routine": str(routine_id),
+            "outcome": outcome,
         }
         self._write(line)
 

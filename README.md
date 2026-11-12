@@ -27,6 +27,8 @@ flowchart LR
   and a rotatable key.
 - Approval of every call that changes data, with editable arguments.
 - An MCP server at `/mcp`, so employees can use the same tools from their own MCP client.
+- Routines: a saved request that runs as the employee on chosen weekdays at a set time, with
+  every change waiting for their approval.
 - Tool pinning: a tool whose definition changes is withheld.
 - Tool allowlists, access by group, and tools that always ask first.
 - Prompt injection screening of tool results.
@@ -103,6 +105,11 @@ same approvals, screen, budget and audit as the page. A call that changes data a
 through MCP elicitation. A client that cannot ask, or that uses MCP revision 2026-07-28, gets those
 calls refused, and reads still work. The write check only sees tool results that came through
 deskclerk.
+
+Employees can save a request as a routine with weekdays and a time. deskclerk runs it as them
+while they are away, after they press Allow routines while you are away. Your login server must
+allow `offline_access` for the deskclerk client. Every call that changes data waits for the
+employee to approve it. If the employee's sign-in stops working, their routines pause.
 
 ## Operate it
 

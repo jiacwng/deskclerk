@@ -16,6 +16,7 @@ from deskclerk.config import Settings
 
 TIMEOUT_SECONDS = 10
 LOGIN_SCOPE = "openid profile email"
+OFFLINE_SCOPE = LOGIN_SCOPE + " offline_access"
 MAX_REASON_CHARS = 200
 
 
@@ -25,6 +26,12 @@ class SignInRefused(Exception):
 
 class NoIdToken(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class LoginTokens:
+    id_token: str
+    refresh_token: str | None
 
 
 @dataclass(frozen=True)
@@ -55,7 +62,7 @@ async def discover(settings: Settings, client: httpx.AsyncClient) -> Endpoints:
     return Endpoints(authorization, token)
 
 
-def start(settings: Settings, endpoints: Endpoints) -> SignInStart:
+def start(settings: Settings, endpoints: Endpoints, offline: bool = False) -> SignInStart:
     state = secrets.token_urlsafe(24)
     verifier = secrets.token_urlsafe(48)
     nonce = secrets.token_urlsafe(24)
@@ -65,7 +72,7 @@ def start(settings: Settings, endpoints: Endpoints) -> SignInStart:
             "response_type": "code",
             "client_id": settings.client_id,
             "redirect_uri": settings.sign_in_redirect_url,
-            "scope": LOGIN_SCOPE,
+            "scope": OFFLINE_SCOPE if offline else LOGIN_SCOPE,
             "state": state,
             "nonce": nonce,
             "code_challenge": challenge.decode().rstrip("="),
@@ -89,17 +96,10 @@ def _refusal(response: httpx.Response) -> str:
     return f"the login server refused the code (status {response.status_code}) " + " ".join(given)
 
 
-async def exchange_code(
-    settings: Settings, endpoints: Endpoints, client: httpx.AsyncClient, code: str, verifier: str
-) -> str:
+async def _token_request(
+    settings: Settings, endpoints: Endpoints, client: httpx.AsyncClient, form: dict[str, str]
+) -> LoginTokens:
     try:
-        form = {
-            "grant_type": "authorization_code",
-            "client_id": settings.client_id,
-            "redirect_uri": settings.sign_in_redirect_url,
-            "code": code,
-            "code_verifier": verifier,
-        }
         if settings.client_secret is not None:
             form["client_secret"] = settings.client_secret.get_secret_value()
         response = await client.post(endpoints.token, data=form)
@@ -109,7 +109,34 @@ async def exchange_code(
         body = response.json()
     except (httpx.HTTPError, ValueError) as error:
         raise AuthUnavailable(f"the login server gave no token response: {error}") from None
-    id_token = body.get("id_token") if isinstance(body, dict) else None
+    fields = body if isinstance(body, dict) else {}
+    id_token = fields.get("id_token")
     if not isinstance(id_token, str) or not id_token:
         raise NoIdToken("the login server gave no ID token")
-    return id_token
+    refresh_token = fields.get("refresh_token")
+    return LoginTokens(id_token, refresh_token if isinstance(refresh_token, str) else None)
+
+
+async def exchange_code(
+    settings: Settings, endpoints: Endpoints, client: httpx.AsyncClient, code: str, verifier: str
+) -> LoginTokens:
+    form = {
+        "grant_type": "authorization_code",
+        "client_id": settings.client_id,
+        "redirect_uri": settings.sign_in_redirect_url,
+        "code": code,
+        "code_verifier": verifier,
+    }
+    return await _token_request(settings, endpoints, client, form)
+
+
+async def refresh(
+    settings: Settings, endpoints: Endpoints, client: httpx.AsyncClient, refresh_token: str
+) -> LoginTokens:
+    form = {
+        "grant_type": "refresh_token",
+        "client_id": settings.client_id,
+        "refresh_token": refresh_token,
+        "scope": OFFLINE_SCOPE,
+    }
+    return await _token_request(settings, endpoints, client, form)

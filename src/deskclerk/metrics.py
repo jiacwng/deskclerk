@@ -20,6 +20,12 @@ class Metrics:
             ["outcome"],
             registry=registry,
         )
+        self._routine_runs = Counter(
+            "deskclerk_routine_runs",
+            "Scheduled requests finished or skipped, by outcome",
+            ["outcome"],
+            registry=registry,
+        )
         self._tool_calls = Counter(
             "deskclerk_tool_calls",
             "Tool calls run, by MCP server and outcome",
@@ -75,6 +81,9 @@ class Metrics:
             self._screen_flags.inc(result.flagged)
             for decided in result.decided:
                 self._confirmations.labels(decided.decision).inc()
+
+    def routine_finished(self, outcome: str) -> None:
+        self._routine_runs.labels(outcome).inc()
 
     def gateway_call_finished(
         self, outcome: str, executed: ExecutedCall | None, decision: str | None, flagged: bool
