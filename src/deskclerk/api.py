@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import resources
 from typing import Any, Literal, NoReturn
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
 import anthropic
@@ -110,6 +111,7 @@ from deskclerk.retention import (
     delete_old_threads,
     delete_old_threads_daily,
 )
+from deskclerk.sandbox import Sandbox, SandboxClient, SandboxFiles, StoredFile
 from deskclerk.scim import ScimUsers, mount_scim
 from deskclerk.scope import jev_tool_selection
 from deskclerk.screen import jev_screen
@@ -148,6 +150,11 @@ try:
     MODEL_ERRORS: tuple[type[Exception], ...] = (anthropic.APIError, openai.APIError)
 except ImportError:
     MODEL_ERRORS = (anthropic.APIError,)
+
+
+def _attachment(name: str) -> str:
+    plain = re.sub(r"[^ -~]|[\"\\]", "_", name)
+    return f"attachment; filename=\"{plain}\"; filename*=UTF-8''{quote(name)}"
 
 
 def _clip(text: str | None) -> str:
@@ -261,10 +268,17 @@ class TurnOut(BaseModel):
     answer: str
 
 
+class FileOut(BaseModel):
+    id: UUID
+    name: str
+    size: int
+
+
 class ConversationOut(BaseModel):
     conversation: UUID
     turns: list[TurnOut]
     pending: list[PendingOut]
+    files: list[FileOut]
 
 
 class ConversationSummaryOut(BaseModel):
@@ -285,6 +299,7 @@ class AskOut(BaseModel):
     cut_off: bool
     flagged: int
     changed_tools: list[str]
+    files: list[FileOut]
     cost_usd: float
 
 
@@ -304,6 +319,10 @@ class ErrorOut(BaseModel):
     status: int
     detail: str
     calls: list[ExecutedOut]
+
+
+def _file_out(file: StoredFile) -> FileOut:
+    return FileOut(id=file.id, name=file.name, size=file.size)
 
 
 @dataclass(frozen=True)
@@ -426,6 +445,8 @@ def create_app(
     quota = Quota(database, settings.requests_per_minute)
     audit_store = AuditStore(database, chain_key_of(settings))
     audit = Audit(settings.audit_text, settings.audit_key, audit_store)
+    sandbox_files = SandboxFiles(database)
+    sandbox_client = SandboxClient(settings.sandbox_url) if settings.sandbox_url else None
     metrics = Metrics(registry)
     discovered: dict[str, oidc.Endpoints] = {}
     ask_failures: tuple[type[Exception], ...] = (
@@ -475,6 +496,8 @@ def create_app(
             yield
             for sweep in sweeps:
                 sweep.cancel()
+            if sandbox_client is not None:
+                await sandbox_client.close()
 
     app = FastAPI(
         title="deskclerk", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan
@@ -1033,13 +1056,33 @@ def create_app(
             checkpointer,
             thread,
             settings.listing_seconds,
+            sandbox_client is not None,
         )
+        kept = await sandbox_files.listing(who.identity.user_id, conversation_id)
         return ConversationOut(
             conversation=conversation_id,
             turns=[
                 TurnOut(request=request, answer=answer) for request, answer in past_turns(history)
             ],
             pending=[PendingOut(**vars(call)) for call in waiting],
+            files=[_file_out(file) for file in kept],
+        )
+
+    @app.get("/conversations/{conversation_id}/files/{file_id}")
+    async def conversation_file(
+        conversation_id: UUID, file_id: UUID, who: Caller = Depends(caller)
+    ) -> Response:
+        found = await sandbox_files.read(who.identity.user_id, conversation_id, file_id)
+        if found is None:
+            raise HTTPException(404, "no such file")
+        return Response(
+            found.content,
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": _attachment(found.name),
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "private, no-store",
+            },
         )
 
     @app.post("/ask", response_model=AskOut)
@@ -1201,6 +1244,11 @@ def create_app(
                 refuse(402, str(error), "over_budget")
             spent_before = spending.cost_usd
             executed: list[ExecutedCall] = []
+            sandbox = (
+                None
+                if sandbox_client is None
+                else Sandbox(sandbox_client, sandbox_files, identity.user_id, conversation)
+            )
             try:
                 with tracing.ask(identity.user_id) if tracing else nullcontext(None) as trace:
                     async with asyncio.timeout(settings.ask_seconds):
@@ -1231,6 +1279,7 @@ def create_app(
                             emit=lambda event: emit(_stream_event(event)),
                             running=running,
                             fork_from=fork_from,
+                            sandbox=sandbox,
                         )
                     if trace:
                         trace.finish(result.flagged)
@@ -1338,6 +1387,7 @@ def create_app(
             cut_off=result.cut_off,
             flagged=result.flagged,
             changed_tools=list(result.changed_tools),
+            files=[] if sandbox is None else [_file_out(file) for file in sandbox.created],
             cost_usd=cost,
         )
 

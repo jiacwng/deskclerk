@@ -1,6 +1,7 @@
 # One employee's request, answered by a LangChain agent whose model calls the tools of the MCP
-# servers the employee has connected. Writes pass the write check and then wait for the employee to
-# approve or reject them. Every tool result is screened before the model reads it.
+# servers the employee has connected, and a tool that runs Python in the sandbox when one is set up.
+# Writes pass the write check and then wait for the employee to approve or reject them. Every tool
+# result is screened before the model reads it.
 
 import asyncio
 import json
@@ -58,6 +59,7 @@ from deskclerk.conversations import close_unanswered_calls, earlier_texts
 from deskclerk.instructions import not_connected_note, unavailable_note
 from deskclerk.pinning import allow_tool, allowed_tools, pin_tools, save_menu
 from deskclerk.providers import Usage, usage_from
+from deskclerk.sandbox import RUN_PYTHON, SANDBOX_SERVER, SANDBOX_TOOL_NAME, Sandbox
 from deskclerk.screen import Screen, is_flagged
 from deskclerk.servers import McpServer
 from deskclerk.tokens import TokenStore
@@ -574,9 +576,10 @@ async def run_agent(
     emit: Emit = ignore_events,
     running: Callable[[], None] = lambda: None,
     fork_from: str | None = None,
+    sandbox: Sandbox | None = None,
 ) -> AgentResult:
     offer = await offer_tools(user_id, servers, connections, tokens, listing_seconds)
-    tools, always = offer.tools, offer.always
+    tools, always = {**offer.tools, **sandbox_tools(sandbox is not None)}, offer.always
     not_connected, unavailable_names, changed_tools = (
         offer.not_connected,
         offer.unavailable,
@@ -610,7 +613,12 @@ async def run_agent(
     ]
     agent = create_agent(
         model,
-        [_langchain_tool(name, tool, user_id, connections) for name, tool in tools.items()],
+        [
+            _sandbox_tool(name, tool, sandbox)
+            if sandbox is not None and tool.server is SANDBOX_SERVER
+            else _langchain_tool(name, tool, user_id, connections)
+            for name, tool in tools.items()
+        ],
         system_prompt=system
         + not_connected_note(tuple(not_connected))
         + unavailable_note(unavailable_names),
@@ -839,6 +847,27 @@ def _langchain_tool(
     )
 
 
+def _sandbox_tool(name: str, tool: OfferedTool, sandbox: Sandbox) -> BaseTool:
+    async def run_code(**arguments: Any) -> tuple[str, bool]:
+        code = arguments.get("code")
+        if not isinstance(code, str):
+            return "The code argument is required and is text.", True
+        result = await sandbox.run_python(code)
+        return result.text, result.is_error
+
+    return StructuredTool(
+        name=name,
+        description=tool.info.description,
+        args_schema=tool.info.input_schema,
+        coroutine=run_code,
+        response_format="content_and_artifact",
+    )
+
+
+def sandbox_tools(offered: bool) -> dict[str, OfferedTool]:
+    return {SANDBOX_TOOL_NAME: OfferedTool(SANDBOX_SERVER, RUN_PYTHON)} if offered else {}
+
+
 async def waiting_calls(
     user_id: str,
     servers: list[McpServer],
@@ -847,6 +876,7 @@ async def waiting_calls(
     checkpointer: BaseCheckpointSaver[Any],
     thread: str,
     listing_seconds: float = DEFAULT_LISTING_SECONDS,
+    sandbox_offered: bool = False,
 ) -> tuple[PendingCall, ...]:
     saved = await checkpointer.aget_tuple({"configurable": {"thread_id": thread}})
     if saved is None or not saved.pending_writes:
@@ -859,5 +889,6 @@ async def waiting_calls(
     ]
     if not interrupts:
         return ()
-    tools = (await offer_tools(user_id, servers, connections, tokens, listing_seconds)).tools
+    offer = await offer_tools(user_id, servers, connections, tokens, listing_seconds)
+    tools = {**offer.tools, **sandbox_tools(sandbox_offered)}
     return tuple(_pending_call(interrupt, tools) for interrupt in interrupts)

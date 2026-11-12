@@ -3,7 +3,8 @@
 # URL. Several copies of the app can share the one database. The server list lives in the database:
 # load a first one with
 #   docker compose -f compose.prod.yaml run --rm -v ./servers.toml:/servers.toml:ro deskclerk python -m deskclerk import-servers /servers.toml
-# and change it afterwards on the /admin page.
+# and change it afterwards on the /admin page. The code sandbox needs the Docker socket on this host:
+# the runner starts one container per run, with no network, from the image built here.
 services:
   postgres:
     image: postgres:17-alpine
@@ -20,12 +21,40 @@ services:
       retries: 12
     restart: unless-stopped
 
+  sandbox-image:
+    image: deskclerk-sandbox:latest
+    build: ./sandbox/image
+    entrypoint: ["true"]
+    restart: "no"
+
+  sandbox:
+    build: ./sandbox/runner
+    networks:
+      - sandbox
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      DOCKER_CONFIG: /tmp/docker
+    tmpfs:
+      - /tmp
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      sandbox-image:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   deskclerk:
     build: .
     env_file: .env
     environment:
       DESKCLERK_HOST: 0.0.0.0
       DESKCLERK_DATABASE_URL: postgresql://deskclerk:${POSTGRES_PASSWORD}@postgres:5432/deskclerk
+      DESKCLERK_SANDBOX_URL: http://sandbox:8200
+    networks:
+      - default
+      - sandbox
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
@@ -33,12 +62,18 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      sandbox:
+        condition: service_healthy
     restart: unless-stopped
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "5"
+
+networks:
+  sandbox:
+    internal: true
 
 volumes:
   postgres-data:

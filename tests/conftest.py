@@ -41,6 +41,7 @@ def token_settings() -> Settings:
             "audience": "deskclerk-api",
             "requests_per_minute": 10_000,
             "audit_chain_key": SecretStr(CHAIN_KEY.decode()),
+            "sandbox_url": None,
         }
     )
 

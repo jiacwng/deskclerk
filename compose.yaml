@@ -12,6 +12,7 @@ services:
       - "127.0.0.1:8080:8080"
       - "127.0.0.1:8000:8000"
       - "127.0.0.1:8100:8100"
+      - "127.0.0.1:8200:8200"
       - "127.0.0.1:5432:5432"
     volumes:
       - ./keycloak:/opt/keycloak/data/import:ro
@@ -59,6 +60,32 @@ services:
       timeout: 5s
       retries: 30
 
+  # Builds the image every code sandbox run starts from, then exits. The runner starts containers
+  # from it by this name.
+  sandbox-image:
+    image: deskclerk-sandbox:latest
+    build: ./sandbox/image
+    entrypoint: ["true"]
+    restart: "no"
+
+  # The sandbox runner on http://localhost:8200. It starts one locked down container per run from
+  # the Docker socket and shares keycloak's network, which publishes port 8200 for it.
+  sandbox:
+    build: ./sandbox/runner
+    network_mode: "service:keycloak"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      DOCKER_CONFIG: /tmp/docker
+    tmpfs:
+      - /tmp
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      sandbox-image:
+        condition: service_completed_successfully
+
   # Loads servers.toml into the database when the server list is empty, before deskclerk starts, so
   # later starts keep what admins changed on the /admin page. To reset the list, run import-servers
   # without --if-empty.
@@ -92,6 +119,7 @@ services:
       DESKCLERK_HOST: 0.0.0.0
       DESKCLERK_ISSUER: http://localhost:8080/realms/deskclerk
       DESKCLERK_DATABASE_URL: postgresql://deskclerk:deskclerk@127.0.0.1:5432/deskclerk
+      DESKCLERK_SANDBOX_URL: http://127.0.0.1:8200
     volumes:
       - deskclerk-data:/var/lib/deskclerk
     depends_on:
@@ -100,6 +128,8 @@ services:
       postgres:
         condition: service_healthy
       demo:
+        condition: service_healthy
+      sandbox:
         condition: service_healthy
       import-servers:
         condition: service_completed_successfully
