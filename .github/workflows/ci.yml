@@ -27,10 +27,11 @@ jobs:
       - run: ruff format --check .
       - run: ruff check .
       - run: mypy
-      - run: docker compose up -d --wait keycloak postgres demo
+      - run: docker compose up -d --build --wait keycloak postgres demo sandbox
       - run: pytest
         env:
           DESKCLERK_DEMO_URL: http://localhost:8100/mcp
+          DESKCLERK_SANDBOX_URL: http://localhost:8200
       - name: container sends sign-in to keycloak
         run: |
           {

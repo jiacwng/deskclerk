@@ -230,6 +230,9 @@ button.conv-delete:hover:not(:disabled) { color: var(--bad); }
 .answer th, .answer td { border: 1px solid var(--line); padding: 0.3rem 0.6rem; text-align: left; overflow-wrap: normal; }
 .answer th { background: var(--sunk); }
 
+.files { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.files:empty { display: none; }
+.files a { display: inline-block; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); padding: 0.25rem 0.6rem; font-size: 0.8125rem; color: var(--accent); text-underline-offset: 2px; overflow-wrap: anywhere; }
 .calls { display: grid; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
 .calls:empty { display: none; }
 .call, .note { min-width: 0; border-top: 1px solid var(--line-soft); }
@@ -980,6 +983,16 @@ function setAnswer(turn, text) {
   if (turn.copy) turn.reply.append(turn.copy);
 }
 
+function showFiles(turn, conversationId, files) {
+  const links = files.map((file) => {
+    const link = make("a", "", file.name + " (" + file.size.toLocaleString() + " bytes)");
+    link.href = "/conversations/" + encodeURIComponent(conversationId) + "/files/" + encodeURIComponent(file.id);
+    link.setAttribute("download", file.name);
+    return link;
+  });
+  turn.files.replaceChildren(...links);
+}
+
 function renderAnswer(text) {
   if (!window.marked || !window.DOMPurify) return make("div", "plain", text);
   return window.DOMPurify.sanitize(window.marked.parse(text, { async: false }), SANITIZE);
@@ -1011,10 +1024,11 @@ function newTurn(request) {
   reply.hidden = true;
   reply.append(make("div", "who-label", "Assistant"), make("div", "answer"));
   const calls = make("div", "calls");
-  turn.append(asked, reply, calls);
+  const files = make("div", "files");
+  turn.append(asked, reply, files, calls);
   el("turns").append(turn);
   el("empty").hidden = true;
-  const made = { node: turn, asked, reply, answer: reply.lastChild, calls, text: "", frame: 0, rows: new Map(), pending: [], id: null, wrote: false, index: null };
+  const made = { node: turn, asked, reply, answer: reply.lastChild, calls, files, text: "", frame: 0, rows: new Map(), pending: [], id: null, wrote: false, index: null };
   const edit = button("Edit", () => openEditor(made), "small quiet edit-request");
   edit.setAttribute("aria-label", "Edit this request");
   edit.disabled = busy || waiting > 0;
@@ -1383,6 +1397,7 @@ function showResult(result) {
   const turn = currentTurn;
   stopPainting(turn);
   setAnswer(turn, result.answer);
+  showFiles(turn, result.conversation, result.files);
   turn.calls.replaceChildren(...buildCalls(result));
   showPending(result.pending);
   if (result.pending.length > 0) {
@@ -1627,6 +1642,7 @@ async function openConversation(id) {
       setRecorded(currentTurn, index);
       setAnswer(currentTurn, item.answer);
     });
+    if (currentTurn) showFiles(currentTurn, past.conversation, past.files);
     showPending(past.pending);
     following = true;
     scrollToBottom("auto");

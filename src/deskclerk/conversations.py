@@ -1,7 +1,8 @@
 # Conversation memory: each conversation is a LangGraph thread whose checkpoints live in
 # Postgres, encrypted with the token key. A thread id starts with the employee's id, so one
 # employee can never load another's. Erasing an employee deletes every thread with their prefix.
-# A conversations table beside them holds each conversation's title and last activity for the list.
+# A conversations table beside them holds each conversation's title and last activity for the list,
+# and the files a conversation's sandbox runs wrote are deleted with it.
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -107,6 +108,10 @@ async def delete_conversation(
         await connection.execute(
             "DELETE FROM conversations WHERE user_id = %s AND id = %s", (user_id, conversation)
         )
+        await connection.execute(
+            "DELETE FROM sandbox_files WHERE user_id = %s AND conversation_id = %s",
+            (user_id, conversation),
+        )
 
 
 DELETE_DROPPED_TURNS = (
@@ -145,6 +150,7 @@ def delete_user_threads(database: Database, user_id: str) -> int:
     prefix = f"{user_id}/"
     arguments = (len(prefix) + UUID_LENGTH, prefix)
     with database.pool.connection() as connection:
+        connection.execute("DELETE FROM sandbox_files WHERE user_id = %s", (user_id,))
         listed = connection.execute("SELECT to_regclass('conversations')").fetchone()
         if listed is not None and listed[0] is not None:
             connection.execute("DELETE FROM conversations WHERE user_id = %s", (user_id,))

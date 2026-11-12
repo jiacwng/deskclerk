@@ -42,6 +42,10 @@ async def delete_old_threads(
             await connection.execute(
                 "DELETE FROM conversations WHERE user_id || '/' || id::text = ANY(%s)", (old,)
             )
+            await connection.execute(
+                "DELETE FROM sandbox_files WHERE user_id || '/' || conversation_id::text = ANY(%s)",
+                (old,),
+            )
     return len(old)
 
 
