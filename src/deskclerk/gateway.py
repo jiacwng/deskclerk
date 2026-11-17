@@ -8,13 +8,13 @@ import asyncio
 import json
 import logging
 import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
 from typing import Any
-from weakref import WeakKeyDictionary
 
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
 from mcp.server.auth.provider import AccessToken
@@ -22,7 +22,6 @@ from mcp.server.auth.settings import AuthSettings
 from mcp.server.context import ServerRequestContext
 from mcp.server.elicitation import AcceptedElicitation, elicit_with_validation
 from mcp.server.lowlevel import Server
-from mcp.server.session import ServerSession
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.shared.exceptions import MCPError, NoBackChannelError
 from mcp_types import (
@@ -68,6 +67,8 @@ from deskclerk.spending import Spending, SpendingStore, month_of
 from deskclerk.tokens import TokenStore
 
 _log = logging.getLogger(__name__)
+
+REMEMBERED_SESSIONS = 1000
 
 
 class IdentityToken(AccessToken):
@@ -170,7 +171,7 @@ class Gateway:
         self._jev = jev
         self._spending_store = spending_store
         self._timed = metrics.timed(no_tool_span)
-        self._seen: WeakKeyDictionary[ServerSession, list[str]] = WeakKeyDictionary()
+        self._seen: OrderedDict[tuple[str, str], list[str]] = OrderedDict()
         self._server: Server[Any] = Server(
             "deskclerk", on_list_tools=self._list_tools, on_call_tool=self._call_tool
         )
@@ -284,15 +285,18 @@ class Gateway:
     ) -> _Done:
         server_name, info = tool.server.name, tool.info
         finish = partial(_Done, server=server_name, tool=info.name)
-        seen = self._seen.setdefault(ctx.session, [])
+        seen = self._history(ctx, identity)
+        flag_raised = any(is_flagged(text) for text in seen)
         decision = None
         if not info.read_only:
             verdict = await self._gate(ProposedCall("", server_name, info, arguments, tuple(seen)))
             if not verdict.allowed:
                 return finish("blocked", f"This call was blocked and not run: {verdict.reason}")
-            decision = "always" if always_allowed else await self._approval(ctx, tool, arguments)
+        if flag_raised or not info.read_only:
+            automatic = always_allowed and not flag_raised
+            decision = "always" if automatic else await self._approval(ctx, tool, arguments)
             if decision == "no_elicitation":
-                return finish("no_elicitation", self._cannot_ask_text())
+                return finish("no_elicitation", self._cannot_ask_text(flag_raised))
             if decision == "timed_out":
                 return finish("timed_out", "The employee did not answer in time. Nothing was run.")
             if decision == "reject":
@@ -323,9 +327,27 @@ class Gateway:
             flagged=is_flagged(text),
         )
 
-    def _cannot_ask_text(self) -> str:
+    def _history(self, ctx: ServerRequestContext[Any, Any], identity: Identity) -> list[str]:
+        session_id = None if ctx.request is None else ctx.request.headers.get("mcp-session-id")
+        if session_id is None:
+            return []
+        key = (identity.user_id, session_id)
+        if key not in self._seen:
+            self._seen[key] = []
+            if len(self._seen) > REMEMBERED_SESSIONS:
+                self._seen.popitem(last=False)
+        self._seen.move_to_end(key)
+        return self._seen[key]
+
+    def _cannot_ask_text(self, flag_raised: bool) -> str:
+        reason = (
+            "An earlier result in this session was flagged as a possible prompt injection, so "
+            "every call needs"
+            if flag_raised
+            else "This call changes something and needs"
+        )
         return (
-            "This call changes something and needs the employee's approval, but this MCP client "
+            f"{reason} the employee's approval, but this MCP client "
             "cannot ask for it (it does not support elicitation). Nothing was run. Use a client "
             f"that supports elicitation, or make the request at {self._settings.public_url}."
         )
