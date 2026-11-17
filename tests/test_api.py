@@ -25,6 +25,7 @@ import httpx
 import httpx2
 import openai
 import pytest
+from botocore.exceptions import ClientError
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from langchain_core.language_models import BaseChatModel
@@ -1610,6 +1611,29 @@ def test_an_openai_failure_gives_502_like_an_anthropic_one(
         response = ask(site, as_user(sign_token, "ada"))
     assert response.status_code == 502
     assert response.json()["detail"] == "the model did not answer (APIConnectionError)"
+
+
+class BedrockGone(ScriptedModel):
+    def _generate(self, *args: Any, **kwargs: Any) -> Any:
+        denied = {"Error": {"Code": "ThrottlingException", "Message": "slow down"}}
+        raise ClientError(denied, "Converse")
+
+
+def test_a_bedrock_failure_gives_502_and_is_audited(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="deskclerk.audit")
+    settings = make_settings(token_settings)
+    with web(settings, [], BedrockGone(messages=iter([])), token_signing_key, database) as site:
+        response = ask(site, as_user(sign_token, "ada"))
+    assert response.status_code == 502
+    assert response.json()["detail"] == "the model did not answer (ClientError)"
+    asks = [line for line in audit_lines(caplog) if line["entry"] == "ask"]
+    assert asks[0]["cause"] == "the model did not answer (ClientError)"
 
 
 def _server_refuses(site: Web, started: dict[str, str], ada: dict[str, str]) -> int:

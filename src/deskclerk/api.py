@@ -18,7 +18,6 @@ from importlib import resources
 from typing import Any, Literal, NoReturn
 from uuid import UUID, uuid4
 
-import anthropic
 import anyio.from_thread
 import httpx
 import psycopg
@@ -102,7 +101,7 @@ from deskclerk.instructions import system_prompt
 from deskclerk.jev import Jev
 from deskclerk.metrics import Metrics
 from deskclerk.pinning import MenuEntry, allowed_tool_names, read_menu, revoke_tool
-from deskclerk.providers import BudgetExceeded, Usage, cost_of
+from deskclerk.providers import BudgetExceeded, Usage, cost_of, model_errors
 from deskclerk.quota import Quota
 from deskclerk.retention import (
     delete_old_audit_rows,
@@ -142,12 +141,7 @@ CONNECT_ERRORS: dict[type[Exception], int] = {
     AlreadyConnected: 409,
     NoSignInNeeded: 400,
 }
-try:
-    import openai
-
-    MODEL_ERRORS: tuple[type[Exception], ...] = (anthropic.APIError, openai.APIError)
-except ImportError:
-    MODEL_ERRORS = (anthropic.APIError,)
+MODEL_ERRORS = model_errors()
 
 
 def _clip(text: str | None) -> str:

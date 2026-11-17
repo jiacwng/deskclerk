@@ -3,7 +3,9 @@
 
 from typing import Any
 
+import openai
 import pytest
+from botocore.exceptions import BotoCoreError, ClientError
 from langchain_anthropic import ChatAnthropic
 from langchain_aws import ChatBedrockConverse
 from langchain_core.messages import AIMessage
@@ -18,6 +20,7 @@ from deskclerk.providers import (
     Usage,
     chat_model,
     cost_of,
+    model_errors,
     usage_from,
 )
 
@@ -230,3 +233,7 @@ def test_a_local_server_builds_at_its_base_url_with_price_model_none(
 
     assert isinstance(model, ChatOpenAI)
     assert str(model.root_client.base_url) == "http://127.0.0.1:9/v1/"
+
+
+def test_model_errors_cover_every_installed_provider() -> None:
+    assert {ClientError, BotoCoreError, openai.APIError} <= set(model_errors())
