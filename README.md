@@ -4,11 +4,11 @@
 
 deskclerk is an agent that works in a company's tools for its employees. An admin lists the
 company's MCP servers. Employees sign in with the company login, connect their own accounts and
-ask in plain words. A call that changes data waits until the employee approves it in the page.
-Before a tool result reaches the model, it is screened for prompt injection: text in an email,
-page or ticket that tries to make the agent do something the employee did not ask for. The screen
-is Jev, a hosted model from TypeSafe that answers yes or no questions about text. Every request
-goes to an audit log.
+ask in plain words. A call that changes data waits until the employee approves it, unless they
+chose to always allow that tool. Before a tool result reaches the model, it is screened for
+prompt injection: text in an email, page or ticket that tries to make the agent do something the
+employee did not ask for. The screen is Jev, a hosted model from TypeSafe that answers yes or no
+questions about text. Every request goes to an audit log.
 
 ```mermaid
 flowchart LR
@@ -25,7 +25,8 @@ flowchart LR
 - Single sign-on with OpenID Connect (Entra ID, Okta, Keycloak) and SCIM deprovisioning.
 - Each employee's own accounts on each MCP server through OAuth, with tokens encrypted at rest
   and a rotatable key.
-- Approval of every call that changes data, with editable arguments.
+- Approval of calls that change data, with editable arguments. An employee can always allow a
+  tool that does not delete, unless the admin turns that off for the server.
 - An MCP server at `/mcp`, so employees can use the same tools from their own MCP client.
 - Tool pinning: a tool whose definition changes is withheld.
 - Tool allowlists, access by group, and tools that always ask first.
@@ -84,8 +85,9 @@ OpenAI or AWS Bedrock. This runs deskclerk, a development Keycloak and a demo Gi
 
 `.env.example` describes every other setting: the model provider, the screen, budgets, retention
 and tracing. Keep the token key, because the stored tokens and conversations are encrypted with
-it. It is in the `deskclerk-data` volume unless you set `DESKCLERK_TOKEN_KEY`. With a TypeSafe
-key, each request and every tool result are also sent to TypeSafe's API to be screened.
+it. Conversation titles are not encrypted. A title is the first 60 characters of the first
+request. The key is in the `deskclerk-data` volume unless you set `DESKCLERK_TOKEN_KEY`. With a
+TypeSafe key, each request and every tool result are also sent to TypeSafe's API to be screened.
 
 All state lives in one Postgres database. `compose.prod.yaml` starts it and sets
 `DESKCLERK_DATABASE_URL` from `POSTGRES_PASSWORD`, which you set in `.env` with letters and digits
@@ -139,8 +141,8 @@ deskclerk.
 Open WebUI and LibreChat are chat front ends for many models. Both connect each user's own
 account on an MCP server. Obot, IBM ContextForge and Docker MCP Gateway are gateways that sit
 between MCP clients and MCP servers. deskclerk puts the controls an agent needs on one path:
-approval of every call that changes data, tool pinning, prompt injection screening of tool results
-and a monthly budget per employee.
+approval of calls that change data, tool pinning, prompt injection screening of tool results and
+a monthly budget per employee.
 
 ## Results
 
@@ -148,9 +150,9 @@ Claude Haiku 5.5 is the agent in every run.
 
 - On 459 WorkBench workplace tasks, deskclerk gets 441 right and WorkBench's own agent gets 447
   (p = 0.18).
-- On 949 AgentDojo prompt injection attacks, 2.0% succeed with no defense. With the Jev screen,
-  1.9% succeed when the employee approves every call, and none when they reject the calls after
-  a flag.
+- On AgentDojo, only 19 of 949 prompt injection attacks succeed with no defense, so it cannot
+  tell the screens apart. On the 1,786 distinct tool outputs from that run, Jev flags all 1,174
+  that carry the attack and none of the 612 that do not. They all come from one attack text.
 - On 5,000 LLMail-Inject attacks, Jev flags 75.2%, and none of 160 clean emails.
 
 `bench/README.md` has every result with its limits, and the commands to rerun it.
