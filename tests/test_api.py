@@ -309,6 +309,22 @@ def test_the_page_has_a_banner_for_unscreened_results() -> None:
     assert "me.unscreened" in page
 
 
+def test_the_flag_reason_says_the_flag_holds_for_the_whole_conversation() -> None:
+    page = resources.files("deskclerk").joinpath("static/index.html").read_text(encoding="utf-8")
+    assert "An earlier result in this conversation was flagged" in page
+    assert "in this turn" not in page
+
+
+def test_long_conversation_titles_truncate_in_the_rail_and_show_in_full_in_the_tooltip() -> None:
+    page = resources.files("deskclerk").joinpath("static/index.html").read_text(encoding="utf-8")
+    assert ".conv-list { display: grid; grid-template-columns: minmax(0, 1fr);" in page
+    title_rule = re.search(r"\.conv-title \{([^}]*)\}", page)
+    assert title_rule is not None
+    for declaration in ("overflow: hidden", "text-overflow: ellipsis", "white-space: nowrap"):
+        assert declaration in title_rule.group(1)
+    assert 'open.title = item.title + "\\n" + new Date(item.updated_at)' in page
+
+
 def test_the_client_metadata_document_is_served_without_sign_in(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,

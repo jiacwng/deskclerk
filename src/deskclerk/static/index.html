@@ -151,8 +151,8 @@ button.quiet:hover:not(:disabled) { color: var(--fg); }
 button.small { min-height: 1.875rem; padding: 0.2rem 0.6rem; font-size: 0.8125rem; }
 
 .conv-new { width: 100%; margin-bottom: 0.5rem; }
-.conv-list { display: grid; gap: 0.125rem; margin-bottom: 1.25rem; }
-.conv { display: flex; align-items: stretch; border-radius: 4px; }
+.conv-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.125rem; margin-bottom: 1.25rem; }
+.conv { display: flex; align-items: stretch; border-radius: 4px; min-width: 0; }
 .conv:hover { background: var(--sunk); }
 button.conv-open { flex: 1; min-width: 0; flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 0; padding: 0.3rem 0.5rem; background: transparent; border-color: transparent; font-weight: 500; text-align: left; }
 button.conv-open[aria-current="true"] { background: var(--sunk); border-color: var(--edge); }
@@ -1168,7 +1168,7 @@ function conversationItem(item) {
   const open = make("button", "conv-open");
   open.type = "button";
   open.append(make("span", "conv-title", item.title), make("span", "conv-time", ageOf(item.updated_at)));
-  open.title = new Date(item.updated_at).toLocaleString();
+  open.title = item.title + "\n" + new Date(item.updated_at).toLocaleString();
   if (item.id === conversation) open.setAttribute("aria-current", "true");
   open.addEventListener("click", () => chooseConversation(item.id));
   const remove = button("Delete", () => askDelete(item.id), "conv-delete");
@@ -1260,7 +1260,7 @@ function updateDecided(total) {
 }
 
 const REASONS = {
-  flag: ["warn", "An earlier result in this turn was flagged as a possible prompt injection"],
+  flag: ["warn", "An earlier result in this conversation was flagged as a possible prompt injection"],
   untrusted: ["warn", "This server is not trusted, so every call asks"],
   destructive: ["bad", "May delete or overwrite"],
   write: ["warn", "Changes data"],

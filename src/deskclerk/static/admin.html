@@ -103,6 +103,7 @@ button.danger { color: var(--bad); border-color: var(--bad); }
 .editor textarea { min-height: 16rem; }
 .row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 .filters { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: end; margin-bottom: 0.75rem; }
+.filters label.check { display: flex; align-items: center; gap: 0.4rem; min-height: 1.75rem; }
 .filters label { display: grid; gap: 0.15rem; font-size: 0.75rem; color: var(--muted); }
 .filters input, .filters select { font: inherit; font-size: 0.8125rem; color: var(--fg); background: var(--surface); border: 1px solid var(--edge); border-radius: 4px; padding: 0.25rem 0.4rem; }
 .tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--line); overflow-x: auto; }
@@ -110,6 +111,8 @@ button.danger { color: var(--bad); border-color: var(--bad); }
 .tabs button:hover { background: var(--sunk); color: var(--fg); }
 .tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
 .panel { display: grid; gap: 1.75rem; }
+.badge { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.75rem; font-weight: 600; white-space: nowrap; color: var(--warn); }
+.badge::before { content: ""; width: 0.5rem; height: 0.5rem; background: currentColor; border-radius: 1px; flex: none; }
 .chain { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
 .chain-ok { color: var(--ok); font-weight: 600; }
 .chain-bad { color: var(--bad); font-weight: 600; }
@@ -188,14 +191,14 @@ pre { margin: 0.25rem 0 0; font: 0.75rem/1.4 var(--mono); white-space: pre-wrap;
       <label>Server<input id="audit-server" type="text"></label>
       <label>Tool<input id="audit-tool" type="text"></label>
       <label>Decision<input id="audit-decision" type="text" placeholder="approve, reject, answered"></label>
-      <label><input id="audit-flagged" type="checkbox"> Flagged by the screen</label>
+      <label class="check"><input id="audit-flagged" type="checkbox"> Flagged by the screen</label>
       <label>From<input id="audit-since" type="datetime-local"></label>
       <label>Until<input id="audit-until" type="datetime-local"></label>
       <button type="submit" class="primary">Search</button>
       <button type="button" id="audit-download">Download</button>
     </form>
     <div class="scroll"><table>
-      <thead><tr><th>Time</th><th>Employee</th><th>Kind</th><th>Servers</th><th>Tools</th><th>Decisions</th><th>Line</th></tr></thead>
+      <thead><tr><th>Time</th><th>Employee</th><th>Kind</th><th>Servers</th><th>Tools</th><th>Decisions</th><th>Flagged</th><th>Line</th></tr></thead>
       <tbody id="audit"></tbody>
     </table></div>
     <div class="row note"><button type="button" id="audit-more" hidden>Older rows</button></div>
@@ -360,6 +363,17 @@ function auditQuery() {
   return params;
 }
 
+function flagCell(flagged) {
+  const td = document.createElement("td");
+  if (flagged) {
+    const badge = document.createElement("span");
+    badge.className = "badge warn";
+    badge.textContent = "Flagged by screen";
+    td.append(badge);
+  }
+  return td;
+}
+
 function lineCell(text) {
   const td = document.createElement("td");
   const details = document.createElement("details");
@@ -384,11 +398,11 @@ async function loadAudit(older) {
   const page = await response.json();
   const rows = page.rows.map((r) => [
     cell(new Date(r.time).toLocaleString()), cell(r.user), cell(r.entry),
-    cell(r.servers.join(", ")), cell(r.tools.join(", ")), cell(r.decisions.join(", ")),
+    cell(r.servers.join(", ")), cell(r.tools.join(", ")), cell(r.decisions.join(", ")), flagCell(r.flagged),
     lineCell(r.line),
   ]);
   if (older) addRows(el("audit"), rows);
-  else fill("audit", rows, 7);
+  else fill("audit", rows, 8);
   auditCursor = page.next_cursor;
   el("audit-more").hidden = auditCursor === null;
 }
