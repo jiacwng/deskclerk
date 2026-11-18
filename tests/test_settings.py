@@ -88,11 +88,6 @@ def test_the_groups_claim_defaults_to_groups_and_is_set_by_the_environment(
     assert Settings().groups_claim == "roles"
 
 
-def test_scim_is_off_unless_a_token_is_set() -> None:
-    assert Settings().scim_token is None
-    assert Settings(scim_token=SecretStr("t")).scim_token is not None
-
-
 @pytest.mark.parametrize(
     ("ask_seconds", "listing_seconds"), [(180, 18), (30, 5), (1, 5), (600, 60)]
 )

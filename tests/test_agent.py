@@ -5,6 +5,7 @@ import asyncio
 import itertools
 import json
 import re
+import threading
 import time
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from dataclasses import replace
@@ -100,6 +101,16 @@ class ScriptedModel(GenericFakeChatModel):
             chunk_position="last",
         )
         yield ChatGenerationChunk(message=last)
+
+
+class HeldModel(ScriptedModel):
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+
+    def _generate(self, *args: Any, **kwargs: Any) -> Any:
+        self.entered.set()
+        self.release.wait(10)
+        return super()._generate(*args, **kwargs)
 
 
 class ProviderGoneAfterScript(ScriptedModel):
