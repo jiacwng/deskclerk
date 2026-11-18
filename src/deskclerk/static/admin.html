@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- The admin page: servers with their controls, usage this month, the searchable audit log and recent activity. Everything is set with textContent. -->
+<!-- The admin page, in three tabs: servers with their controls, people (usage, revoke, recent activity) and the searchable audit log with its chain check. Everything is set with textContent. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -105,6 +105,14 @@ button.danger { color: var(--bad); border-color: var(--bad); }
 .filters { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: end; margin-bottom: 0.75rem; }
 .filters label { display: grid; gap: 0.15rem; font-size: 0.75rem; color: var(--muted); }
 .filters input, .filters select { font: inherit; font-size: 0.8125rem; color: var(--fg); background: var(--surface); border: 1px solid var(--edge); border-radius: 4px; padding: 0.25rem 0.4rem; }
+.tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 4px 4px 0 0; background: transparent; color: var(--muted); font-weight: 600; font-size: 0.875rem; padding: 0.5rem 0.875rem; white-space: nowrap; }
+.tabs button:hover { background: var(--sunk); color: var(--fg); }
+.tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
+.panel { display: grid; gap: 1.75rem; }
+.chain { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
+.chain-ok { color: var(--ok); font-weight: 600; }
+.chain-bad { color: var(--bad); font-weight: 600; }
 pre { margin: 0.25rem 0 0; font: 0.75rem/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 </style>
 </head>
@@ -117,6 +125,12 @@ pre { margin: 0.25rem 0 0; font: 0.75rem/1.4 var(--mono); white-space: pre-wrap;
 </header>
 <main>
   <p id="error" class="error" role="alert" hidden></p>
+  <div class="tabs" role="tablist" aria-label="Admin sections">
+    <button type="button" role="tab" id="tab-servers" aria-controls="panel-servers" aria-selected="true">Servers</button>
+    <button type="button" role="tab" id="tab-people" aria-controls="panel-people" aria-selected="false" tabindex="-1">People</button>
+    <button type="button" role="tab" id="tab-audit" aria-controls="panel-audit" aria-selected="false" tabindex="-1">Audit log</button>
+  </div>
+  <div id="panel-servers" class="panel" role="tabpanel" aria-labelledby="tab-servers">
   <section aria-labelledby="servers-title">
     <h2 id="servers-title">Servers</h2>
     <div class="scroll"><table>
@@ -131,6 +145,23 @@ pre { margin: 0.25rem 0 0; font: 0.75rem/1.4 var(--mono); white-space: pre-wrap;
       <div class="row"><button type="submit" class="primary">Save</button><button type="button" id="cancel">Cancel</button></div>
     </form>
   </section>
+  </div>
+  <div id="panel-people" class="panel" role="tabpanel" aria-labelledby="tab-people" hidden>
+  <section aria-labelledby="usage-title">
+    <h2 id="usage-title">Usage <span id="month"></span></h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Employee</th><th class="num">Priced calls</th><th class="num">Spent</th><th class="num">Budget</th></tr></thead>
+      <tbody id="usage"></tbody>
+    </table></div>
+  </section>
+  <section aria-labelledby="recent-title">
+    <h2 id="recent-title">Recent activity</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Employee</th><th>Conversation title</th><th>Last message</th></tr></thead>
+      <tbody id="recent"></tbody>
+    </table></div>
+    <p class="note muted small">The latest 50 conversations by last message.</p>
+  </section>
   <section aria-labelledby="revoke-title">
     <h2 id="revoke-title">Revoke an employee</h2>
     <p class="muted small">Deletes the employee's stored sign-ins to every server and ends their browser sessions. They can sign in again. To block them, disable them in your login server.</p>
@@ -140,15 +171,14 @@ pre { margin: 0.25rem 0 0; font: 0.75rem/1.4 var(--mono); white-space: pre-wrap;
     </form>
     <p id="revoked" class="note muted small" role="status"></p>
   </section>
-  <section aria-labelledby="usage-title">
-    <h2 id="usage-title">Usage <span id="month"></span></h2>
-    <div class="scroll"><table>
-      <thead><tr><th>Employee</th><th class="num">Priced calls</th><th class="num">Spent</th><th class="num">Budget</th></tr></thead>
-      <tbody id="usage"></tbody>
-    </table></div>
-  </section>
+  </div>
+  <div id="panel-audit" class="panel" role="tabpanel" aria-labelledby="tab-audit" hidden>
   <section aria-labelledby="audit-title">
     <h2 id="audit-title">Audit log</h2>
+    <div class="chain">
+      <button type="button" id="audit-verify">Verify chain</button>
+      <p id="chain" class="small" role="status"></p>
+    </div>
     <form id="audit-filter" class="filters">
       <label>Employee<input id="audit-employee" type="text"></label>
       <label>Kind<select id="audit-entry">
@@ -171,14 +201,7 @@ pre { margin: 0.25rem 0 0; font: 0.75rem/1.4 var(--mono); white-space: pre-wrap;
     <div class="row note"><button type="button" id="audit-more" hidden>Older rows</button></div>
     <p class="note muted small">Newest first. Each row is chained by hash to the one before it, and python -m deskclerk verify-audit checks the chain.</p>
   </section>
-  <section aria-labelledby="recent-title">
-    <h2 id="recent-title">Recent activity</h2>
-    <div class="scroll"><table>
-      <thead><tr><th>Employee</th><th>Conversation title</th><th>Last message</th></tr></thead>
-      <tbody id="recent"></tbody>
-    </table></div>
-    <p class="note muted small">The latest 50 conversations by last message.</p>
-  </section>
+  </div>
 </main>
 <script>
 const el = (id) => document.getElementById(id);
@@ -378,6 +401,68 @@ el("audit-more").addEventListener("click", () => loadAudit(true));
 el("audit-download").addEventListener("click", () => {
   window.location.assign("/admin/audit/download?" + auditQuery());
 });
+
+async function verifyChain() {
+  const status = el("chain");
+  const control = el("audit-verify");
+  control.disabled = true;
+  status.className = "small muted";
+  status.textContent = "Verifying…";
+  try {
+    const response = await fetch("/admin/audit/verify");
+    if (!response.ok) {
+      status.textContent = "";
+      showError(await failure(response));
+      return;
+    }
+    showError("");
+    const report = await response.json();
+    status.className = report.ok ? "small chain-ok" : "small chain-bad";
+    status.textContent = report.ok
+      ? "Chain verified, " + report.rows + " lines"
+      : "Chain broken at line " + report.first_broken;
+  } catch (error) {
+    status.textContent = "";
+    showError("Could not reach the server.");
+  } finally {
+    control.disabled = false;
+  }
+}
+el("audit-verify").addEventListener("click", verifyChain);
+
+const TABS = ["servers", "people", "audit"];
+
+function showTab(name, focus) {
+  for (const tab of TABS) {
+    const selected = tab === name;
+    el("tab-" + tab).setAttribute("aria-selected", String(selected));
+    el("tab-" + tab).tabIndex = selected ? 0 : -1;
+    el("panel-" + tab).hidden = !selected;
+  }
+  if (focus) el("tab-" + name).focus();
+  if (window.location.hash !== "#" + name) window.history.replaceState(null, "", "#" + name);
+}
+
+function tabFromHash() {
+  const name = window.location.hash.slice(1);
+  return TABS.includes(name) ? name : "servers";
+}
+
+for (const tab of TABS) {
+  el("tab-" + tab).addEventListener("click", () => showTab(tab, false));
+  el("tab-" + tab).addEventListener("keydown", (event) => {
+    const step = { ArrowRight: 1, ArrowLeft: -1 }[event.key];
+    let next;
+    if (step !== undefined) next = TABS[(TABS.indexOf(tab) + step + TABS.length) % TABS.length];
+    else if (event.key === "Home") next = TABS[0];
+    else if (event.key === "End") next = TABS[TABS.length - 1];
+    else return;
+    event.preventDefault();
+    showTab(next, true);
+  });
+}
+window.addEventListener("hashchange", () => showTab(tabFromHash(), false));
+showTab(tabFromHash(), false);
 
 const money = (value) => "$" + value.toFixed(4);
 const count = (value) => (value === null ? "n/a" : String(value));

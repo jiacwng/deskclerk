@@ -474,3 +474,40 @@ def test_the_download_returns_the_filtered_rows_as_json_lines(
     assert json.loads(parsed[0]["line"])["user"] == "ana"
     assert {row["user"] for row in map(json.loads, anas.text.splitlines())} == {"ana"}
     assert len(anas.text.splitlines()) == 3
+
+
+def test_an_admin_verifies_a_clean_chain_and_a_tampered_row_is_named(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    store = AuditStore(database, CHAIN_KEY)
+    seed_five(store)
+    settings = make_settings(token_settings, admin_group=GROUP)
+    with web(settings, [], script(), token_signing_key, database) as site:
+        admin = bearer(sign_token, "root", [GROUP])
+        clean = site.client.get("/admin/audit/verify", headers=admin)
+        assert clean.status_code == 200
+        assert clean.json() == {"ok": True, "rows": 5, "first_broken": None}
+        third = rows(database, "SELECT id FROM audit_log ORDER BY id OFFSET 2 LIMIT 1")[0][0]
+        with database.pool.connection() as connection:
+            connection.execute(
+                "UPDATE audit_log SET line = replace(line, 'user2', 'mallory') WHERE id = %s",
+                (third,),
+            )
+        broken = site.client.get("/admin/audit/verify", headers=admin)
+        assert broken.json() == {"ok": False, "rows": 2, "first_broken": third}
+
+
+def test_a_non_admin_is_refused_the_chain_verification(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings, admin_group=GROUP)
+    with web(settings, [], script(), token_signing_key, database) as site:
+        outsider = bearer(sign_token, "bob", ["finance"])
+        assert site.client.get("/admin/audit/verify", headers=outsider).status_code == 403
+        assert site.client.get("/admin/audit/verify").status_code == 401

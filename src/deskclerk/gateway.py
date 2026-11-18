@@ -220,7 +220,7 @@ class Gateway:
             done.flagged,
         )
         executed = (
-            ExecutedCall(done.server, done.tool, arguments, done.text, done.is_error)
+            ExecutedCall(done.server, done.tool, arguments, done.text, done.is_error, done.flagged)
             if done.ran
             else None
         )

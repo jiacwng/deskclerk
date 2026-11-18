@@ -1866,3 +1866,74 @@ async def test_an_edited_delete_may_name_an_id_the_employee_typed(
     )
     assert resumed.blocked == ()
     assert append_server.deleted == ["n-9"]
+
+
+@pytest.mark.anyio
+async def test_an_executed_call_says_whether_its_result_was_flagged(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    model = script(calls(("notes__read_note", {})), calls(("notes__read_note", {})), answer("x"))
+    result = await run(connections, [server_record(mcp_server)], model, screen=FlagTheFirstResult())
+    assert [call.flagged for call in result.executed] == [True, False]
+
+
+@pytest.mark.anyio
+async def test_a_pending_call_says_whether_its_server_is_trusted_and_a_flag_came_before(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncPostgresSaver
+) -> None:
+    server = server_record(mcp_server)
+    model = script(calls(("notes__write_note", {"text": "hi"})))
+    plain = await run(connections, [server], model, checkpointer=saver, confirm_writes=True)
+    assert [(call.trusted, call.after_flag) for call in plain.pending] == [(True, False)]
+
+    untrusted = replace(server, trusted=False)
+    model = script(calls(("notes__write_note", {"text": "hi"})))
+    other = await run(
+        connections, [untrusted], model, checkpointer=saver, thread="ada/other", confirm_writes=True
+    )
+    assert [(call.trusted, call.after_flag) for call in other.pending] == [(False, False)]
+
+    model = script(calls(("notes__read_note", {})), calls(("notes__write_note", {"text": "a"})))
+    flagged = await run(
+        connections,
+        [server],
+        model,
+        screen=FlagTheFirstResult(),
+        checkpointer=saver,
+        thread="ada/flagged",
+        confirm_writes=True,
+    )
+    assert [(call.trusted, call.after_flag) for call in flagged.pending] == [(True, True)]
+
+
+@pytest.mark.anyio
+async def test_always_allow_is_refused_for_a_write_that_waits_after_a_flagged_result(
+    append_server: RunningServer,
+    append_connections: OAuthConnections,
+    append_saver: AsyncPostgresSaver,
+) -> None:
+    servers = [server_record(append_server)]
+    model = script(
+        calls(("notes__read_note", {})),
+        calls(("notes__append_note", {"text": "one"})),
+        answer("saved"),
+    )
+    paused = await run(
+        append_connections,
+        servers,
+        model,
+        screen=FlagTheFirstResult(),
+        checkpointer=append_saver,
+        confirm_writes=True,
+    )
+    assert [(call.tool, call.after_flag) for call in paused.pending] == [("append_note", True)]
+    with pytest.raises(AlwaysAllowRefused):
+        await run(
+            append_connections,
+            servers,
+            model,
+            checkpointer=append_saver,
+            confirm_writes=True,
+            decisions={paused.pending[0].id: "approve_always"},
+        )
+    assert append_connections.tokens.get("ada", "notes", "always_allowed") is None
