@@ -36,11 +36,11 @@ from deskclerk.database import Database
 from deskclerk.instructions import INSTRUCTIONS
 from deskclerk.jev import PRICE_PER_INPUT_TOKEN, Jev, jev_from_environment
 from deskclerk.providers import Usage, cost_of, model_options, usage_from
-from deskclerk.scope import jev_tool_selection
 from deskclerk.screen import pass_through
 from deskclerk.servers import McpServer
 from deskclerk.tokens import TokenStore
 from deskclerk.writecheck import write_check
+from scope import jev_tool_selection
 from workbench import SERVERS, Task, date_line, split_tasks, write_results
 
 SERVER = Path(__file__).parent / "workbench_server.py"
