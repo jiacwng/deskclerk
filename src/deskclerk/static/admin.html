@@ -133,7 +133,7 @@ pre { margin: 0.25rem 0 0; font: 0.75rem/1.4 var(--mono); white-space: pre-wrap;
   </section>
   <section aria-labelledby="revoke-title">
     <h2 id="revoke-title">Revoke an employee</h2>
-    <p class="muted small">Deletes the employee's stored sign-ins to every server and ends their browser sessions, so their next request is refused.</p>
+    <p class="muted small">Deletes the employee's stored sign-ins to every server and ends their browser sessions. They can sign in again. To block them, disable them in your login server.</p>
     <form id="revoke" class="revoke">
       <input id="revoke-user" type="text" placeholder="Employee id" aria-label="Employee id" required>
       <div class="row"><button type="submit" class="danger">Revoke</button></div>
