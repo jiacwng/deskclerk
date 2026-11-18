@@ -78,3 +78,17 @@ jobs:
         run: |
           kubectl get pods
           kubectl logs deployment/deskclerk --tail=100 || true
+
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: pip install pip-audit==2.10.1
+      - run: pip-audit --require-hashes --disable-pip -r requirements.lock
+      - run: pip-audit --require-hashes --disable-pip -r requirements-build.lock
+      - run: pip-audit --require-hashes --disable-pip -r demo/requirements.lock
+      - run: pip-audit -r requirements-dev.txt
