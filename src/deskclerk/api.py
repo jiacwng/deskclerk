@@ -34,6 +34,7 @@ from starlette.routing import Route
 from deskclerk import cookies, oidc
 from deskclerk.admin import (
     AdminAuditPage,
+    AdminChain,
     AdminSummary,
     audit_page,
     audit_row,
@@ -226,6 +227,7 @@ class ExecutedOut(BaseModel):
     arguments: dict[str, Any]
     result: str
     is_error: bool
+    flagged: bool
 
 
 class BlockedOut(BaseModel):
@@ -244,6 +246,8 @@ class PendingOut(BaseModel):
     arguments: dict[str, Any]
     destructive: bool
     always_allowable: bool
+    trusted: bool
+    after_flag: bool
 
 
 class TurnOut(BaseModel):
@@ -284,6 +288,7 @@ class CallOut(BaseModel):
     tool: str
     read_only: bool
     status: Literal["running", "ok", "error"]
+    flagged: bool
 
 
 class AnswerOut(BaseModel):
@@ -315,6 +320,7 @@ def _stream_event(event: RunEvent) -> StreamEvent:
                 tool=event.tool,
                 read_only=event.read_only,
                 status="running",
+                flagged=False,
             ),
         )
     if isinstance(event, CallEnded):
@@ -327,6 +333,7 @@ def _stream_event(event: RunEvent) -> StreamEvent:
                 tool=event.tool,
                 read_only=event.read_only,
                 status=status,
+                flagged=event.flagged,
             ),
         )
     return StreamEvent("answer", AnswerOut(text=event.text))
@@ -620,6 +627,13 @@ def create_app(
             _: Caller = Depends(admin_caller),
         ) -> AdminAuditPage:
             return audit_page(await run_in_threadpool(audit_store.search, found, limit, cursor))
+
+        @app.get("/admin/audit/verify")
+        async def admin_audit_verify(_: Caller = Depends(admin_caller)) -> AdminChain:
+            report = await run_in_threadpool(audit_store.verify)
+            return AdminChain(
+                ok=report.broken_at is None, rows=report.rows, first_broken=report.broken_at
+            )
 
         @app.get("/admin/audit/download")
         async def admin_audit_download(

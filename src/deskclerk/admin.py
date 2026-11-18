@@ -65,6 +65,12 @@ class AdminAuditPage(BaseModel):
     next_cursor: int | None
 
 
+class AdminChain(BaseModel):
+    ok: bool
+    rows: int
+    first_broken: int | None
+
+
 def server_rows(servers: list[McpServer], tokens: TokenStore) -> list[AdminServer]:
     counts = tokens.connected_counts()
     return [
