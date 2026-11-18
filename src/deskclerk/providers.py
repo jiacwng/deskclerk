@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+import anthropic
 from genai_prices import Usage as PriceUsage
 from genai_prices import calc_price
 from langchain.chat_models import init_chat_model
@@ -143,3 +144,20 @@ def chat_model(settings: Settings) -> BaseChatModel:
             f"{provider} needs the {extra} extra: pip install 'deskclerk[{extra}]'"
         ) from error
     return model
+
+
+def model_errors() -> tuple[type[Exception], ...]:
+    errors: list[type[Exception]] = [anthropic.APIError]
+    try:
+        import openai
+
+        errors.append(openai.APIError)
+    except ImportError:
+        pass
+    try:
+        from botocore.exceptions import BotoCoreError, ClientError
+
+        errors.extend([ClientError, BotoCoreError])
+    except ImportError:
+        pass
+    return tuple(errors)
