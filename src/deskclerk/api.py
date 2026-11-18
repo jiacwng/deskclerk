@@ -552,7 +552,7 @@ def create_app(
         return {"status": "ok"}
 
     @app.get("/metrics")
-    async def prometheus_metrics() -> Response:
+    async def prometheus_metrics(_: Caller = Depends(admin_caller)) -> Response:
         return Response(metrics.render(), media_type=CONTENT_TYPE_LATEST)
 
     @app.get("/readyz")
