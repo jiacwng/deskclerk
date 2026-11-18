@@ -83,8 +83,8 @@ OpenAI or AWS Bedrock. This runs deskclerk, a development Keycloak and a demo Gi
    }
    ```
 
-`.env.example` describes every other setting: the model provider, the screen, budgets, retention
-and tracing. Keep the token key, because the stored tokens and conversations are encrypted with
+`.env.example` describes every other setting: the model provider, the screen, budgets and
+retention. Keep the token key, because the stored tokens and conversations are encrypted with
 it. Conversation titles are not encrypted. A title is the first 60 characters of the first
 request. The key is in the `deskclerk-data` volume unless you set `DESKCLERK_TOKEN_KEY`. With a
 TypeSafe key, each request and every tool result are also sent to TypeSafe's API to be screened.

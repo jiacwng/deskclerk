@@ -561,7 +561,6 @@ async def run_agent(
     screen: Screen,
     step_limit: int,
     record_usage: Callable[[Usage], None],
-    trace_config: RunnableConfig | None = None,
     tool_span: ToolSpan = no_tool_span,
     selection: AgentMiddleware[Any, Any, Any] | None = None,
     tool_output_chars: int = DEFAULT_TOOL_OUTPUT_CHARS,
@@ -617,10 +616,7 @@ async def run_agent(
         middleware=middleware,
         checkpointer=checkpointer,
     )
-    config: RunnableConfig = {
-        **(trace_config or {}),
-        "configurable": {"thread_id": thread},
-    }
+    config: RunnableConfig = {"configurable": {"thread_id": thread}}
     saved = await agent.aget_state(config)
     waiting = {interrupt.id: interrupt for interrupt in saved.interrupts}
     if fork_from is not None:

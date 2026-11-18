@@ -14,7 +14,6 @@ import anthropic
 import httpx2
 import pytest
 from cryptography.fernet import Fernet, InvalidToken
-from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import (
@@ -27,7 +26,7 @@ from langchain_core.messages import (
 )
 from langchain_core.messages.ai import UsageMetadata
 from langchain_core.outputs import ChatGenerationChunk
-from langchain_core.runnables import Runnable, RunnableConfig
+from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
@@ -55,11 +54,9 @@ from deskclerk.database import Database
 from deskclerk.screen import NOTICE, Screen, pass_through
 from deskclerk.servers import McpServer
 from deskclerk.tokens import TokenStore
-from deskclerk.tracing import AskTrace
 from deskclerk.writecheck import write_check
 from mcp_server import RunningServer, running_mcp_server
 from test_connections import REDIRECT, connect, server_record, serving_connections
-from test_tracing import MaskingClient
 
 SYSTEM = "Be careful."
 FLAGGED = f"{NOTICE}\nthe injected text"
@@ -171,7 +168,6 @@ async def run(
     gate: Gate | None = None,
     screen: Screen = pass_through,
     step_limit: int = 5,
-    trace_config: RunnableConfig | None = None,
     tool_span: ToolSpan = no_tool_span,
     request: str = "save a note",
     checkpointer: BaseCheckpointSaver[Any] | None = None,
@@ -197,7 +193,6 @@ async def run(
         screen,
         step_limit,
         lambda usage: None,
-        trace_config,
         tool_span,
         tool_output_chars=tool_output_chars,
         history_tokens=history_tokens,
@@ -539,49 +534,6 @@ async def test_a_tool_result_is_screened_before_the_model_and_the_record_see_it(
     assert (reply.content, reply.status) == (shown, status)
     assert result.executed[0].result == shown
     assert result.flagged == flagged
-
-
-class ModelCallCounter(BaseCallbackHandler):
-    def __init__(self) -> None:
-        self.model_calls = 0
-
-    def on_chat_model_start(self, *args: Any, **kwargs: Any) -> None:
-        self.model_calls += 1
-
-
-@pytest.mark.anyio
-async def test_a_trace_config_sees_every_model_call_and_changes_nothing(
-    mcp_server: RunningServer, connections: OAuthConnections
-) -> None:
-    servers = [server_record(mcp_server)]
-
-    def replies() -> ScriptedModel:
-        return script(calls(("notes__read_note", {})), answer("It says: the note"))
-
-    counter = ModelCallCounter()
-    traced = await run(connections, servers, replies(), trace_config={"callbacks": [counter]})
-    untraced = await run(connections, servers, replies())
-    assert counter.model_calls == 2
-    assert traced == untraced
-
-
-@pytest.mark.anyio
-async def test_a_traced_tool_call_is_a_masked_observation_and_changes_nothing(
-    mcp_server: RunningServer, connections: OAuthConnections
-) -> None:
-    servers = [server_record(mcp_server)]
-
-    def replies() -> ScriptedModel:
-        return script(calls(("notes__read_note", {})), answer("It says: the note"))
-
-    client = MaskingClient()
-    trace = AskTrace({}, None, client)
-    traced = await run(connections, servers, replies(), tool_span=trace.tool_span)
-    untraced = await run(connections, servers, replies())
-    (observation,) = client.observations
-    assert (observation.name, observation.as_type) == ("notes__read_note", "tool")
-    assert observation.output == "[omitted]"
-    assert traced == untraced
 
 
 def bound_names(model: ScriptedModel) -> set[str]:

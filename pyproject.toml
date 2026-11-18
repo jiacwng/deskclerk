@@ -33,7 +33,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-tracing = ["langfuse>=5,<6"]
 openai = ["langchain-openai>=1.7"]
 bedrock = ["langchain-aws>=1.0"]
 
