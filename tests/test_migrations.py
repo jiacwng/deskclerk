@@ -1,8 +1,9 @@
 # The baseline migration builds the schema the modules used to create themselves, the servers
 # migration adds the table of MCP servers, the audit migration adds the audit log and its
-# checkpoint, and several copies of the app starting at once on an
-# empty database all succeed.
+# checkpoint, the flagged migration fills its column from the stored lines, and several copies of
+# the app starting at once on an empty database all succeed.
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 
 import psycopg
@@ -97,7 +98,32 @@ def test_migrating_again_changes_nothing(database: Database) -> None:
     database.migrate()
     with psycopg.connect(DATABASE_URL) as connection:
         versions = connection.execute("SELECT version_num FROM alembic_version").fetchall()
-    assert versions == [("0003",)]
+    assert versions == [("0004",)]
+
+
+def test_the_flagged_migration_fills_the_column_from_the_stored_lines(database: Database) -> None:
+    lines: list[dict[str, str | int | bool]] = [
+        {"entry": "ask", "flagged": 2},
+        {"entry": "ask", "flagged": 0},
+        {"entry": "mcp_call", "flagged": True},
+        {"entry": "mcp_call", "flagged": False},
+        {"entry": "connect"},
+    ]
+    with psycopg.connect(DATABASE_URL, autocommit=True) as connection:
+        connection.execute("DROP INDEX audit_log_flagged")
+        connection.execute("ALTER TABLE audit_log DROP COLUMN flagged")
+        connection.execute("UPDATE alembic_version SET version_num = '0003'")
+        for fields in lines:
+            connection.execute(
+                "INSERT INTO audit_log "
+                "(time, line, user_id, entry, servers, tools, decisions, hash) "
+                "VALUES (now(), %s, 'ana', %s, '{}', '{}', '{}', 'x')",
+                (json.dumps(fields), fields["entry"]),
+            )
+    database.migrate()
+    with psycopg.connect(DATABASE_URL) as connection:
+        found = connection.execute("SELECT flagged FROM audit_log ORDER BY id").fetchall()
+    assert found == [(True,), (False,), (True,), (False,), (False,)]
 
 
 def test_copies_starting_at_once_on_an_empty_database_all_succeed(database: Database) -> None:

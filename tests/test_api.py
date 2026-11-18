@@ -259,6 +259,12 @@ def ask(site: Web, headers: dict[str, str], request: str = "save a note") -> htt
     return site.client.post("/ask", json={"request": request}, headers=headers)
 
 
+def arguments_hmac(arguments: dict[str, Any]) -> str:
+    key = hmac.new(CHAIN_KEY, b"audit-arguments", hashlib.sha256).digest()
+    canonical = json.dumps(arguments, sort_keys=True, separators=(",", ":"))
+    return hmac.new(key, canonical.encode(), hashlib.sha256).hexdigest()
+
+
 def audit_lines(caplog: pytest.LogCaptureFixture) -> list[dict[str, object]]:
     return [json.loads(r.getMessage()) for r in caplog.records if r.name == "deskclerk.audit"]
 
@@ -875,7 +881,14 @@ def test_the_audit_log_holds_no_argument_values_unless_audit_text_is_set(
     assert lines[0]["server"] == lines[3]["server"] == "notes"
     line = lines[1]
     assert line["user"] == "ada"
-    assert lines[2]["executed"] == [{"server": "notes", "tool": "write_note", "is_error": False}]
+    assert lines[2]["executed"] == [
+        {
+            "server": "notes",
+            "tool": "write_note",
+            "is_error": False,
+            "arguments_hmac": arguments_hmac({"text": "secret-text"}),
+        }
+    ]
     expected = hmac.new(AUDIT_KEY.encode(), b"my private request", hashlib.sha256).hexdigest()
     assert (line["text_chars"], line["text_hmac"]) == (18, expected)
     assert "text" not in line
@@ -906,6 +919,7 @@ def test_the_audit_log_holds_arguments_and_results_when_audit_text_is_set(
             "server": "notes",
             "tool": "write_note",
             "is_error": False,
+            "arguments_hmac": arguments_hmac({"text": "secret-text"}),
             "arguments": {"text": "secret-text"},
             "result": "wrote secret-text",
         }
@@ -1561,7 +1575,14 @@ def test_a_write_that_ran_before_the_model_failed_is_in_the_audit_line(
     assert response.json()["detail"]
     [line] = [line for line in audit_lines(caplog) if line["entry"] == "confirm"]
     assert line["outcome"] == "upstream_error"
-    assert line["executed"] == [{"server": "notes", "tool": "write_note", "is_error": False}]
+    assert line["executed"] == [
+        {
+            "server": "notes",
+            "tool": "write_note",
+            "is_error": False,
+            "arguments_hmac": arguments_hmac({"text": "hi"}),
+        }
+    ]
 
 
 def test_a_write_that_ran_before_the_deadline_is_in_the_audit_line(
@@ -1591,7 +1612,14 @@ def test_a_write_that_ran_before_the_deadline_is_in_the_audit_line(
     assert response.json()["detail"]
     [line] = [line for line in audit_lines(caplog) if line["entry"] == "confirm"]
     assert line["outcome"] == "timed_out"
-    assert line["executed"] == [{"server": "notes", "tool": "write_note", "is_error": False}]
+    assert line["executed"] == [
+        {
+            "server": "notes",
+            "tool": "write_note",
+            "is_error": False,
+            "arguments_hmac": arguments_hmac({"text": "hi"}),
+        }
+    ]
 
 
 class OpenAiGone(ScriptedModel):
@@ -2118,9 +2146,21 @@ def test_a_pause_and_its_confirmation_are_audited(
     assert asked["executed"] == []
     assert (confirmed["entry"], confirmed["outcome"]) == ("confirm", "answered")
     assert confirmed["decided"] == [
-        {"server": "notes", "tool": "write_note", "decision": "approve"}
+        {
+            "server": "notes",
+            "tool": "write_note",
+            "decision": "approve",
+            "arguments_hmac": arguments_hmac({"text": "secret-text"}),
+        }
     ]
-    assert confirmed["executed"] == [{"server": "notes", "tool": "write_note", "is_error": False}]
+    assert confirmed["executed"] == [
+        {
+            "server": "notes",
+            "tool": "write_note",
+            "is_error": False,
+            "arguments_hmac": arguments_hmac({"text": "secret-text"}),
+        }
+    ]
     assert confirmed["conversation"] == asked["conversation"]
     assert "secret-text" not in caplog.text
 
@@ -2146,7 +2186,17 @@ def test_an_edited_confirmation_runs_the_edited_arguments_and_is_audited_as_an_e
     assert done.status_code == 200
     assert [note[1] for note in notes_server.notes] == ["hello"]
     confirmed = [line for line in audit_lines(caplog) if line["entry"] == "confirm"][0]
-    assert confirmed["decided"] == [{"server": "notes", "tool": "write_note", "decision": "edit"}]
+    assert confirmed["decided"] == [
+        {
+            "server": "notes",
+            "tool": "write_note",
+            "decision": "edit",
+            "arguments_hmac": arguments_hmac({"text": "hello"}),
+        }
+    ]
+    [executed] = cast(list[dict[str, Any]], confirmed["executed"])
+    assert executed["arguments_hmac"] == arguments_hmac({"text": "hello"})
+    assert executed["arguments_hmac"] != arguments_hmac({"text": "hi"})
 
 
 def test_a_malformed_edit_is_refused_and_the_client_cannot_name_another_tool(

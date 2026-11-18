@@ -639,10 +639,11 @@ def create_app(
             server: str | None = None,
             tool: str | None = None,
             decision: str | None = None,
+            flagged: bool | None = None,
             since: datetime | None = None,
             until: datetime | None = None,
         ) -> AuditFilter:
-            return AuditFilter(employee, entry, server, tool, decision, since, until)
+            return AuditFilter(employee, entry, server, tool, decision, flagged, since, until)
 
         @app.get("/admin/audit")
         async def admin_audit(

@@ -158,6 +158,7 @@ class DecidedCall:
     server: str
     tool: str
     decision: DecisionName | Literal["always"]
+    arguments: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -701,7 +702,10 @@ async def run_agent(
         pending,
         (
             *shared.automatic,
-            *(DecidedCall(call.server, call.tool, outcome) for call, outcome in decided),
+            *(
+                DecidedCall(call.server, call.tool, outcome, call.arguments)
+                for call, outcome in decided
+            ),
         ),
     )
 
@@ -724,7 +728,9 @@ def _confirmation(
         if call_id not in shared.automatic_ids:
             shared.automatic_ids.add(call_id)
             tool = tools[request.tool_call["name"]]
-            shared.automatic.append(DecidedCall(tool.server.name, tool.info.name, "always"))
+            shared.automatic.append(
+                DecidedCall(tool.server.name, tool.info.name, "always", request.tool_call["args"])
+            )
         return False
 
     interrupt_on: dict[str, bool | InterruptOnConfig] = {}
@@ -812,6 +818,8 @@ def _decided_calls(
             declined = message.status == "error" and str(message.content).startswith(_REJECTION)
             choice = chosen[call.id]
             name: DecisionName = "edit" if isinstance(choice, Edit) else choice
+            if isinstance(choice, Edit):
+                call = replace(call, arguments=choice.arguments)
             decided.append((call, "reject" if declined else name))
     return decided
 

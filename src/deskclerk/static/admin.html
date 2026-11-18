@@ -158,6 +158,7 @@ pre { margin: 0.25rem 0 0; font: 0.75rem/1.4 var(--mono); white-space: pre-wrap;
       <label>Server<input id="audit-server" type="text"></label>
       <label>Tool<input id="audit-tool" type="text"></label>
       <label>Decision<input id="audit-decision" type="text" placeholder="approve, reject, answered"></label>
+      <label><input id="audit-flagged" type="checkbox"> Flagged by the screen</label>
       <label>From<input id="audit-since" type="datetime-local"></label>
       <label>Until<input id="audit-until" type="datetime-local"></label>
       <button type="submit" class="primary">Search</button>
@@ -332,6 +333,7 @@ function auditQuery() {
     const value = el("audit-" + name).value;
     if (value !== "") params.set(name, new Date(value).toISOString());
   }
+  if (el("audit-flagged").checked) params.set("flagged", "true");
   return params;
 }
 
