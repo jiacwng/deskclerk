@@ -123,8 +123,9 @@ deskclerk.
 - To upgrade, run `git pull`, then `docker compose -f compose.prod.yaml up -d --build`.
 - `/livez` answers while the process runs, and `/readyz` once it can serve.
 - `/metrics` serves Prometheus metrics: asks, tool calls, approvals, screen flags, cost and
-  durations, with no employee names. It needs no sign-in, so block it at the reverse proxy if it
-  must stay private.
+  durations, with no employee names. It needs an admin: a signed-in session, or a bearer token for
+  a user in `DESKCLERK_ADMIN_GROUP`. Prometheus can sign in as a Keycloak service account in that
+  group through its OAuth 2.0 client credentials setting.
 - Sign-in and connection failures are logged with their reason. The audit log is one JSON line per
   request on standard output, and each line is also stored in Postgres. The admin page searches the
   stored lines and downloads the result.
