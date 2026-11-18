@@ -9,7 +9,6 @@ import json
 import logging
 import time
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -96,11 +95,9 @@ class BearerVerifier:
         self,
         settings: Settings,
         signing_key: SigningKeyLookup,
-        is_deactivated: Callable[[str], Awaitable[bool]],
     ) -> None:
         self._settings = settings
         self._signing_key = signing_key
-        self._is_deactivated = is_deactivated
 
     async def verify_token(self, token: str) -> AccessToken | None:
         try:
@@ -111,8 +108,6 @@ class BearerVerifier:
             return None
         except AuthUnavailable:
             _log.warning("the login server cannot be reached, so an MCP token was refused")
-            return None
-        if await self._is_deactivated(identity.user_id):
             return None
         return IdentityToken(
             token=token,
@@ -158,7 +153,6 @@ class Gateway:
         jev: Jev | None,
         spending_store: SpendingStore,
         signing_key: SigningKeyLookup,
-        is_deactivated: Callable[[str], Awaitable[bool]],
     ) -> None:
         self._settings = settings
         self._catalog = catalog
@@ -181,7 +175,7 @@ class Gateway:
                 resource_server_url=f"{settings.public_url}/mcp",
                 validate_token_resource=False,
             ),
-            token_verifier=BearerVerifier(settings, signing_key, is_deactivated),
+            token_verifier=BearerVerifier(settings, signing_key),
             transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
         )
 

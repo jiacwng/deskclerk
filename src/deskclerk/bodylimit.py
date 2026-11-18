@@ -5,9 +5,8 @@
 from starlette.responses import PlainTextResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-# The largest legal body is a SCIM group PATCH or PUT from the identity provider. At about 100
-# bytes per member, 256 KiB holds some 2,500 members. An ask is 4,000 characters, at most 24 KB
-# as JSON with every character escaped, and a confirm payload is far smaller.
+# An ask is 4,000 characters, at most 24 KB as JSON with every character escaped, and a confirm
+# payload is far smaller.
 MAX_BODY_BYTES = 256 * 1024
 
 
