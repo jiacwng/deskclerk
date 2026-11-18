@@ -39,7 +39,6 @@ from deskclerk.serverstore import ServerCatalog, ServerStore
 from deskclerk.sessions import SessionStore
 from deskclerk.spending import SpendingStore, month_of
 from deskclerk.tokens import TokenKeyError, TokenStore
-from deskclerk.tracing import TracingNotInstalled, tracing_from_environment
 from deskclerk.writecheck import write_check
 
 FLOW_TIMEOUT_SECONDS = 600
@@ -243,14 +242,6 @@ def main(argv: Sequence[str] = ()) -> None:
         )
         with httpx.Client() as client:
             jwks_url = discover_jwks_url(settings, client)
-        tracing = tracing_from_environment(settings.audit_text, settings.audit_key)
-        if tracing is None:
-            print(
-                "deskclerk: LANGFUSE keys are not set, so requests are not traced",
-                file=sys.stderr,
-            )
-        else:
-            print(f"deskclerk: tracing requests to {tracing.host}", file=sys.stderr)
         app = create_app(
             settings,
             database,
@@ -264,7 +255,6 @@ def main(argv: Sequence[str] = ()) -> None:
             jev,
             jwks_signing_key(jwks_url),
             CollectorRegistry(),
-            tracing,
         )
     except (
         ValidationError,
@@ -275,15 +265,12 @@ def main(argv: Sequence[str] = ()) -> None:
         MissingApiKey,
         ProviderNotInstalled,
         AuthUnavailable,
-        TracingNotInstalled,
         ValueError,
     ) as error:
         sys.exit(f"deskclerk: {error}")
     log_to_stdout()
     uvicorn.run(app, host=settings.host, port=settings.port, access_log=False)
     database.close()
-    if tracing is not None:
-        tracing.flush()
 
 
 if __name__ == "__main__":

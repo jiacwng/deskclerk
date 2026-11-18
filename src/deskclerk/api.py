@@ -11,7 +11,7 @@ import logging
 import re
 import time
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import resources
@@ -117,7 +117,6 @@ from deskclerk.serverstore import NoSuchServer, ServerCatalog, ServerExists
 from deskclerk.sessions import SessionStore
 from deskclerk.spending import Spending, SpendingStore, month_of
 from deskclerk.tokens import TokenStore
-from deskclerk.tracing import Tracing
 
 SESSION_COOKIE = "deskclerk_session"
 LOGIN_COOKIE = "deskclerk_login"
@@ -408,7 +407,6 @@ def create_app(
     jev: Jev | None,
     signing_key: SigningKeyLookup,
     registry: CollectorRegistry,
-    tracing: Tracing | None = None,
     idp_transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
     if settings.session_key is None:
@@ -1196,38 +1194,34 @@ def create_app(
             spent_before = spending.cost_usd
             executed: list[ExecutedCall] = []
             try:
-                with tracing.ask(identity.user_id) if tracing else nullcontext(None) as trace:
-                    async with asyncio.timeout(settings.ask_seconds):
-                        result = await run_agent(
-                            identity.user_id,
-                            text,
-                            system_prompt(datetime.now(UTC).date()),
-                            [s for s in catalog.offered if s.open_to(identity.groups)],
-                            connections,
-                            tokens,
-                            checkpointer,
-                            thread,
-                            history,
-                            model,
-                            gate,
-                            jev_screen(jev, spending.record_jev),
-                            settings.step_limit,
-                            spending.record,
-                            trace.config if trace else None,
-                            metrics.timed(trace.tool_span if trace else no_tool_span),
-                            jev_tool_selection(jev, settings.tool_selection, spending.record_jev),
-                            tool_output_chars=settings.tool_output_chars,
-                            history_tokens=settings.history_tokens,
-                            listing_seconds=settings.listing_seconds,
-                            confirm_writes=True,
-                            decisions=decisions,
-                            executed=executed,
-                            emit=lambda event: emit(_stream_event(event)),
-                            running=running,
-                            fork_from=fork_from,
-                        )
-                    if trace:
-                        trace.finish(result.flagged)
+                async with asyncio.timeout(settings.ask_seconds):
+                    result = await run_agent(
+                        identity.user_id,
+                        text,
+                        system_prompt(datetime.now(UTC).date()),
+                        [s for s in catalog.offered if s.open_to(identity.groups)],
+                        connections,
+                        tokens,
+                        checkpointer,
+                        thread,
+                        history,
+                        model,
+                        gate,
+                        jev_screen(jev, spending.record_jev),
+                        settings.step_limit,
+                        spending.record,
+                        metrics.timed(no_tool_span),
+                        jev_tool_selection(jev, settings.tool_selection, spending.record_jev),
+                        tool_output_chars=settings.tool_output_chars,
+                        history_tokens=settings.history_tokens,
+                        listing_seconds=settings.listing_seconds,
+                        confirm_writes=True,
+                        decisions=decisions,
+                        executed=executed,
+                        emit=lambda event: emit(_stream_event(event)),
+                        running=running,
+                        fork_from=fork_from,
+                    )
             except ConversationWaiting:
                 refuse(409, "this conversation waits for a confirmation", "conversation_waiting")
             except NothingToConfirm:
