@@ -30,13 +30,14 @@ from deskclerk.config import Settings
 from deskclerk.connections import OAuthConnections
 from deskclerk.database import Database
 from deskclerk.jev import PRICE_PER_INPUT_TOKEN, Jev
+from deskclerk.pinning import allow_tool
 from deskclerk.providers import Usage
 from deskclerk.screen import NOTICE
 from deskclerk.sessions import SessionStore
 from deskclerk.spending import SpendingStore, month_of
 from deskclerk.tokens import TokenStore
 from deskclerk.writecheck import write_check
-from mcp_server import RunningServer
+from mcp_server import RunningServer, running_mcp_server
 from test_agent import answer, script
 from test_api import (
     Sign,
@@ -281,6 +282,104 @@ async def test_a_write_from_a_client_that_cannot_ask_is_refused(
     assert "elicitation" in text_of(refused)
     assert notes_server.notes == []
     assert text_of(read) == "the note"
+
+
+@pytest.fixture
+def append_server() -> Iterator[RunningServer]:
+    with running_mcp_server(REDIRECT, append_tool=True, delete_tool=True) as running:
+        yield running
+
+
+@pytest.mark.anyio
+async def test_a_read_asks_after_a_flagged_result_in_the_session(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,  # noqa: F811
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings)
+    ada = token_of(sign_token, "ada")
+    jev = as_jev(FakeJev(0.9))
+    with serving(settings, [notes(notes_server)], token_signing_key, database, jev) as site:
+        connect(site, ada)
+        asked: list[str] = []
+        async with mcp_client(site, ada, answering(asked)) as client:
+            await client.call_tool("notes__read_note", {})
+            assert asked == []
+            second = await client.call_tool("notes__read_note", {})
+    assert len(asked) == 1 and "read_note" in asked[0]
+    assert text_of(second) == f"{NOTICE}\nthe note"
+
+
+@pytest.mark.anyio
+async def test_an_always_allowed_write_asks_after_a_flagged_result_in_the_session(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    append_server: RunningServer,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings)
+    ada = token_of(sign_token, "ada")
+    jev = as_jev(FakeJev(0.9))
+    with serving(settings, [notes(append_server)], token_signing_key, database, jev) as site:
+        connect(site, ada)
+        connections = OAuthConnections(site.tokens, REDIRECT, "deskclerk test", 600)
+        [append] = [
+            tool
+            for tool in await connections.tools("ada", notes(append_server))
+            if tool.name == "append_note"
+        ]
+        allow_tool(site.tokens, "ada", "notes", append)
+        asked: list[str] = []
+        async with mcp_client(site, ada, answering(asked)) as client:
+            await client.call_tool("notes__append_note", {"text": "before"})
+            assert asked == []
+            await client.call_tool("notes__append_note", {"text": "after"})
+    assert len(asked) == 1 and "append_note" in asked[0]
+    assert [text for _, text in append_server.notes] == ["before", "after"]
+
+
+@pytest.mark.anyio
+async def test_a_read_does_not_ask_when_no_result_was_flagged(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,  # noqa: F811
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings)
+    ada = token_of(sign_token, "ada")
+    with serving(settings, [notes(notes_server)], token_signing_key, database) as site:
+        connect(site, ada)
+        asked: list[str] = []
+        async with mcp_client(site, ada, answering(asked)) as client:
+            await client.call_tool("notes__read_note", {})
+            second = await client.call_tool("notes__read_note", {})
+    assert asked == []
+    assert text_of(second) == "the note"
+
+
+@pytest.mark.anyio
+async def test_a_destructive_write_may_name_an_id_from_an_earlier_read_in_the_session(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    append_server: RunningServer,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings)
+    ada = token_of(sign_token, "ada")
+    with serving(settings, [notes(append_server)], token_signing_key, database) as site:
+        connect(site, ada)
+        async with mcp_client(site, ada, answering([])) as client:
+            unseen = await client.call_tool("notes__delete_note", {"note_id": "note"})
+            await client.call_tool("notes__read_note", {})
+            deleted = await client.call_tool("notes__delete_note", {"note_id": "note"})
+    assert unseen.is_error and "grounding check" in text_of(unseen)
+    assert not deleted.is_error
+    assert append_server.deleted == ["note"]
 
 
 @pytest.mark.anyio
