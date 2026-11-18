@@ -1,7 +1,8 @@
 # The baseline migration builds the schema the modules used to create themselves, the servers
 # migration adds the table of MCP servers, the audit migration adds the audit log and its
-# checkpoint, the flagged migration fills its column from the stored lines, and several copies of
-# the app starting at once on an empty database all succeed.
+# checkpoint, the fourth drops the table nothing uses any more, the fifth fills the flagged
+# column from the stored lines, and several copies of the app starting at once on an empty
+# database all succeed.
 
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -26,10 +27,6 @@ CREATE_STATEMENTS = [
     "CREATE TABLE IF NOT EXISTS quota_hits ("
     "user_id TEXT NOT NULL, hit_at DOUBLE PRECISION NOT NULL)",
     "CREATE INDEX IF NOT EXISTS quota_hits_user ON quota_hits (user_id, hit_at)",
-    "CREATE TABLE IF NOT EXISTS scim_users ("
-    "position BIGSERIAL, id TEXT PRIMARY KEY, external_id TEXT NOT NULL UNIQUE, "
-    "user_name TEXT NOT NULL, active BOOLEAN NOT NULL)",
-    "CREATE UNIQUE INDEX IF NOT EXISTS scim_users_user_name ON scim_users (lower(user_name))",
     "CREATE TABLE IF NOT EXISTS sessions ("
     "id_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, client_id TEXT NOT NULL, "
     "name TEXT NOT NULL, sid TEXT, subject TEXT, groups TEXT NOT NULL, "
@@ -90,7 +87,7 @@ def test_the_baseline_builds_the_schema_the_modules_used_to_create(database: Dat
         old = describe(connection, SCRATCH)
         new = describe(connection, "public")
         connection.execute(f"DROP SCHEMA {SCRATCH} CASCADE")
-    assert len(old[0]) == 9  # type: ignore[arg-type]
+    assert len(old[0]) == 8  # type: ignore[arg-type]
     assert new == old
 
 
@@ -98,7 +95,7 @@ def test_migrating_again_changes_nothing(database: Database) -> None:
     database.migrate()
     with psycopg.connect(DATABASE_URL) as connection:
         versions = connection.execute("SELECT version_num FROM alembic_version").fetchall()
-    assert versions == [("0004",)]
+    assert versions == [("0005",)]
 
 
 def test_the_flagged_migration_fills_the_column_from_the_stored_lines(database: Database) -> None:
@@ -112,7 +109,7 @@ def test_the_flagged_migration_fills_the_column_from_the_stored_lines(database: 
     with psycopg.connect(DATABASE_URL, autocommit=True) as connection:
         connection.execute("DROP INDEX audit_log_flagged")
         connection.execute("ALTER TABLE audit_log DROP COLUMN flagged")
-        connection.execute("UPDATE alembic_version SET version_num = '0003'")
+        connection.execute("UPDATE alembic_version SET version_num = '0004'")
         for fields in lines:
             connection.execute(
                 "INSERT INTO audit_log "
@@ -141,7 +138,7 @@ def test_copies_starting_at_once_on_an_empty_database_all_succeed(database: Data
         tables = connection.execute(
             "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'"
         ).fetchone()
-    assert tables == (13,)
+    assert tables == (12,)
 
 
 def test_a_keyword_connection_string_becomes_a_sqlalchemy_url() -> None:

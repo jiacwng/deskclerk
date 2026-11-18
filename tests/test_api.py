@@ -59,7 +59,6 @@ from deskclerk.serverstore import ServerCatalog, ServerStore
 from deskclerk.sessions import SessionStore
 from deskclerk.spending import SpendingStore
 from deskclerk.tokens import TokenStore
-from deskclerk.tracing import AskTrace, Tracing
 from deskclerk.writecheck import write_check
 from mcp_server import RunningServer, running_mcp_server
 from test_agent import ProviderGoneAfterScript, ScriptedModel, answer, calls, script
@@ -140,7 +139,6 @@ def web(
     idp_transport: httpx.AsyncBaseTransport | None = None,
     key: str | None = None,
     jev: Jev | None = None,
-    tracing: Tracing | None = None,
 ) -> Iterator[Web]:
     tokens = TokenStore(database, key or Fernet.generate_key().decode())
     sessions = SessionStore(database)
@@ -160,7 +158,6 @@ def web(
         jev,
         signing_key,
         registry,
-        tracing,
         idp_transport=idp_transport,
     )
     with TestClient(app) as client:
@@ -616,38 +613,6 @@ def test_an_ask_gives_the_model_the_instructions_with_today_s_utc_date(
     sent = model.seen[0][0]
     assert isinstance(sent, SystemMessage)
     assert sent.content in {system_prompt(day) for day in days_around_the_call}
-
-
-class RecordingTracing(Tracing):
-    def __init__(self) -> None:
-        super().__init__(None, "test", True, None)
-        self.users: list[str] = []
-        self.flagged: list[int] = []
-
-    @contextmanager
-    def ask(self, user_id: str) -> Iterator[AskTrace]:
-        self.users.append(user_id)
-        trace = AskTrace({}, SimpleNamespace(update=self._record), None)
-        yield trace
-
-    def _record(self, metadata: dict[str, int]) -> None:
-        self.flagged.append(metadata["flagged"])
-
-
-def test_an_ask_is_traced_under_the_employee_with_the_flagged_count(
-    sign_token: Sign,
-    token_settings: Settings,
-    token_signing_key: SigningKeyLookup,
-    database: Database,
-) -> None:
-    settings = make_settings(token_settings)
-    tracing = RecordingTracing()
-    ada = as_user(sign_token, "ada")
-    with web(
-        settings, [], script(answer("ok")), token_signing_key, database, tracing=tracing
-    ) as site:
-        assert ask(site, ada).status_code == 200
-    assert (tracing.users, tracing.flagged) == (["ada"], [0])
 
 
 def test_an_employee_is_told_when_the_reply_was_cut_off_at_the_output_limit(

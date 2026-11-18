@@ -11,14 +11,14 @@ import logging
 import re
 import time
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import resources
 from typing import Any, Literal, NoReturn
 from uuid import UUID, uuid4
 
-import anyio.from_thread
+import anyio
 import httpx
 import psycopg
 from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, Response
@@ -95,7 +95,6 @@ from deskclerk.conversations import (
     thread_id,
 )
 from deskclerk.database import Database
-from deskclerk.erasure import erase_user
 from deskclerk.gateway import Gateway
 from deskclerk.instructions import system_prompt
 from deskclerk.jev import Jev
@@ -109,7 +108,6 @@ from deskclerk.retention import (
     delete_old_threads,
     delete_old_threads_daily,
 )
-from deskclerk.scim import ScimUsers, mount_scim
 from deskclerk.scope import jev_tool_selection
 from deskclerk.screen import jev_screen
 from deskclerk.servers import McpServer, ServerEntry, ServersError
@@ -117,7 +115,6 @@ from deskclerk.serverstore import NoSuchServer, ServerCatalog, ServerExists
 from deskclerk.sessions import SessionStore
 from deskclerk.spending import Spending, SpendingStore, month_of
 from deskclerk.tokens import TokenStore
-from deskclerk.tracing import Tracing
 
 SESSION_COOKIE = "deskclerk_session"
 LOGIN_COOKIE = "deskclerk_login"
@@ -408,7 +405,6 @@ def create_app(
     jev: Jev | None,
     signing_key: SigningKeyLookup,
     registry: CollectorRegistry,
-    tracing: Tracing | None = None,
     idp_transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
     if settings.session_key is None:
@@ -481,13 +477,6 @@ def create_app(
         calls = [ExecutedOut(**vars(call)).model_dump() for call in failure.executed]
         return JSONResponse({"detail": failure.detail, "calls": calls}, status_code=failure.status)
 
-    scim_users = ScimUsers(database) if settings.scim_token is not None else None
-
-    async def is_deactivated(user_id: str) -> bool:
-        return scim_users is not None and await run_in_threadpool(
-            scim_users.is_deactivated, user_id
-        )
-
     gateway = Gateway(
         settings,
         catalog,
@@ -500,14 +489,9 @@ def create_app(
         jev,
         spending_store,
         signing_key,
-        is_deactivated,
     )
     app.router.routes.append(Route("/mcp", gateway.app))
     app.router.routes.append(Route("/.well-known/oauth-protected-resource/mcp", gateway.app))
-
-    async def refuse_deactivated(user_id: str) -> None:
-        if await is_deactivated(user_id):
-            raise HTTPException(403, "this account has been deactivated")
 
     async def caller(request: Request) -> Caller:
         header = request.headers.get("authorization")
@@ -523,14 +507,12 @@ def create_app(
                 raise HTTPException(401, str(error), BEARER) from None
             except AuthUnavailable:
                 raise HTTPException(503, "the login server cannot be reached") from None
-            await refuse_deactivated(identity.user_id)
             return Caller(identity, by_cookie=False)
         session_identity = await run_in_threadpool(
             sessions.lookup, request.cookies.get(SESSION_COOKIE, "")
         )
         if session_identity is None:
             raise HTTPException(401, "sign in at /login", BEARER)
-        await refuse_deactivated(session_identity.user_id)
         return Caller(session_identity, by_cookie=True)
 
     async def posting_caller(request: Request, who: Caller = Depends(caller)) -> Caller:
@@ -565,20 +547,6 @@ def create_app(
             async with idp_client() as client:
                 discovered["endpoints"] = await oidc.discover(settings, client)
         return discovered["endpoints"]
-
-    async def erase_when_idle(user_id: str) -> None:
-        async with database.user_lock(user_id):
-            await connections.cancel_all_for(user_id)
-            await run_in_threadpool(erase_user, user_id, tokens, sessions, spending_store, audit)
-
-    if settings.scim_token is not None and scim_users is not None:
-        mount_scim(
-            app,
-            settings.scim_token.get_secret_value(),
-            settings.public_url,
-            scim_users,
-            lambda user_id: anyio.from_thread.run(erase_when_idle, user_id),
-        )
 
     @app.get("/livez")
     async def livez() -> dict[str, str]:
@@ -828,8 +796,6 @@ def create_app(
             return sign_in_failed("sign_in_refused", f"the ID token was refused: {refused}")
         except AuthUnavailable as unreachable:
             return sign_in_failed("login_unreachable", str(unreachable))
-        if await is_deactivated(identity.user_id):
-            return sign_in_failed("sign_in_refused", "account deactivated")
         session = await run_in_threadpool(sessions.create, identity, session_seconds)
         response = RedirectResponse("/", status_code=303)
         response.delete_cookie(LOGIN_COOKIE, path="/login")
@@ -1171,7 +1137,6 @@ def create_app(
         checkpointer: AsyncPostgresSaver = app.state.checkpointer
         thread = thread_id(identity.user_id, conversation)
         async with database.user_lock(identity.user_id):
-            await refuse_deactivated(identity.user_id)
             history = await saved_messages(checkpointer, thread)
             if (conversation_id is not None or edit_of is not None) and not history:
                 refuse(404, "no such conversation", "unknown_conversation")
@@ -1197,38 +1162,34 @@ def create_app(
             spent_before = spending.cost_usd
             executed: list[ExecutedCall] = []
             try:
-                with tracing.ask(identity.user_id) if tracing else nullcontext(None) as trace:
-                    async with asyncio.timeout(settings.ask_seconds):
-                        result = await run_agent(
-                            identity.user_id,
-                            text,
-                            system_prompt(datetime.now(UTC).date()),
-                            [s for s in catalog.offered if s.open_to(identity.groups)],
-                            connections,
-                            tokens,
-                            checkpointer,
-                            thread,
-                            history,
-                            model,
-                            gate,
-                            jev_screen(jev, spending.record_jev),
-                            settings.step_limit,
-                            spending.record,
-                            trace.config if trace else None,
-                            metrics.timed(trace.tool_span if trace else no_tool_span),
-                            jev_tool_selection(jev, settings.tool_selection, spending.record_jev),
-                            tool_output_chars=settings.tool_output_chars,
-                            history_tokens=settings.history_tokens,
-                            listing_seconds=settings.listing_seconds,
-                            confirm_writes=True,
-                            decisions=decisions,
-                            executed=executed,
-                            emit=lambda event: emit(_stream_event(event)),
-                            running=running,
-                            fork_from=fork_from,
-                        )
-                    if trace:
-                        trace.finish(result.flagged)
+                async with asyncio.timeout(settings.ask_seconds):
+                    result = await run_agent(
+                        identity.user_id,
+                        text,
+                        system_prompt(datetime.now(UTC).date()),
+                        [s for s in catalog.offered if s.open_to(identity.groups)],
+                        connections,
+                        tokens,
+                        checkpointer,
+                        thread,
+                        history,
+                        model,
+                        gate,
+                        jev_screen(jev, spending.record_jev),
+                        settings.step_limit,
+                        spending.record,
+                        metrics.timed(no_tool_span),
+                        jev_tool_selection(jev, settings.tool_selection, spending.record_jev),
+                        tool_output_chars=settings.tool_output_chars,
+                        history_tokens=settings.history_tokens,
+                        listing_seconds=settings.listing_seconds,
+                        confirm_writes=True,
+                        decisions=decisions,
+                        executed=executed,
+                        emit=lambda event: emit(_stream_event(event)),
+                        running=running,
+                        fork_from=fork_from,
+                    )
             except ConversationWaiting:
                 refuse(409, "this conversation waits for a confirmation", "conversation_waiting")
             except NothingToConfirm:
