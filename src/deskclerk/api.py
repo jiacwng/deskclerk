@@ -108,7 +108,6 @@ from deskclerk.retention import (
     delete_old_threads,
     delete_old_threads_daily,
 )
-from deskclerk.scope import jev_tool_selection
 from deskclerk.screen import jev_screen
 from deskclerk.servers import McpServer, ServerEntry, ServersError
 from deskclerk.serverstore import NoSuchServer, ServerCatalog, ServerExists
@@ -553,7 +552,7 @@ def create_app(
         return {"status": "ok"}
 
     @app.get("/metrics")
-    async def prometheus_metrics() -> Response:
+    async def prometheus_metrics(_: Caller = Depends(admin_caller)) -> Response:
         return Response(metrics.render(), media_type=CONTENT_TYPE_LATEST)
 
     @app.get("/readyz")
@@ -1179,7 +1178,6 @@ def create_app(
                         settings.step_limit,
                         spending.record,
                         metrics.timed(no_tool_span),
-                        jev_tool_selection(jev, settings.tool_selection, spending.record_jev),
                         tool_output_chars=settings.tool_output_chars,
                         history_tokens=settings.history_tokens,
                         listing_seconds=settings.listing_seconds,

@@ -44,7 +44,6 @@ class Settings(BaseSettings):
     ask_seconds: int = Field(default=DEFAULT_ASK_SECONDS, gt=0)
     tool_output_chars: int = Field(default=DEFAULT_TOOL_OUTPUT_CHARS, gt=0)
     history_tokens: int = Field(default=DEFAULT_HISTORY_TOKENS, gt=0)
-    tool_selection: bool = False
     public_url: str = "http://localhost:8000"
     session_key: SecretStr | None = None
     audit_chain_key: SecretStr | None = None

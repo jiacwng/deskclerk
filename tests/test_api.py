@@ -2360,6 +2360,11 @@ def test_livez_answers_without_a_sign_in(
     assert response.status_code == 200
 
 
+def as_admin(sign_token: Sign, user: str = "ops") -> dict[str, str]:
+    claims: dict[str, object] = {"sub": user, "preferred_username": user, "groups": ["it-admins"]}
+    return {"Authorization": f"Bearer {sign_token(claims)}"}
+
+
 def sample(site: Web, name: str, **labels: str) -> float:
     return site.registry.get_sample_value(name, labels) or 0.0
 
@@ -2371,14 +2376,15 @@ def test_metrics_count_an_ask_and_a_confirmed_call_without_naming_the_employee(
     notes_server: RunningServer,
     database: Database,
 ) -> None:
-    settings = make_settings(token_settings)
+    settings = make_settings(token_settings, admin_group="it-admins")
     model = script(calls(("notes__write_note", {"text": "hi"})), answer("saved"))
     ada = as_user(sign_token, "ada")
+    ops = as_admin(sign_token)
     with web(settings, [notes(notes_server)], model, token_signing_key, database) as site:
-        assert site.client.get("/metrics").status_code == 200
+        assert site.client.get("/metrics", headers=ops).status_code == 200
         connect(site, ada)
         ask_and_approve(site, ada)
-        text = site.client.get("/metrics").text
+        text = site.client.get("/metrics", headers=ops).text
         assert sample(site, "deskclerk_asks_total", outcome="awaiting_confirmation") == 1
         assert sample(site, "deskclerk_asks_total", outcome="answered") == 1
         assert sample(site, "deskclerk_ask_duration_seconds_count") == 2
@@ -2387,6 +2393,22 @@ def test_metrics_count_an_ask_and_a_confirmed_call_without_naming_the_employee(
         assert sample(site, "deskclerk_tool_call_duration_seconds_count", server="notes") == 1
     assert "ada" not in text
     assert "save a note" not in text
+
+
+def test_metrics_need_an_admin_bearer_token(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings, admin_group="it-admins")
+    with web(settings, [], script(), token_signing_key, database) as site:
+        assert site.client.get("/metrics").status_code == 401
+        assert site.client.get("/metrics", headers=as_user(sign_token, "ada")).status_code == 403
+        admin = site.client.get("/metrics", headers=as_admin(sign_token))
+    assert admin.status_code == 200
+    assert admin.headers["content-type"].startswith("text/plain")
+    assert "deskclerk_asks_total" in admin.text
 
 
 def test_readyz_is_503_until_the_login_server_has_been_read_and_then_200(
