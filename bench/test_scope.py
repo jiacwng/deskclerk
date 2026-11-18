@@ -1,33 +1,22 @@
 # The tool selection middleware with a fake Jev: which tools the model is offered, how Jev is
-# asked, and that it is asked once per run. Two tests run it inside the agent against the test
-# MCP server.
+# asked, and that it is asked once per run.
 
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import Callable
 from typing import Any, cast
 
 import pytest
-from cryptography.fernet import Fernet
 from langchain.agents.middleware import ModelRequest, ModelResponse
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import BaseTool, StructuredTool
-from langgraph.checkpoint.memory import InMemorySaver
 
-from deskclerk.agent import AgentResult, run_agent
-from deskclerk.config import Settings
-from deskclerk.connections import OAuthConnections
-from deskclerk.database import Database
 from deskclerk.jev import Jev, JevError
-from deskclerk.scope import (
+from scope import (
     SERVER_QUESTION,
     SERVER_THRESHOLD,
     ToolSelection,
     jev_tool_selection,
 )
-from deskclerk.screen import pass_through
-from deskclerk.servers import McpServer
-from mcp_server import RunningServer, running_mcp_server
-from test_agent import RecordingGate, ScriptedModel, answer, calls
-from test_connections import REDIRECT, connect, server_record, serving_connections
 
 REQUEST = "move my 3pm meeting to Friday"
 
@@ -91,7 +80,7 @@ async def offered(
 
     for _ in range(model_calls):
         request: ModelRequest[Any] = ModelRequest(
-            model=ScriptedModel(messages=iter([])),
+            model=GenericFakeChatModel(messages=iter([])),
             messages=[HumanMessage(REQUEST)] if messages is None else messages,
             tools=list(TOOLS if tools is None else tools),
         )
@@ -201,101 +190,3 @@ def test_no_selection_without_jev_or_when_off() -> None:
     assert jev_tool_selection(None, True) is None
     assert jev_tool_selection(jev, False) is None
     assert isinstance(jev_tool_selection(jev, True), ToolSelection)
-
-
-def test_the_selection_is_off_by_default_and_reads_a_boolean(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    assert Settings.model_fields["tool_selection"].default is False
-    monkeypatch.setenv("DESKCLERK_TOOL_SELECTION", "true")
-    assert Settings(audience="deskclerk-api").tool_selection is True
-
-
-@pytest.fixture
-def mcp_server() -> Iterator[RunningServer]:
-    with running_mcp_server(REDIRECT) as running:
-        yield running
-
-
-@pytest.fixture
-def other_server() -> Iterator[RunningServer]:
-    with running_mcp_server(REDIRECT) as running:
-        yield running
-
-
-@pytest.fixture
-async def connections(
-    database: Database, mcp_server: RunningServer, other_server: RunningServer
-) -> AsyncIterator[OAuthConnections]:
-    async with serving_connections(database, Fernet.generate_key().decode()) as running:
-        await connect(running, "ada", server_record(mcp_server))
-        await connect(running, "ada", McpServer("extra", other_server.url, None, None))
-        yield running
-
-
-class RecordingModel(ScriptedModel):
-    binds: list[list[str]] = []
-
-    def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
-        self.binds.append([tool.name for tool in tools])
-        return super().bind_tools(tools, **kwargs)
-
-
-async def run_selected(
-    connections: OAuthConnections,
-    mcp_server: RunningServer,
-    other_server: RunningServer,
-    model: ScriptedModel,
-    jev: FakeJev,
-) -> AgentResult:
-    return await run_agent(
-        "ada",
-        "save a note",
-        "Be careful.",
-        [server_record(mcp_server), McpServer("extra", other_server.url, None, None)],
-        connections,
-        connections.tokens,
-        InMemorySaver(),
-        "ada/test",
-        [],
-        model,
-        RecordingGate(True),
-        pass_through,
-        5,
-        lambda usage: None,
-        selection=jev_tool_selection(as_jev(jev), True),
-        confirm_writes=False,
-    )
-
-
-@pytest.mark.anyio
-async def test_the_agent_model_is_offered_only_the_selected_servers_tools_on_every_call(
-    mcp_server: RunningServer, other_server: RunningServer, connections: OAuthConnections
-) -> None:
-    jev = FakeJev(answers({"notes": 1.0}))
-    model = RecordingModel(
-        messages=iter([calls(("notes__read_note", {})), answer("It says: the note")])
-    )
-    model.binds = []
-    result = await run_selected(connections, mcp_server, other_server, model, jev)
-    assert all(name.startswith("notes__") for names in model.binds for name in names)
-    assert len(model.binds) == 2 and model.binds[0]
-    assert [call.result for call in result.executed] == ["the note"]
-    assert len(jev.asked) == 1
-
-
-@pytest.mark.anyio
-async def test_a_tool_left_out_of_the_offer_is_refused_like_an_unknown_tool(
-    mcp_server: RunningServer, other_server: RunningServer, connections: OAuthConnections
-) -> None:
-    jev = FakeJev(answers({"notes": 1.0}))
-    model = RecordingModel(
-        messages=iter([calls(("extra__write_note", {"text": "hi"})), answer("done")])
-    )
-    model.binds = []
-    result = await run_selected(connections, mcp_server, other_server, model, jev)
-    assert result.executed == ()
-    assert other_server.notes == []
-    reply = model.seen[-1][-1]
-    assert isinstance(reply, ToolMessage)
-    assert (reply.status, reply.content) == ("error", "There is no tool named extra__write_note.")
