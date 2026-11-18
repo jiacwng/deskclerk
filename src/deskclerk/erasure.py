@@ -1,5 +1,5 @@
 # Erasing one employee: their MCP tokens, browser sessions, conversations and spending rows are
-# deleted and one audit line records the counts. Both the erase command and SCIM call it.
+# deleted and one audit line records the counts. The erase command calls it.
 
 from dataclasses import dataclass
 

@@ -22,7 +22,7 @@ flowchart LR
 
 ## Features
 
-- Single sign-on with OpenID Connect (Entra ID, Okta, Keycloak) and SCIM deprovisioning.
+- Single sign-on with OpenID Connect (Entra ID, Okta, Keycloak).
 - Each employee's own accounts on each MCP server through OAuth, with tokens encrypted at rest
   and a rotatable key.
 - Approval of calls that change data, with editable arguments. An employee can always allow a
@@ -111,8 +111,8 @@ deskclerk.
 - `docker compose -f compose.prod.yaml exec deskclerk python -m deskclerk usage` prints what each
   employee spent this month.
 - `... python -m deskclerk erase <user_id>` deletes one employee's data. The user id is the
-  `DESKCLERK_USER_CLAIM` value, the object ID on Entra ID. With SCIM, the login server does this
-  when it removes the employee.
+  `DESKCLERK_USER_CLAIM` value, the object ID on Entra ID. When an employee leaves, disable them
+  in the login server, then revoke them on the admin page.
 - To back up, run
   `docker compose -f compose.prod.yaml exec postgres pg_dump -U deskclerk deskclerk > backup.sql`.
   Keep the token key with it.

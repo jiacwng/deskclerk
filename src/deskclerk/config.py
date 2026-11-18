@@ -1,7 +1,7 @@
 # Settings read from DESKCLERK_* environment variables by pydantic-settings: how employees sign
 # in, the model and the budget, the audit log and the request quota, the Postgres database that
-# holds all state, how long conversations are kept and the session of the web front, the SCIM
-# endpoints that offboard a leaver and the group allowed to open /admin.
+# holds all state, how long conversations are kept and the session of the web front, the group
+# allowed to open /admin.
 
 from pathlib import Path
 from typing import Any
@@ -48,7 +48,6 @@ class Settings(BaseSettings):
     session_key: SecretStr | None = None
     audit_chain_key: SecretStr | None = None
     session_hours: int = 8
-    scim_token: SecretStr | None = None
     retention_days: int = Field(default=0, ge=0)
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=1, le=MAX_PORT)
