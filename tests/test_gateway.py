@@ -24,7 +24,9 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp_types import CallToolResult, ElicitRequestParams, ElicitResult, TextContent
 from prometheus_client import CollectorRegistry
 
+from conftest import CHAIN_KEY
 from deskclerk.api import create_app
+from deskclerk.auditstore import AuditStore
 from deskclerk.auth import SigningKeyLookup
 from deskclerk.config import Settings
 from deskclerk.connections import OAuthConnections
@@ -41,6 +43,7 @@ from mcp_server import RunningServer, running_mcp_server
 from test_agent import answer, script
 from test_api import (
     Sign,
+    arguments_hmac,
     audit_lines,
     make_settings,
     notes,
@@ -380,6 +383,28 @@ async def test_a_destructive_write_may_name_an_id_from_an_earlier_read_in_the_se
     assert unseen.is_error and "grounding check" in text_of(unseen)
     assert not deleted.is_error
     assert append_server.deleted == ["note"]
+
+
+@pytest.mark.anyio
+async def test_a_gateway_call_line_carries_the_hmac_of_its_arguments_without_audit_text(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,  # noqa: F811
+    database: Database,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="deskclerk.audit")
+    settings = make_settings(token_settings)
+    ada = token_of(sign_token, "ada")
+    with serving(settings, [notes(notes_server)], token_signing_key, database) as site:
+        connect(site, ada)
+        async with mcp_client(site, ada, answering([])) as client:
+            await client.call_tool("notes__write_note", {"text": "yes"})
+        [line] = [line for line in audit_lines(caplog) if line["entry"] == "mcp_call"]
+    assert line["arguments_hmac"] == arguments_hmac({"text": "yes"})
+    assert "arguments" not in line
+    assert AuditStore(database, CHAIN_KEY).verify().broken_at is None
 
 
 @pytest.mark.anyio

@@ -103,6 +103,7 @@ class Audit:
                 "outcome": outcome,
                 "decision": decision,
                 "flagged": flagged,
+                "arguments_hmac": self.store.arguments_hmac(arguments),
                 "latency_ms": round((time.monotonic() - started) * 1000),
             }
         )
@@ -151,6 +152,7 @@ class Audit:
             "server": call.server,
             "tool": call.tool,
             "is_error": call.is_error,
+            "arguments_hmac": self.store.arguments_hmac(call.arguments),
         }
         if self.include_text:
             entry.update({"arguments": call.arguments, "result": call.result})
@@ -169,7 +171,12 @@ class Audit:
         return entry
 
     def _decided(self, call: DecidedCall) -> dict[str, Any]:
-        return {"server": call.server, "tool": call.tool, "decision": call.decision}
+        return {
+            "server": call.server,
+            "tool": call.tool,
+            "decision": call.decision,
+            "arguments_hmac": self.store.arguments_hmac(call.arguments),
+        }
 
     def _hmac(self, text: str) -> str | None:
         if self.key is None:

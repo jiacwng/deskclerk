@@ -101,6 +101,17 @@ def test_the_search_columns_come_from_the_line(database: Database) -> None:
     assert (second.servers, second.tools, second.decisions) == (["wiki"], [], [])
 
 
+def test_the_flagged_column_is_true_when_a_result_was_flagged(database: Database) -> None:
+    store = AuditStore(database, CHAIN_KEY)
+    store.append(line(flagged=2))
+    store.append(line(flagged=0))
+    store.append(line(kind="mcp_call", tool="add", flagged=True))
+    store.append(line(kind="mcp_call", tool="add", flagged=False))
+    store.append(line(kind="connect", server="wiki"))
+    assert [row.flagged for row in store.rows(AuditFilter())] == [True, False, True, False, False]
+    assert store.verify().broken_at is None
+
+
 def test_the_first_row_chains_from_the_zero_hash(database: Database) -> None:
     store = AuditStore(database, CHAIN_KEY)
     text = line()
@@ -346,6 +357,32 @@ def search(site: Web, admin: dict[str, str], **params: str | int) -> dict[str, A
     assert response.status_code == 200
     body: dict[str, Any] = response.json()
     return body
+
+
+def test_search_with_flagged_returns_only_lines_with_a_flagged_result(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    store = AuditStore(database, CHAIN_KEY)
+    store.append(line("ana", "ask", flagged=0, outcome="answered"))
+    store.append(line("bob", "ask", flagged=3, outcome="answered"))
+    store.append(line("cyd", "mcp_call", tool="add", flagged=True, outcome="ok"))
+    store.append(line("dee", "mcp_call", tool="add", flagged=False, outcome="ok"))
+    settings = make_settings(token_settings, admin_group=GROUP)
+    with web(settings, [], script(), token_signing_key, database) as site:
+        admin = bearer(sign_token, "root", [GROUP])
+        flagged = search(site, admin, flagged="true")["rows"]
+        assert [(r["user"], r["flagged"]) for r in flagged] == [("cyd", True), ("bob", True)]
+        assert len(search(site, admin)["rows"]) == 4
+        both = search(site, admin, flagged="true", employee="bob")["rows"]
+        assert [r["user"] for r in both] == ["bob"]
+        download = site.client.get(
+            "/admin/audit/download", params={"flagged": "true"}, headers=admin
+        )
+        assert len(download.text.splitlines()) == 2
+    assert store.verify().broken_at is None
 
 
 def minutes_ago(minutes: int) -> str:

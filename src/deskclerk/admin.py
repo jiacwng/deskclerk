@@ -55,6 +55,7 @@ class AdminAuditRow(BaseModel):
     servers: list[str]
     tools: list[str]
     decisions: list[str]
+    flagged: bool
     hash: str
     line: str
 
