@@ -116,6 +116,7 @@ def _where(found: AuditFilter) -> tuple[str, list[object]]:
         (found.decision, "%s = ANY(decisions)"),
         (found.since, "time >= %s"),
         (found.until, "time < %s"),
+        (found.flagged, "flagged = %s"),
     ]
     conditions = []
     values: list[object] = []
@@ -123,8 +124,6 @@ def _where(found: AuditFilter) -> tuple[str, list[object]]:
         if value is not None:
             conditions.append(condition)
             values.append(value)
-    if found.flagged:
-        conditions.append("flagged")
     return " AND ".join(conditions) or "TRUE", values
 
 

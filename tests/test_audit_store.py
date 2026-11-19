@@ -380,7 +380,23 @@ def test_search_with_flagged_returns_only_lines_with_a_flagged_result(
             "/admin/audit/download", params={"flagged": "true"}, headers=admin
         )
         assert len(download.text.splitlines()) == 2
+        unflagged = search(site, admin, flagged="false")["rows"]
+        assert [(r["user"], r["flagged"]) for r in unflagged] == [("dee", False), ("ana", False)]
+        unflagged_download = site.client.get(
+            "/admin/audit/download", params={"flagged": "false"}, headers=admin
+        )
+        assert len(unflagged_download.text.splitlines()) == 2
     assert store.verify().broken_at is None
+
+
+def test_the_store_searches_unflagged_lines_only(database: Database) -> None:
+    store = AuditStore(database, CHAIN_KEY)
+    store.append(line("ana", "ask", flagged=0, outcome="answered"))
+    store.append(line("bob", "ask", flagged=3, outcome="answered"))
+    store.append(line("dee", "ask", flagged=0, outcome="answered"))
+    unflagged = store.rows(AuditFilter(flagged=False))
+    assert sorted(row.user for row in unflagged) == ["ana", "dee"]
+    assert [row.user for row in store.rows(AuditFilter(flagged=True))] == ["bob"]
 
 
 def minutes_ago(minutes: int) -> str:
