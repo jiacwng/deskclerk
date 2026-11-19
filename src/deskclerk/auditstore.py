@@ -93,8 +93,6 @@ def _columns(line: str) -> dict[str, object]:
     tools = {call["tool"] for call in calls}
     if "server" in fields:
         servers.add(fields["server"])
-    if fields["entry"] == "mcp_call" and fields["tool"]:
-        tools.add(fields["tool"])
     decisions = {call["decision"] for call in fields.get("decided", [])}
     if "outcome" in fields:
         decisions.add(fields["outcome"])

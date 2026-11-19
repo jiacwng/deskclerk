@@ -105,10 +105,8 @@ def test_the_flagged_column_is_true_when_a_result_was_flagged(database: Database
     store = AuditStore(database, CHAIN_KEY)
     store.append(line(flagged=2))
     store.append(line(flagged=0))
-    store.append(line(kind="mcp_call", tool="add", flagged=True))
-    store.append(line(kind="mcp_call", tool="add", flagged=False))
     store.append(line(kind="connect", server="wiki"))
-    assert [row.flagged for row in store.rows(AuditFilter())] == [True, False, True, False, False]
+    assert [row.flagged for row in store.rows(AuditFilter())] == [True, False, False]
     assert store.verify().broken_at is None
 
 
@@ -368,8 +366,8 @@ def test_search_with_flagged_returns_only_lines_with_a_flagged_result(
     store = AuditStore(database, CHAIN_KEY)
     store.append(line("ana", "ask", flagged=0, outcome="answered"))
     store.append(line("bob", "ask", flagged=3, outcome="answered"))
-    store.append(line("cyd", "mcp_call", tool="add", flagged=True, outcome="ok"))
-    store.append(line("dee", "mcp_call", tool="add", flagged=False, outcome="ok"))
+    store.append(line("cyd", "ask", flagged=1, outcome="answered"))
+    store.append(line("dee", "ask", flagged=0, outcome="answered"))
     settings = make_settings(token_settings, admin_group=GROUP)
     with web(settings, [], script(), token_signing_key, database) as site:
         admin = bearer(sign_token, "root", [GROUP])

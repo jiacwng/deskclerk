@@ -29,7 +29,6 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
-from starlette.routing import Route
 
 from deskclerk import cookies, oidc
 from deskclerk.admin import (
@@ -96,7 +95,6 @@ from deskclerk.conversations import (
     thread_id,
 )
 from deskclerk.database import Database
-from deskclerk.gateway import Gateway
 from deskclerk.instructions import system_prompt
 from deskclerk.jev import Jev
 from deskclerk.metrics import Metrics
@@ -452,7 +450,6 @@ def create_app(
             database.serving(),
             connections.listening(),
             catalog.listening(),
-            gateway.running(),
         ):
             checkpointer = await open_checkpointer(database, tokens.fernet)
             app.state.checkpointer = checkpointer
@@ -482,22 +479,6 @@ def create_app(
     async def failed_turn(_: Request, failure: FailedTurn) -> JSONResponse:
         calls = [ExecutedOut(**vars(call)).model_dump() for call in failure.executed]
         return JSONResponse({"detail": failure.detail, "calls": calls}, status_code=failure.status)
-
-    gateway = Gateway(
-        settings,
-        catalog,
-        connections,
-        tokens,
-        quota,
-        audit,
-        metrics,
-        gate,
-        jev,
-        spending_store,
-        signing_key,
-    )
-    app.router.routes.append(Route("/mcp", gateway.app))
-    app.router.routes.append(Route("/.well-known/oauth-protected-resource/mcp", gateway.app))
 
     async def caller(request: Request) -> Caller:
         header = request.headers.get("authorization")

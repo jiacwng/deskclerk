@@ -345,6 +345,16 @@ def test_the_client_metadata_document_is_served_without_sign_in(
     }
 
 
+def test_mcp_is_not_served(
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings)
+    with web(settings, [], script(), token_signing_key, database) as site:
+        assert site.client.get("/mcp").status_code == 404
+
+
 @pytest.mark.parametrize(
     ("method", "path"),
     [
