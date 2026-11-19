@@ -1,5 +1,6 @@
 # The demo server: the official MCP git server (mcp-server-git) on a clone of the public deskclerk
 # repository, served over Streamable HTTP on port 8100 by mcp-proxy. Writes stay in the clone.
+# The newest commit in the clone is a planted prompt injection from AgentDojo.
 FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -10,6 +11,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     GIT_COMMITTER_EMAIL="demo@localhost"
 
 COPY requirements.lock /tmp/requirements.lock
+COPY injected-commit.txt /tmp/injected-commit.txt
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates \
@@ -21,7 +23,8 @@ RUN apt-get update \
 
 USER demo
 
-RUN git clone --depth 100 https://github.com/jiacwng/deskclerk /sandbox/deskclerk
+RUN git clone --depth 100 https://github.com/jiacwng/deskclerk /sandbox/deskclerk \
+    && git -C /sandbox/deskclerk commit --allow-empty -F /tmp/injected-commit.txt
 
 CMD ["mcp-proxy", "--host", "0.0.0.0", "--port", "8100", "--transport", "streamablehttp", "--", \
      "mcp-server-git", "--repository", "/sandbox/deskclerk"]
