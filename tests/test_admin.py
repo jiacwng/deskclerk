@@ -5,6 +5,7 @@
 
 import re
 from datetime import UTC, datetime
+from importlib import resources
 
 import pytest
 
@@ -210,3 +211,20 @@ def test_titles_are_shown_only_when_request_text_is_allowed_in_the_audit(
         recent = site.client.get("/admin/summary", headers=bearer(sign_token, "r", [GROUP]))
     assert [(row["user_id"], row["title"]) for row in recent.json()["recent"]] == [("ana", shown)]
     assert audit_text or "secret plan" not in recent.text
+
+
+def admin_page() -> str:
+    return resources.files("deskclerk").joinpath("static/admin.html").read_text(encoding="utf-8")
+
+
+def test_the_flagged_filter_checkbox_sits_inline_before_its_label() -> None:
+    page = admin_page()
+    assert '<label class="check"><input id="audit-flagged" type="checkbox">' in page
+    assert ".filters label.check { display: flex; align-items: center;" in page
+
+
+def test_each_audit_row_shows_whether_a_result_was_flagged() -> None:
+    page = admin_page()
+    assert "<th>Decisions</th><th>Flagged</th><th>Line</th>" in page
+    assert "flagCell(r.flagged)" in page
+    assert 'fill("audit", rows, 8)' in page

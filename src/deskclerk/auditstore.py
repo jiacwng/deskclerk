@@ -10,19 +10,23 @@ import json
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from psycopg.rows import dict_row
 
 from deskclerk.config import Settings
+from deskclerk.cookies import derived_key
 from deskclerk.database import Database, lock_key
 
 CHAIN_LOCK = lock_key("audit_chain")
+ARGUMENTS_PURPOSE = "audit-arguments"
 CALL_LISTS = ("executed", "blocked", "pending", "decided")
-COLUMNS = "id, time, user_id AS user, entry, servers, tools, decisions, hash, line"
+COLUMNS = "id, time, user_id AS user, entry, servers, tools, decisions, flagged, hash, line"
 INSERT = (
-    "INSERT INTO audit_log (time, line, user_id, entry, servers, tools, decisions, hash) "
+    "INSERT INTO audit_log "
+    "(time, line, user_id, entry, servers, tools, decisions, flagged, hash) "
     "VALUES (%(time)s, %(line)s, %(user_id)s, %(entry)s, %(servers)s, %(tools)s, %(decisions)s, "
-    "%(hash)s)"
+    "%(flagged)s, %(hash)s)"
 )
 NEWEST_HASH = (
     "SELECT COALESCE((SELECT hash FROM audit_log ORDER BY id DESC LIMIT 1), "
@@ -49,6 +53,7 @@ class AuditRow:
     servers: list[str]
     tools: list[str]
     decisions: list[str]
+    flagged: bool
     hash: str
     line: str
 
@@ -60,6 +65,7 @@ class AuditFilter:
     server: str | None = None
     tool: str | None = None
     decision: str | None = None
+    flagged: bool | None = None
     since: datetime | None = None
     until: datetime | None = None
 
@@ -87,8 +93,6 @@ def _columns(line: str) -> dict[str, object]:
     tools = {call["tool"] for call in calls}
     if "server" in fields:
         servers.add(fields["server"])
-    if fields["entry"] == "mcp_call" and fields["tool"]:
-        tools.add(fields["tool"])
     decisions = {call["decision"] for call in fields.get("decided", [])}
     if "outcome" in fields:
         decisions.add(fields["outcome"])
@@ -99,6 +103,7 @@ def _columns(line: str) -> dict[str, object]:
         "servers": sorted(servers),
         "tools": sorted(tools),
         "decisions": sorted(decisions),
+        "flagged": bool(fields.get("flagged")),
     }
 
 
@@ -111,6 +116,7 @@ def _where(found: AuditFilter) -> tuple[str, list[object]]:
         (found.decision, "%s = ANY(decisions)"),
         (found.since, "time >= %s"),
         (found.until, "time < %s"),
+        (found.flagged, "flagged = %s"),
     ]
     conditions = []
     values: list[object] = []
@@ -125,6 +131,11 @@ class AuditStore:
     def __init__(self, database: Database, chain_key: bytes) -> None:
         self._pool = database.pool
         self._chain_key = chain_key
+        self._arguments_key = derived_key(chain_key, ARGUMENTS_PURPOSE)
+
+    def arguments_hmac(self, arguments: dict[str, Any]) -> str:
+        canonical = json.dumps(arguments, sort_keys=True, separators=(",", ":"))
+        return hmac.new(self._arguments_key, canonical.encode(), hashlib.sha256).hexdigest()
 
     def append(self, line: str) -> None:
         with self._pool.connection() as connection:
@@ -166,8 +177,8 @@ class AuditStore:
             previous = checkpoint["hash"]
             with connection.cursor(name="audit_walk", row_factory=dict_row) as cursor:
                 cursor.execute(
-                    "SELECT id, line, hash, time, user_id, entry, servers, tools, decisions "
-                    "FROM audit_log ORDER BY id"
+                    "SELECT id, line, hash, time, user_id, entry, servers, tools, decisions, "
+                    "flagged FROM audit_log ORDER BY id"
                 )
                 for row in cursor:
                     if chain_hash(self._chain_key, previous, row["line"]) != row["hash"]:

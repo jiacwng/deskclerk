@@ -1,6 +1,5 @@
-# The audit log: one JSON line per ask or confirmation, one per tool call a client makes through the
-# MCP gateway and one per connect or disconnect, naming who did it, which tools the agent called,
-# which calls wait for the employee and what was decided.
+# The audit log: one JSON line per ask or confirmation and one per connect or disconnect, naming who
+# did it, which tools the agent called, which calls wait for the employee and what was decided.
 # An erase of an employee is one line with the row counts removed and no content. An admin's change
 # to the servers or to an employee's access is one line naming the admin, the action and its target.
 # The request, each call's arguments and results, and a gate's reason are logged only when
@@ -83,33 +82,6 @@ class Audit:
             line["text"] = request
         self._write(line)
 
-    def gateway_call(
-        self,
-        identity: Identity,
-        server_name: str,
-        tool: str,
-        arguments: dict[str, Any],
-        outcome: str,
-        started: float,
-        result: str,
-        decision: str | None,
-        flagged: bool,
-    ) -> None:
-        line = self._line(identity, "mcp_call")
-        line.update(
-            {
-                "server": server_name,
-                "tool": tool,
-                "outcome": outcome,
-                "decision": decision,
-                "flagged": flagged,
-                "latency_ms": round((time.monotonic() - started) * 1000),
-            }
-        )
-        if self.include_text:
-            line.update({"arguments": arguments, "result": result})
-        self._write(line)
-
     def connection(self, identity: Identity, action: str, server_name: str) -> None:
         line = self._line(identity, action)
         line["server"] = server_name
@@ -151,6 +123,7 @@ class Audit:
             "server": call.server,
             "tool": call.tool,
             "is_error": call.is_error,
+            "arguments_hmac": self.store.arguments_hmac(call.arguments),
         }
         if self.include_text:
             entry.update({"arguments": call.arguments, "result": call.result})
@@ -169,7 +142,12 @@ class Audit:
         return entry
 
     def _decided(self, call: DecidedCall) -> dict[str, Any]:
-        return {"server": call.server, "tool": call.tool, "decision": call.decision}
+        return {
+            "server": call.server,
+            "tool": call.tool,
+            "decision": call.decision,
+            "arguments_hmac": self.store.arguments_hmac(call.arguments),
+        }
 
     def _hmac(self, text: str) -> str | None:
         if self.key is None:

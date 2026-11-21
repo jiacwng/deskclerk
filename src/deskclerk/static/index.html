@@ -151,8 +151,8 @@ button.quiet:hover:not(:disabled) { color: var(--fg); }
 button.small { min-height: 1.875rem; padding: 0.2rem 0.6rem; font-size: 0.8125rem; }
 
 .conv-new { width: 100%; margin-bottom: 0.5rem; }
-.conv-list { display: grid; gap: 0.125rem; margin-bottom: 1.25rem; }
-.conv { display: flex; align-items: stretch; border-radius: 4px; }
+.conv-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.125rem; margin-bottom: 1.25rem; }
+.conv { display: flex; align-items: stretch; border-radius: 4px; min-width: 0; }
 .conv:hover { background: var(--sunk); }
 button.conv-open { flex: 1; min-width: 0; flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 0; padding: 0.3rem 0.5rem; background: transparent; border-color: transparent; font-weight: 500; text-align: left; }
 button.conv-open[aria-current="true"] { background: var(--sunk); border-color: var(--edge); }
@@ -260,25 +260,29 @@ pre {
 .badge.info { color: var(--muted); }
 .badge.info::before { background: transparent; border: 1.5px solid currentColor; }
 
-.confirm { background: var(--surface); border: 1px solid var(--warn); border-radius: 4px; margin-bottom: 1rem; }
+.confirm { background: var(--surface); border: 1px solid var(--warn); border-radius: 4px; min-width: 0; }
 .confirm-head { padding: 0.75rem; display: grid; gap: 0.125rem; background: var(--warn-soft); border-radius: 3px 3px 0 0; }
 .confirm-title { font-size: 0.9375rem; font-weight: 700; }
-.pending { display: grid; }
-.pending-card { padding: 0.75rem; border-top: 1px solid var(--line); display: grid; gap: 0.5rem; }
+.pending { display: grid; grid-template-columns: minmax(0, 1fr); }
+.pending-card { padding: 0.75rem; border-top: 1px solid var(--line); display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.5rem; }
 .pending-card[data-choice="approve"] { box-shadow: inset 3px 0 0 var(--ok); }
 .pending-card[data-choice="edit"] { box-shadow: inset 3px 0 0 var(--ok); }
 .pending-card[data-choice="reject"] { box-shadow: inset 3px 0 0 var(--bad); }
 .pending-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.25rem 0.5rem; }
 .pending-note { font-size: 0.75rem; color: var(--muted); }
+.pending-reason { display: flex; }
+.pending-reason .badge { white-space: normal; align-items: baseline; }
+.call-name { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.125rem 0.5rem; min-width: 0; }
 .args { display: grid; gap: 0.25rem; font-size: 0.8125rem; }
 .arg { display: grid; grid-template-columns: minmax(0, 8rem) minmax(0, 1fr); column-gap: 0.75rem; }
 .arg-name { font-family: var(--mono); font-size: 0.75rem; color: var(--muted); }
-.arg-value { white-space: pre-wrap; }
+.arg-value { white-space: pre-wrap; font-family: var(--mono); font-size: 0.75rem; overflow-wrap: anywhere; }
 .arg-field { display: grid; gap: 0.125rem; }
 .arg-field input[type="text"], .arg-field input[type="number"] {
   width: 100%; font: inherit; padding: 0.375rem 0.5rem; border-radius: 4px;
   border: 1px solid var(--edge); background: var(--surface); color: var(--fg);
 }
+.arg-field input[type="text"], .arg-field input[type="number"] { font-family: var(--mono); font-size: 0.75rem; }
 .arg-field textarea { min-height: 3rem; font-family: var(--mono); font-size: 0.75rem; }
 .arg-field input[aria-invalid="true"], .arg-field textarea[aria-invalid="true"] { border-color: var(--bad); }
 .edit-error { font-size: 0.75rem; color: var(--bad); }
@@ -393,7 +397,7 @@ textarea::placeholder { color: var(--muted); }
     <div id="messages" class="messages" tabindex="0" role="region" aria-labelledby="messages-title">
     <h2 id="messages-title" class="sr-only">Conversation</h2>
     <div id="empty" class="empty">
-      <h2 class="empty-title">What can I help with?</h2>
+      <h2 class="empty-title">What do you need from your connected apps?</h2>
       <p>Ask for something to look up or change in your connected apps.</p>
       <div id="chips" class="chips"></div>
     </div>
@@ -401,7 +405,7 @@ textarea::placeholder { color: var(--muted); }
 
     <section id="confirm" class="confirm" aria-labelledby="confirm-title" hidden>
       <div class="confirm-head">
-        <h2 id="confirm-title" class="confirm-title" tabindex="-1">Confirm calls</h2>
+        <h2 id="confirm-title" class="confirm-title" tabindex="-1">Approval needed</h2>
         <p id="confirm-note" class="small"></p>
       </div>
       <div id="pending" class="pending"></div>
@@ -464,6 +468,15 @@ const post = (path, body) => api(path, {
 });
 
 const el = (id) => document.getElementById(id);
+
+const confirmBox = el("confirm");
+const confirmTitle = el("confirm-title");
+const confirmNote = el("confirm-note");
+const confirmFoot = el("confirm-foot");
+const pendingList = el("pending");
+const sendButton = el("send");
+const decidedText = el("decided");
+confirmBox.remove();
 
 let conversation = null;
 const FRAGMENT = /^#c=([0-9a-f-]{36})$/i;
@@ -862,13 +875,18 @@ function rawArguments(args) {
   return box;
 }
 
+const FLAGGED_BADGE = "Flagged by screen";
+
 function callRow(call, badgeClass, badgeText, parts) {
   const row = make("details", "call");
   const head = make("summary");
+  const name = make("span", "call-name");
+  name.append(make("span", "call-tool", call.tool));
+  if (call.flagged) name.append(make("span", "badge warn", FLAGGED_BADGE));
   head.append(
     make("span", "badge " + badgeClass, badgeText),
     make("span", "call-server", call.server),
-    make("span", "call-tool", call.tool),
+    name,
   );
   const body = make("div", "call-body");
   body.append(...parts);
@@ -1150,7 +1168,7 @@ function conversationItem(item) {
   const open = make("button", "conv-open");
   open.type = "button";
   open.append(make("span", "conv-title", item.title), make("span", "conv-time", ageOf(item.updated_at)));
-  open.title = new Date(item.updated_at).toLocaleString();
+  open.title = item.title + "\n" + new Date(item.updated_at).toLocaleString();
   if (item.id === conversation) open.setAttribute("aria-current", "true");
   open.addEventListener("click", () => chooseConversation(item.id));
   const remove = button("Delete", () => askDelete(item.id), "conv-delete");
@@ -1237,19 +1255,34 @@ function newConversation() {
 
 function updateDecided(total) {
   const count = Object.keys(decisions).length;
-  el("send").disabled = count < total;
-  el("decided").textContent = total === 0 ? "" : count + " of " + total + " decided";
+  sendButton.disabled = count < total;
+  decidedText.textContent = total === 0 ? "" : count + " of " + total + " decided";
+}
+
+const REASONS = {
+  flag: ["warn", "An earlier result in this conversation was flagged as a possible prompt injection"],
+  untrusted: ["warn", "This server is not trusted, so every call asks"],
+  destructive: ["bad", "May delete or overwrite"],
+  write: ["warn", "Changes data"],
+};
+
+function reasonOf(call) {
+  if (call.after_flag) return REASONS.flag;
+  if (!call.trusted) return REASONS.untrusted;
+  return call.destructive ? REASONS.destructive : REASONS.write;
 }
 
 function showPending(pending) {
   decisions = {};
-  const list = el("pending");
+  const list = pendingList;
   list.replaceChildren();
   for (const call of pending) {
     const card = make("div", "pending-card");
     const title = make("div", "pending-title");
     title.append(make("span", "call-server", call.server), make("span", "call-tool", call.tool));
-    if (call.destructive) title.append(make("span", "badge bad", "May delete or overwrite"));
+    const [reasonClass, reasonText] = reasonOf(call);
+    const reason = make("p", "pending-reason");
+    reason.append(make("span", "badge " + reasonClass, reasonText));
     const group = make("div", "pending-actions");
     group.setAttribute("role", "group");
     group.setAttribute("aria-label", "Decision for " + call.server + " " + call.tool);
@@ -1262,7 +1295,7 @@ function showPending(pending) {
     const reject = button("Reject", () => choose("reject"), "choice reject");
     approve.setAttribute("aria-pressed", "false");
     reject.setAttribute("aria-pressed", "false");
-    const always = call.always_allowable ? button("Always allow", () => choose("approve_always"), "choice always") : null;
+    const always = call.always_allowable && !call.after_flag ? button("Always allow", () => choose("approve_always"), "choice always") : null;
     if (always) always.setAttribute("aria-pressed", "false");
     const edit = button("Edit", () => decide("edit"), "choice edit");
     edit.setAttribute("aria-pressed", "false");
@@ -1306,7 +1339,7 @@ function showPending(pending) {
       updateDecided(pending.length);
     };
     group.append(approve, ...(always ? [always] : []), edit, reject, verdict);
-    card.append(title);
+    card.append(title, reason);
     if (call.description !== "") card.append(make("p", "small", call.description));
     card.append(shown, editor.box, raw, group);
     if (always) card.append(make("p", "pending-note", "Always allow runs this tool without asking again."));
@@ -1314,11 +1347,13 @@ function showPending(pending) {
   }
   waiting = pending.length;
   updateDecided(pending.length);
-  el("confirm-foot").hidden = pending.length === 1;
-  el("confirm-note").textContent = pending.length === 1
+  confirmFoot.hidden = pending.length === 1;
+  confirmNote.textContent = pending.length === 1
     ? "This call needs your approval before it runs."
     : "Each call below needs your approval before it runs. Approve or reject each one, then press Continue.";
-  el("confirm").hidden = pending.length === 0;
+  confirmBox.hidden = pending.length === 0;
+  if (pending.length === 0) confirmBox.remove();
+  else (currentTurn === null ? el("turns") : currentTurn.node).append(confirmBox);
   updateControls();
 }
 
@@ -1366,6 +1401,10 @@ function liveCall(turn, call) {
   row.dataset.state = call.status;
   row.firstChild.className = "badge " + (call.status === "error" ? "bad" : "ok");
   row.firstChild.textContent = call.status === "error" ? "Failed" : "Done";
+  if (call.flagged && row.querySelector(".flagged") === null) {
+    const flag = make("span", "badge warn flagged", FLAGGED_BADGE);
+    row.lastChild.append(" ", flag);
+  }
 }
 
 function endLiveCalls(turn, text) {
@@ -1386,7 +1425,7 @@ function showResult(result) {
   turn.calls.replaceChildren(...buildCalls(result));
   showPending(result.pending);
   if (result.pending.length > 0) {
-    el("confirm-title").focus({ preventScroll: true });
+    confirmTitle.focus({ preventScroll: true });
   } else if (result.answer !== "") {
     announce("Answer ready");
   }
@@ -1561,7 +1600,7 @@ async function ask(resent, edit) {
 async function send() {
   if (busy) return;
   showError("");
-  el("send").disabled = true;
+  sendButton.disabled = true;
   setBusy(true, "Sending your decisions…");
   const turn = currentTurn;
   turn.pending = [];
@@ -1685,7 +1724,7 @@ async function start() {
     scrollToBottom(scrollBehavior());
     el("request").focus({ preventScroll: true });
   });
-  el("send").addEventListener("click", send);
+  sendButton.addEventListener("click", send);
   el("new-conversation").addEventListener("click", newConversation);
   el("logout").addEventListener("click", logout);
   el("rail-toggle").addEventListener("click", () => setDrawer(!drawerOpen(), true));

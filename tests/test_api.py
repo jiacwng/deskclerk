@@ -25,6 +25,7 @@ import httpx
 import httpx2
 import openai
 import pytest
+from botocore.exceptions import ClientError
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from langchain_core.language_models import BaseChatModel
@@ -58,7 +59,6 @@ from deskclerk.serverstore import ServerCatalog, ServerStore
 from deskclerk.sessions import SessionStore
 from deskclerk.spending import SpendingStore
 from deskclerk.tokens import TokenStore
-from deskclerk.tracing import AskTrace, Tracing
 from deskclerk.writecheck import write_check
 from mcp_server import RunningServer, running_mcp_server
 from test_agent import ProviderGoneAfterScript, ScriptedModel, answer, calls, script
@@ -139,7 +139,6 @@ def web(
     idp_transport: httpx.AsyncBaseTransport | None = None,
     key: str | None = None,
     jev: Jev | None = None,
-    tracing: Tracing | None = None,
 ) -> Iterator[Web]:
     tokens = TokenStore(database, key or Fernet.generate_key().decode())
     sessions = SessionStore(database)
@@ -159,7 +158,6 @@ def web(
         jev,
         signing_key,
         registry,
-        tracing,
         idp_transport=idp_transport,
     )
     with TestClient(app) as client:
@@ -258,6 +256,12 @@ def ask(site: Web, headers: dict[str, str], request: str = "save a note") -> htt
     return site.client.post("/ask", json={"request": request}, headers=headers)
 
 
+def arguments_hmac(arguments: dict[str, Any]) -> str:
+    key = hmac.new(CHAIN_KEY, b"audit-arguments", hashlib.sha256).digest()
+    canonical = json.dumps(arguments, sort_keys=True, separators=(",", ":"))
+    return hmac.new(key, canonical.encode(), hashlib.sha256).hexdigest()
+
+
 def audit_lines(caplog: pytest.LogCaptureFixture) -> list[dict[str, object]]:
     return [json.loads(r.getMessage()) for r in caplog.records if r.name == "deskclerk.audit"]
 
@@ -305,6 +309,22 @@ def test_the_page_has_a_banner_for_unscreened_results() -> None:
     assert "me.unscreened" in page
 
 
+def test_the_flag_reason_says_the_flag_holds_for_the_whole_conversation() -> None:
+    page = resources.files("deskclerk").joinpath("static/index.html").read_text(encoding="utf-8")
+    assert "An earlier result in this conversation was flagged" in page
+    assert "in this turn" not in page
+
+
+def test_long_conversation_titles_truncate_in_the_rail_and_show_in_full_in_the_tooltip() -> None:
+    page = resources.files("deskclerk").joinpath("static/index.html").read_text(encoding="utf-8")
+    assert ".conv-list { display: grid; grid-template-columns: minmax(0, 1fr);" in page
+    title_rule = re.search(r"\.conv-title \{([^}]*)\}", page)
+    assert title_rule is not None
+    for declaration in ("overflow: hidden", "text-overflow: ellipsis", "white-space: nowrap"):
+        assert declaration in title_rule.group(1)
+    assert 'open.title = item.title + "\\n" + new Date(item.updated_at)' in page
+
+
 def test_the_client_metadata_document_is_served_without_sign_in(
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
@@ -323,6 +343,16 @@ def test_the_client_metadata_document_is_served_without_sign_in(
         "token_endpoint_auth_method": "none",
         "application_type": "web",
     }
+
+
+def test_mcp_is_not_served(
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings)
+    with web(settings, [], script(), token_signing_key, database) as site:
+        assert site.client.get("/mcp").status_code == 404
 
 
 @pytest.mark.parametrize(
@@ -611,38 +641,6 @@ def test_an_ask_gives_the_model_the_instructions_with_today_s_utc_date(
     assert sent.content in {system_prompt(day) for day in days_around_the_call}
 
 
-class RecordingTracing(Tracing):
-    def __init__(self) -> None:
-        super().__init__(None, "test", True, None)
-        self.users: list[str] = []
-        self.flagged: list[int] = []
-
-    @contextmanager
-    def ask(self, user_id: str) -> Iterator[AskTrace]:
-        self.users.append(user_id)
-        trace = AskTrace({}, SimpleNamespace(update=self._record), None)
-        yield trace
-
-    def _record(self, metadata: dict[str, int]) -> None:
-        self.flagged.append(metadata["flagged"])
-
-
-def test_an_ask_is_traced_under_the_employee_with_the_flagged_count(
-    sign_token: Sign,
-    token_settings: Settings,
-    token_signing_key: SigningKeyLookup,
-    database: Database,
-) -> None:
-    settings = make_settings(token_settings)
-    tracing = RecordingTracing()
-    ada = as_user(sign_token, "ada")
-    with web(
-        settings, [], script(answer("ok")), token_signing_key, database, tracing=tracing
-    ) as site:
-        assert ask(site, ada).status_code == 200
-    assert (tracing.users, tracing.flagged) == (["ada"], [0])
-
-
 def test_an_employee_is_told_when_the_reply_was_cut_off_at_the_output_limit(
     sign_token: Sign,
     token_settings: Settings,
@@ -874,7 +872,14 @@ def test_the_audit_log_holds_no_argument_values_unless_audit_text_is_set(
     assert lines[0]["server"] == lines[3]["server"] == "notes"
     line = lines[1]
     assert line["user"] == "ada"
-    assert lines[2]["executed"] == [{"server": "notes", "tool": "write_note", "is_error": False}]
+    assert lines[2]["executed"] == [
+        {
+            "server": "notes",
+            "tool": "write_note",
+            "is_error": False,
+            "arguments_hmac": arguments_hmac({"text": "secret-text"}),
+        }
+    ]
     expected = hmac.new(AUDIT_KEY.encode(), b"my private request", hashlib.sha256).hexdigest()
     assert (line["text_chars"], line["text_hmac"]) == (18, expected)
     assert "text" not in line
@@ -905,6 +910,7 @@ def test_the_audit_log_holds_arguments_and_results_when_audit_text_is_set(
             "server": "notes",
             "tool": "write_note",
             "is_error": False,
+            "arguments_hmac": arguments_hmac({"text": "secret-text"}),
             "arguments": {"text": "secret-text"},
             "result": "wrote secret-text",
         }
@@ -1560,7 +1566,14 @@ def test_a_write_that_ran_before_the_model_failed_is_in_the_audit_line(
     assert response.json()["detail"]
     [line] = [line for line in audit_lines(caplog) if line["entry"] == "confirm"]
     assert line["outcome"] == "upstream_error"
-    assert line["executed"] == [{"server": "notes", "tool": "write_note", "is_error": False}]
+    assert line["executed"] == [
+        {
+            "server": "notes",
+            "tool": "write_note",
+            "is_error": False,
+            "arguments_hmac": arguments_hmac({"text": "hi"}),
+        }
+    ]
 
 
 def test_a_write_that_ran_before_the_deadline_is_in_the_audit_line(
@@ -1590,7 +1603,14 @@ def test_a_write_that_ran_before_the_deadline_is_in_the_audit_line(
     assert response.json()["detail"]
     [line] = [line for line in audit_lines(caplog) if line["entry"] == "confirm"]
     assert line["outcome"] == "timed_out"
-    assert line["executed"] == [{"server": "notes", "tool": "write_note", "is_error": False}]
+    assert line["executed"] == [
+        {
+            "server": "notes",
+            "tool": "write_note",
+            "is_error": False,
+            "arguments_hmac": arguments_hmac({"text": "hi"}),
+        }
+    ]
 
 
 class OpenAiGone(ScriptedModel):
@@ -1610,6 +1630,29 @@ def test_an_openai_failure_gives_502_like_an_anthropic_one(
         response = ask(site, as_user(sign_token, "ada"))
     assert response.status_code == 502
     assert response.json()["detail"] == "the model did not answer (APIConnectionError)"
+
+
+class BedrockGone(ScriptedModel):
+    def _generate(self, *args: Any, **kwargs: Any) -> Any:
+        denied = {"Error": {"Code": "ThrottlingException", "Message": "slow down"}}
+        raise ClientError(denied, "Converse")
+
+
+def test_a_bedrock_failure_gives_502_and_is_audited(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="deskclerk.audit")
+    settings = make_settings(token_settings)
+    with web(settings, [], BedrockGone(messages=iter([])), token_signing_key, database) as site:
+        response = ask(site, as_user(sign_token, "ada"))
+    assert response.status_code == 502
+    assert response.json()["detail"] == "the model did not answer (ClientError)"
+    asks = [line for line in audit_lines(caplog) if line["entry"] == "ask"]
+    assert asks[0]["cause"] == "the model did not answer (ClientError)"
 
 
 def _server_refuses(site: Web, started: dict[str, str], ada: dict[str, str]) -> int:
@@ -2094,9 +2137,21 @@ def test_a_pause_and_its_confirmation_are_audited(
     assert asked["executed"] == []
     assert (confirmed["entry"], confirmed["outcome"]) == ("confirm", "answered")
     assert confirmed["decided"] == [
-        {"server": "notes", "tool": "write_note", "decision": "approve"}
+        {
+            "server": "notes",
+            "tool": "write_note",
+            "decision": "approve",
+            "arguments_hmac": arguments_hmac({"text": "secret-text"}),
+        }
     ]
-    assert confirmed["executed"] == [{"server": "notes", "tool": "write_note", "is_error": False}]
+    assert confirmed["executed"] == [
+        {
+            "server": "notes",
+            "tool": "write_note",
+            "is_error": False,
+            "arguments_hmac": arguments_hmac({"text": "secret-text"}),
+        }
+    ]
     assert confirmed["conversation"] == asked["conversation"]
     assert "secret-text" not in caplog.text
 
@@ -2122,7 +2177,17 @@ def test_an_edited_confirmation_runs_the_edited_arguments_and_is_audited_as_an_e
     assert done.status_code == 200
     assert [note[1] for note in notes_server.notes] == ["hello"]
     confirmed = [line for line in audit_lines(caplog) if line["entry"] == "confirm"][0]
-    assert confirmed["decided"] == [{"server": "notes", "tool": "write_note", "decision": "edit"}]
+    assert confirmed["decided"] == [
+        {
+            "server": "notes",
+            "tool": "write_note",
+            "decision": "edit",
+            "arguments_hmac": arguments_hmac({"text": "hello"}),
+        }
+    ]
+    [executed] = cast(list[dict[str, Any]], confirmed["executed"])
+    assert executed["arguments_hmac"] == arguments_hmac({"text": "hello"})
+    assert executed["arguments_hmac"] != arguments_hmac({"text": "hi"})
 
 
 def test_a_malformed_edit_is_refused_and_the_client_cannot_name_another_tool(
@@ -2321,6 +2386,11 @@ def test_livez_answers_without_a_sign_in(
     assert response.status_code == 200
 
 
+def as_admin(sign_token: Sign, user: str = "ops") -> dict[str, str]:
+    claims: dict[str, object] = {"sub": user, "preferred_username": user, "groups": ["it-admins"]}
+    return {"Authorization": f"Bearer {sign_token(claims)}"}
+
+
 def sample(site: Web, name: str, **labels: str) -> float:
     return site.registry.get_sample_value(name, labels) or 0.0
 
@@ -2332,14 +2402,15 @@ def test_metrics_count_an_ask_and_a_confirmed_call_without_naming_the_employee(
     notes_server: RunningServer,
     database: Database,
 ) -> None:
-    settings = make_settings(token_settings)
+    settings = make_settings(token_settings, admin_group="it-admins")
     model = script(calls(("notes__write_note", {"text": "hi"})), answer("saved"))
     ada = as_user(sign_token, "ada")
+    ops = as_admin(sign_token)
     with web(settings, [notes(notes_server)], model, token_signing_key, database) as site:
-        assert site.client.get("/metrics").status_code == 200
+        assert site.client.get("/metrics", headers=ops).status_code == 200
         connect(site, ada)
         ask_and_approve(site, ada)
-        text = site.client.get("/metrics").text
+        text = site.client.get("/metrics", headers=ops).text
         assert sample(site, "deskclerk_asks_total", outcome="awaiting_confirmation") == 1
         assert sample(site, "deskclerk_asks_total", outcome="answered") == 1
         assert sample(site, "deskclerk_ask_duration_seconds_count") == 2
@@ -2348,6 +2419,22 @@ def test_metrics_count_an_ask_and_a_confirmed_call_without_naming_the_employee(
         assert sample(site, "deskclerk_tool_call_duration_seconds_count", server="notes") == 1
     assert "ada" not in text
     assert "save a note" not in text
+
+
+def test_metrics_need_an_admin_bearer_token(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings, admin_group="it-admins")
+    with web(settings, [], script(), token_signing_key, database) as site:
+        assert site.client.get("/metrics").status_code == 401
+        assert site.client.get("/metrics", headers=as_user(sign_token, "ada")).status_code == 403
+        admin = site.client.get("/metrics", headers=as_admin(sign_token))
+    assert admin.status_code == 200
+    assert admin.headers["content-type"].startswith("text/plain")
+    assert "deskclerk_asks_total" in admin.text
 
 
 def test_readyz_is_503_until_the_login_server_has_been_read_and_then_200(

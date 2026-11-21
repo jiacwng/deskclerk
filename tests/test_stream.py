@@ -101,6 +101,8 @@ def test_the_stream_gives_the_call_then_the_answer_then_the_whole_reply(
     assert "".join(deltas) == found[-1][1]["answer"] == "hello there my friend"
     assert found[-1][1]["executed"][0]["result"] == "the note"
     assert "the note" not in "".join(deltas)
+    assert (started["flagged"], ended["flagged"]) == (False, False)
+    assert found[-1][1]["executed"][0]["flagged"] is False
 
 
 def test_the_last_event_equals_the_json_reply_for_the_same_scripted_model(

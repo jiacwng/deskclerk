@@ -11,15 +11,14 @@ import logging
 import re
 import time
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import resources
 from typing import Any, Literal, NoReturn
 from uuid import UUID, uuid4
 
-import anthropic
-import anyio.from_thread
+import anyio
 import httpx
 import psycopg
 from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, Response
@@ -30,11 +29,11 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
-from starlette.routing import Route
 
 from deskclerk import cookies, oidc
 from deskclerk.admin import (
     AdminAuditPage,
+    AdminChain,
     AdminSummary,
     audit_page,
     audit_row,
@@ -96,13 +95,11 @@ from deskclerk.conversations import (
     thread_id,
 )
 from deskclerk.database import Database
-from deskclerk.erasure import erase_user
-from deskclerk.gateway import Gateway
 from deskclerk.instructions import system_prompt
 from deskclerk.jev import Jev
 from deskclerk.metrics import Metrics
 from deskclerk.pinning import MenuEntry, allowed_tool_names, read_menu, revoke_tool
-from deskclerk.providers import BudgetExceeded, Usage, cost_of
+from deskclerk.providers import BudgetExceeded, Usage, cost_of, model_errors
 from deskclerk.quota import Quota
 from deskclerk.retention import (
     delete_old_audit_rows,
@@ -110,15 +107,12 @@ from deskclerk.retention import (
     delete_old_threads,
     delete_old_threads_daily,
 )
-from deskclerk.scim import ScimUsers, mount_scim
-from deskclerk.scope import jev_tool_selection
 from deskclerk.screen import jev_screen
 from deskclerk.servers import McpServer, ServerEntry, ServersError
 from deskclerk.serverstore import NoSuchServer, ServerCatalog, ServerExists
 from deskclerk.sessions import SessionStore
 from deskclerk.spending import Spending, SpendingStore, month_of
 from deskclerk.tokens import TokenStore
-from deskclerk.tracing import Tracing
 
 SESSION_COOKIE = "deskclerk_session"
 LOGIN_COOKIE = "deskclerk_login"
@@ -142,12 +136,7 @@ CONNECT_ERRORS: dict[type[Exception], int] = {
     AlreadyConnected: 409,
     NoSignInNeeded: 400,
 }
-try:
-    import openai
-
-    MODEL_ERRORS: tuple[type[Exception], ...] = (anthropic.APIError, openai.APIError)
-except ImportError:
-    MODEL_ERRORS = (anthropic.APIError,)
+MODEL_ERRORS = model_errors()
 
 
 def _clip(text: str | None) -> str:
@@ -236,6 +225,7 @@ class ExecutedOut(BaseModel):
     arguments: dict[str, Any]
     result: str
     is_error: bool
+    flagged: bool
 
 
 class BlockedOut(BaseModel):
@@ -254,6 +244,8 @@ class PendingOut(BaseModel):
     arguments: dict[str, Any]
     destructive: bool
     always_allowable: bool
+    trusted: bool
+    after_flag: bool
 
 
 class TurnOut(BaseModel):
@@ -294,6 +286,7 @@ class CallOut(BaseModel):
     tool: str
     read_only: bool
     status: Literal["running", "ok", "error"]
+    flagged: bool
 
 
 class AnswerOut(BaseModel):
@@ -325,6 +318,7 @@ def _stream_event(event: RunEvent) -> StreamEvent:
                 tool=event.tool,
                 read_only=event.read_only,
                 status="running",
+                flagged=False,
             ),
         )
     if isinstance(event, CallEnded):
@@ -337,6 +331,7 @@ def _stream_event(event: RunEvent) -> StreamEvent:
                 tool=event.tool,
                 read_only=event.read_only,
                 status=status,
+                flagged=event.flagged,
             ),
         )
     return StreamEvent("answer", AnswerOut(text=event.text))
@@ -414,7 +409,6 @@ def create_app(
     jev: Jev | None,
     signing_key: SigningKeyLookup,
     registry: CollectorRegistry,
-    tracing: Tracing | None = None,
     idp_transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
     if settings.session_key is None:
@@ -456,7 +450,6 @@ def create_app(
             database.serving(),
             connections.listening(),
             catalog.listening(),
-            gateway.running(),
         ):
             checkpointer = await open_checkpointer(database, tokens.fernet)
             app.state.checkpointer = checkpointer
@@ -487,34 +480,6 @@ def create_app(
         calls = [ExecutedOut(**vars(call)).model_dump() for call in failure.executed]
         return JSONResponse({"detail": failure.detail, "calls": calls}, status_code=failure.status)
 
-    scim_users = ScimUsers(database) if settings.scim_token is not None else None
-
-    async def is_deactivated(user_id: str) -> bool:
-        return scim_users is not None and await run_in_threadpool(
-            scim_users.is_deactivated, user_id
-        )
-
-    gateway = Gateway(
-        settings,
-        catalog,
-        connections,
-        tokens,
-        quota,
-        audit,
-        metrics,
-        gate,
-        jev,
-        spending_store,
-        signing_key,
-        is_deactivated,
-    )
-    app.router.routes.append(Route("/mcp", gateway.app))
-    app.router.routes.append(Route("/.well-known/oauth-protected-resource/mcp", gateway.app))
-
-    async def refuse_deactivated(user_id: str) -> None:
-        if await is_deactivated(user_id):
-            raise HTTPException(403, "this account has been deactivated")
-
     async def caller(request: Request) -> Caller:
         header = request.headers.get("authorization")
         if header is not None:
@@ -529,14 +494,12 @@ def create_app(
                 raise HTTPException(401, str(error), BEARER) from None
             except AuthUnavailable:
                 raise HTTPException(503, "the login server cannot be reached") from None
-            await refuse_deactivated(identity.user_id)
             return Caller(identity, by_cookie=False)
         session_identity = await run_in_threadpool(
             sessions.lookup, request.cookies.get(SESSION_COOKIE, "")
         )
         if session_identity is None:
             raise HTTPException(401, "sign in at /login", BEARER)
-        await refuse_deactivated(session_identity.user_id)
         return Caller(session_identity, by_cookie=True)
 
     async def posting_caller(request: Request, who: Caller = Depends(caller)) -> Caller:
@@ -572,26 +535,12 @@ def create_app(
                 discovered["endpoints"] = await oidc.discover(settings, client)
         return discovered["endpoints"]
 
-    async def erase_when_idle(user_id: str) -> None:
-        async with database.user_lock(user_id):
-            await connections.cancel_all_for(user_id)
-            await run_in_threadpool(erase_user, user_id, tokens, sessions, spending_store, audit)
-
-    if settings.scim_token is not None and scim_users is not None:
-        mount_scim(
-            app,
-            settings.scim_token.get_secret_value(),
-            settings.public_url,
-            scim_users,
-            lambda user_id: anyio.from_thread.run(erase_when_idle, user_id),
-        )
-
     @app.get("/livez")
     async def livez() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.get("/metrics")
-    async def prometheus_metrics() -> Response:
+    async def prometheus_metrics(_: Caller = Depends(admin_caller)) -> Response:
         return Response(metrics.render(), media_type=CONTENT_TYPE_LATEST)
 
     @app.get("/readyz")
@@ -645,10 +594,11 @@ def create_app(
             server: str | None = None,
             tool: str | None = None,
             decision: str | None = None,
+            flagged: bool | None = None,
             since: datetime | None = None,
             until: datetime | None = None,
         ) -> AuditFilter:
-            return AuditFilter(employee, entry, server, tool, decision, since, until)
+            return AuditFilter(employee, entry, server, tool, decision, flagged, since, until)
 
         @app.get("/admin/audit")
         async def admin_audit(
@@ -658,6 +608,13 @@ def create_app(
             _: Caller = Depends(admin_caller),
         ) -> AdminAuditPage:
             return audit_page(await run_in_threadpool(audit_store.search, found, limit, cursor))
+
+        @app.get("/admin/audit/verify")
+        async def admin_audit_verify(_: Caller = Depends(admin_caller)) -> AdminChain:
+            report = await run_in_threadpool(audit_store.verify)
+            return AdminChain(
+                ok=report.broken_at is None, rows=report.rows, first_broken=report.broken_at
+            )
 
         @app.get("/admin/audit/download")
         async def admin_audit_download(
@@ -833,8 +790,6 @@ def create_app(
             return sign_in_failed("sign_in_refused", f"the ID token was refused: {refused}")
         except AuthUnavailable as unreachable:
             return sign_in_failed("login_unreachable", str(unreachable))
-        if await is_deactivated(identity.user_id):
-            return sign_in_failed("sign_in_refused", "account deactivated")
         session = await run_in_threadpool(sessions.create, identity, session_seconds)
         response = RedirectResponse("/", status_code=303)
         response.delete_cookie(LOGIN_COOKIE, path="/login")
@@ -1176,7 +1131,6 @@ def create_app(
         checkpointer: AsyncPostgresSaver = app.state.checkpointer
         thread = thread_id(identity.user_id, conversation)
         async with database.user_lock(identity.user_id):
-            await refuse_deactivated(identity.user_id)
             history = await saved_messages(checkpointer, thread)
             if (conversation_id is not None or edit_of is not None) and not history:
                 refuse(404, "no such conversation", "unknown_conversation")
@@ -1202,38 +1156,33 @@ def create_app(
             spent_before = spending.cost_usd
             executed: list[ExecutedCall] = []
             try:
-                with tracing.ask(identity.user_id) if tracing else nullcontext(None) as trace:
-                    async with asyncio.timeout(settings.ask_seconds):
-                        result = await run_agent(
-                            identity.user_id,
-                            text,
-                            system_prompt(datetime.now(UTC).date()),
-                            [s for s in catalog.offered if s.open_to(identity.groups)],
-                            connections,
-                            tokens,
-                            checkpointer,
-                            thread,
-                            history,
-                            model,
-                            gate,
-                            jev_screen(jev, spending.record_jev),
-                            settings.step_limit,
-                            spending.record,
-                            trace.config if trace else None,
-                            metrics.timed(trace.tool_span if trace else no_tool_span),
-                            jev_tool_selection(jev, settings.tool_selection, spending.record_jev),
-                            tool_output_chars=settings.tool_output_chars,
-                            history_tokens=settings.history_tokens,
-                            listing_seconds=settings.listing_seconds,
-                            confirm_writes=True,
-                            decisions=decisions,
-                            executed=executed,
-                            emit=lambda event: emit(_stream_event(event)),
-                            running=running,
-                            fork_from=fork_from,
-                        )
-                    if trace:
-                        trace.finish(result.flagged)
+                async with asyncio.timeout(settings.ask_seconds):
+                    result = await run_agent(
+                        identity.user_id,
+                        text,
+                        system_prompt(datetime.now(UTC).date()),
+                        [s for s in catalog.offered if s.open_to(identity.groups)],
+                        connections,
+                        tokens,
+                        checkpointer,
+                        thread,
+                        history,
+                        model,
+                        gate,
+                        jev_screen(jev, spending.record_jev),
+                        settings.step_limit,
+                        spending.record,
+                        metrics.timed(no_tool_span),
+                        tool_output_chars=settings.tool_output_chars,
+                        history_tokens=settings.history_tokens,
+                        listing_seconds=settings.listing_seconds,
+                        confirm_writes=True,
+                        decisions=decisions,
+                        executed=executed,
+                        emit=lambda event: emit(_stream_event(event)),
+                        running=running,
+                        fork_from=fork_from,
+                    )
             except ConversationWaiting:
                 refuse(409, "this conversation waits for a confirmation", "conversation_waiting")
             except NothingToConfirm:

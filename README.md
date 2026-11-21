@@ -4,11 +4,11 @@
 
 deskclerk is an agent that works in a company's tools for its employees. An admin lists the
 company's MCP servers. Employees sign in with the company login, connect their own accounts and
-ask in plain words. A call that changes data waits until the employee approves it in the page.
-Before a tool result reaches the model, it is screened for prompt injection: text in an email,
-page or ticket that tries to make the agent do something the employee did not ask for. The screen
-is Jev, a hosted model from TypeSafe that answers yes or no questions about text. Every request
-goes to an audit log.
+ask in plain words. A call that changes data waits until the employee approves it, unless they
+chose to always allow that tool. Before a tool result reaches the model, it is screened for
+prompt injection: text in an email, page or ticket that tries to make the agent do something the
+employee did not ask for. The screen is Jev, a hosted model from TypeSafe that answers yes or no
+questions about text. Every request goes to an audit log.
 
 ```mermaid
 flowchart LR
@@ -22,17 +22,34 @@ flowchart LR
 
 ## Features
 
-- Single sign-on with OpenID Connect (Entra ID, Okta, Keycloak) and SCIM deprovisioning.
+- Single sign-on with OpenID Connect (Entra ID, Okta, Keycloak).
 - Each employee's own accounts on each MCP server through OAuth, with tokens encrypted at rest
   and a rotatable key.
-- Approval of every call that changes data, with editable arguments.
-- An MCP server at `/mcp`, so employees can use the same tools from their own MCP client.
+- Approval of calls that change data, with editable arguments. An employee can always allow a
+  tool that does not delete, unless the admin turns that off for the server.
 - Tool pinning: a tool whose definition changes is withheld.
 - Tool allowlists, access by group, and tools that always ask first.
 - Prompt injection screening of tool results.
 - Monthly budgets, a usage report, an audit log, and an admin page that adds, pauses and removes
   servers and revokes an employee.
 - All state in Postgres, so several copies can run.
+
+## Security
+
+deskclerk assumes the model can be steered by any text it reads and that an MCP server can lie
+about its tools. It trusts the admin, the login server and the database. `SECURITY.md` says how
+to report a flaw.
+
+| Threat | Control | Limit |
+|---|---|---|
+| A tool result tells the agent to do something else | Jev screens each result. A flagged result reaches the model behind a notice, and later calls wait for the employee, read-only ones too. | The screen warns and does not block. After a flag, the employee is the defence. Without a TypeSafe key there is no screen. |
+| The agent changes data the employee did not want changed | A call that is not read-only waits for approval, with editable arguments. Its arguments must fit the tool's schema. A destructive call may only name ids that appear in the request or an earlier tool result. | Always allow skips approval for that tool until a flag. An id planted in a tool result passes the id check. |
+| A server lies about its tools | Servers are untrusted by default. Their read-only and destructive hints are ignored and every call asks first. | On a server the admin marks trusted, read-only calls run without asking. |
+| A server changes a tool after first use | Each tool definition is pinned by its SHA-256 on first use. A changed or new tool is withheld, and its Always allow lapses. | The first definition is trusted as it is. A legitimate upgrade is withheld until the employee reconnects. |
+| One employee reaches another's accounts | Each call uses the asking employee's own OAuth account. Tokens and conversations are stored per employee and encrypted with the token key. | Anyone with the token key and the database can read them. |
+| An employee spends the shared model budget | A monthly budget per employee and a request limit per minute. | The budget is checked before each request, so one request can go past it. |
+| A leaver keeps access | Revoke on the admin page deletes their stored accounts and sessions. | A bearer token they already hold works until it expires, with no connected accounts. Disable them in the login server too. |
+| Someone edits the audit log | Each stored line carries an HMAC of the line before it. `verify-audit` names the first changed line. | Removal of the newest lines is not detected. Whoever holds the chain key can rewrite the chain. |
 
 ## Try it
 
@@ -58,7 +75,8 @@ OpenAI or AWS Bedrock. This runs deskclerk, a development Keycloak and a demo Gi
    `dasovich-j` belongs to the second group. Ask
    "Summarise what changed in the last 10 commits of /sandbox/deskclerk", then "Create a branch
    called release-notes in /sandbox/deskclerk". Approve the change when the page asks. The branch
-   exists only inside the demo container.
+   exists only inside the demo container. The newest commit in that copy is a prompt injection
+   from AgentDojo. With a TypeSafe key, the page marks that result as flagged.
 
 ## Run it at your company
 
@@ -82,35 +100,26 @@ OpenAI or AWS Bedrock. This runs deskclerk, a development Keycloak and a demo Gi
    }
    ```
 
-`.env.example` describes every other setting: the model provider, the screen, budgets, retention
-and tracing. Keep the token key, because the stored tokens and conversations are encrypted with
-it. It is in the `deskclerk-data` volume unless you set `DESKCLERK_TOKEN_KEY`. With a TypeSafe
-key, each request and every tool result are also sent to TypeSafe's API to be screened.
+`.env.example` describes every other setting: the model provider, the screen, budgets and
+retention. Keep the token key, because the stored tokens and conversations are encrypted with
+it. Conversation titles are not encrypted. A title is the first 60 characters of the first
+request. The key is in the `deskclerk-data` volume unless you set `DESKCLERK_TOKEN_KEY`. With a
+TypeSafe key, each request and every tool result are also sent to TypeSafe's API to be screened.
 
 All state lives in one Postgres database. `compose.prod.yaml` starts it and sets
 `DESKCLERK_DATABASE_URL` from `POSTGRES_PASSWORD`, which you set in `.env` with letters and digits
 only. To use your own Postgres, set `DESKCLERK_DATABASE_URL` instead. Several copies of deskclerk
 can run behind a load balancer on one database, and each copy opens up to 42 connections. A change
 on the admin page reaches every copy without a restart. Set the three keys in `.env` first,
-because each copy would otherwise make its own. With several copies, the load balancer must send
-all requests with the same `Mcp-Session-Id` header to the same copy, because `/mcp` keeps each
-session in one copy's memory.
-
-Employees can also add `https://<your deskclerk>/mcp` to their own MCP client. The client signs in
-with an access token from your login server, for the audience in `DESKCLERK_AUDIENCE` or else the
-client ID. It sees the tools of the servers the employee connected on the page. Each call gets the
-same approvals, screen, budget and audit as the page. A call that changes data asks the employee
-through MCP elicitation. A client that cannot ask, or that uses MCP revision 2026-07-28, gets those
-calls refused, and reads still work. The write check only sees tool results that came through
-deskclerk.
+because each copy would otherwise make its own.
 
 ## Operate it
 
 - `docker compose -f compose.prod.yaml exec deskclerk python -m deskclerk usage` prints what each
   employee spent this month.
 - `... python -m deskclerk erase <user_id>` deletes one employee's data. The user id is the
-  `DESKCLERK_USER_CLAIM` value, the object ID on Entra ID. With SCIM, the login server does this
-  when it removes the employee.
+  `DESKCLERK_USER_CLAIM` value, the object ID on Entra ID. When an employee leaves, disable them
+  in the login server, then revoke them on the admin page.
 - To back up, run
   `docker compose -f compose.prod.yaml exec postgres pg_dump -U deskclerk deskclerk > backup.sql`.
   Keep the token key with it.
@@ -121,8 +130,9 @@ deskclerk.
 - To upgrade, run `git pull`, then `docker compose -f compose.prod.yaml up -d --build`.
 - `/livez` answers while the process runs, and `/readyz` once it can serve.
 - `/metrics` serves Prometheus metrics: asks, tool calls, approvals, screen flags, cost and
-  durations, with no employee names. It needs no sign-in, so block it at the reverse proxy if it
-  must stay private.
+  durations, with no employee names. It needs an admin: a signed-in session, or a bearer token for
+  a user in `DESKCLERK_ADMIN_GROUP`. Prometheus can sign in as a Keycloak service account in that
+  group through its OAuth 2.0 client credentials setting.
 - Sign-in and connection failures are logged with their reason. The audit log is one JSON line per
   request on standard output, and each line is also stored in Postgres. The admin page searches the
   stored lines and downloads the result.
@@ -136,11 +146,11 @@ deskclerk.
 
 ## Why not an existing tool
 
-Open WebUI and LibreChat are chat front ends for many models. Both connect each user's own
-account on an MCP server. Obot, IBM ContextForge and Docker MCP Gateway are gateways that sit
-between MCP clients and MCP servers. deskclerk puts the controls an agent needs on one path:
-approval of every call that changes data, tool pinning, prompt injection screening of tool results
-and a monthly budget per employee.
+Open WebUI, LibreChat and Dust can ask before a tool call. Open WebUI and LibreChat also connect
+each user's own account on an MCP server. Obot and Docker MCP Gateway sit between MCP clients and
+MCP servers. Snyk Agent Scan pins tool definitions by hash, and a few small gateways screen for
+prompt injection. deskclerk runs approval, a write check, tool pinning, injection screening and a
+budget per employee on one path, and measures them on public benchmarks.
 
 ## Results
 
@@ -148,9 +158,9 @@ Claude Haiku 5.5 is the agent in every run.
 
 - On 459 WorkBench workplace tasks, deskclerk gets 441 right and WorkBench's own agent gets 447
   (p = 0.18).
-- On 949 AgentDojo prompt injection attacks, 2.0% succeed with no defense. With the Jev screen,
-  1.9% succeed when the employee approves every call, and none when they reject the calls after
-  a flag.
+- On AgentDojo, only 19 of 949 prompt injection attacks succeed with no defense, so it cannot
+  tell the screens apart. On the 1,786 distinct tool outputs from that run, Jev flags all 1,174
+  that carry the attack and none of the 612 that do not. They all come from one attack text.
 - On 5,000 LLMail-Inject attacks, Jev flags 75.2%, and none of 160 clean emails.
 
 `bench/README.md` has every result with its limits, and the commands to rerun it.

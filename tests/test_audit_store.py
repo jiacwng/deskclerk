@@ -101,6 +101,15 @@ def test_the_search_columns_come_from_the_line(database: Database) -> None:
     assert (second.servers, second.tools, second.decisions) == (["wiki"], [], [])
 
 
+def test_the_flagged_column_is_true_when_a_result_was_flagged(database: Database) -> None:
+    store = AuditStore(database, CHAIN_KEY)
+    store.append(line(flagged=2))
+    store.append(line(flagged=0))
+    store.append(line(kind="connect", server="wiki"))
+    assert [row.flagged for row in store.rows(AuditFilter())] == [True, False, False]
+    assert store.verify().broken_at is None
+
+
 def test_the_first_row_chains_from_the_zero_hash(database: Database) -> None:
     store = AuditStore(database, CHAIN_KEY)
     text = line()
@@ -348,6 +357,48 @@ def search(site: Web, admin: dict[str, str], **params: str | int) -> dict[str, A
     return body
 
 
+def test_search_with_flagged_returns_only_lines_with_a_flagged_result(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    store = AuditStore(database, CHAIN_KEY)
+    store.append(line("ana", "ask", flagged=0, outcome="answered"))
+    store.append(line("bob", "ask", flagged=3, outcome="answered"))
+    store.append(line("cyd", "ask", flagged=1, outcome="answered"))
+    store.append(line("dee", "ask", flagged=0, outcome="answered"))
+    settings = make_settings(token_settings, admin_group=GROUP)
+    with web(settings, [], script(), token_signing_key, database) as site:
+        admin = bearer(sign_token, "root", [GROUP])
+        flagged = search(site, admin, flagged="true")["rows"]
+        assert [(r["user"], r["flagged"]) for r in flagged] == [("cyd", True), ("bob", True)]
+        assert len(search(site, admin)["rows"]) == 4
+        both = search(site, admin, flagged="true", employee="bob")["rows"]
+        assert [r["user"] for r in both] == ["bob"]
+        download = site.client.get(
+            "/admin/audit/download", params={"flagged": "true"}, headers=admin
+        )
+        assert len(download.text.splitlines()) == 2
+        unflagged = search(site, admin, flagged="false")["rows"]
+        assert [(r["user"], r["flagged"]) for r in unflagged] == [("dee", False), ("ana", False)]
+        unflagged_download = site.client.get(
+            "/admin/audit/download", params={"flagged": "false"}, headers=admin
+        )
+        assert len(unflagged_download.text.splitlines()) == 2
+    assert store.verify().broken_at is None
+
+
+def test_the_store_searches_unflagged_lines_only(database: Database) -> None:
+    store = AuditStore(database, CHAIN_KEY)
+    store.append(line("ana", "ask", flagged=0, outcome="answered"))
+    store.append(line("bob", "ask", flagged=3, outcome="answered"))
+    store.append(line("dee", "ask", flagged=0, outcome="answered"))
+    unflagged = store.rows(AuditFilter(flagged=False))
+    assert sorted(row.user for row in unflagged) == ["ana", "dee"]
+    assert [row.user for row in store.rows(AuditFilter(flagged=True))] == ["bob"]
+
+
 def minutes_ago(minutes: int) -> str:
     return (NOW - timedelta(minutes=minutes)).isoformat()
 
@@ -437,3 +488,40 @@ def test_the_download_returns_the_filtered_rows_as_json_lines(
     assert json.loads(parsed[0]["line"])["user"] == "ana"
     assert {row["user"] for row in map(json.loads, anas.text.splitlines())} == {"ana"}
     assert len(anas.text.splitlines()) == 3
+
+
+def test_an_admin_verifies_a_clean_chain_and_a_tampered_row_is_named(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    store = AuditStore(database, CHAIN_KEY)
+    seed_five(store)
+    settings = make_settings(token_settings, admin_group=GROUP)
+    with web(settings, [], script(), token_signing_key, database) as site:
+        admin = bearer(sign_token, "root", [GROUP])
+        clean = site.client.get("/admin/audit/verify", headers=admin)
+        assert clean.status_code == 200
+        assert clean.json() == {"ok": True, "rows": 5, "first_broken": None}
+        third = rows(database, "SELECT id FROM audit_log ORDER BY id OFFSET 2 LIMIT 1")[0][0]
+        with database.pool.connection() as connection:
+            connection.execute(
+                "UPDATE audit_log SET line = replace(line, 'user2', 'mallory') WHERE id = %s",
+                (third,),
+            )
+        broken = site.client.get("/admin/audit/verify", headers=admin)
+        assert broken.json() == {"ok": False, "rows": 2, "first_broken": third}
+
+
+def test_a_non_admin_is_refused_the_chain_verification(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings, admin_group=GROUP)
+    with web(settings, [], script(), token_signing_key, database) as site:
+        outsider = bearer(sign_token, "bob", ["finance"])
+        assert site.client.get("/admin/audit/verify", headers=outsider).status_code == 403
+        assert site.client.get("/admin/audit/verify").status_code == 401

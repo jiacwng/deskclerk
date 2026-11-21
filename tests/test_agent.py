@@ -5,6 +5,7 @@ import asyncio
 import itertools
 import json
 import re
+import threading
 import time
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from dataclasses import replace
@@ -14,7 +15,6 @@ import anthropic
 import httpx2
 import pytest
 from cryptography.fernet import Fernet, InvalidToken
-from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import (
@@ -27,7 +27,7 @@ from langchain_core.messages import (
 )
 from langchain_core.messages.ai import UsageMetadata
 from langchain_core.outputs import ChatGenerationChunk
-from langchain_core.runnables import Runnable, RunnableConfig
+from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
@@ -55,11 +55,9 @@ from deskclerk.database import Database
 from deskclerk.screen import NOTICE, Screen, pass_through
 from deskclerk.servers import McpServer
 from deskclerk.tokens import TokenStore
-from deskclerk.tracing import AskTrace
 from deskclerk.writecheck import write_check
 from mcp_server import RunningServer, running_mcp_server
 from test_connections import REDIRECT, connect, server_record, serving_connections
-from test_tracing import MaskingClient
 
 SYSTEM = "Be careful."
 FLAGGED = f"{NOTICE}\nthe injected text"
@@ -103,6 +101,16 @@ class ScriptedModel(GenericFakeChatModel):
             chunk_position="last",
         )
         yield ChatGenerationChunk(message=last)
+
+
+class HeldModel(ScriptedModel):
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+
+    def _generate(self, *args: Any, **kwargs: Any) -> Any:
+        self.entered.set()
+        self.release.wait(10)
+        return super()._generate(*args, **kwargs)
 
 
 class ProviderGoneAfterScript(ScriptedModel):
@@ -171,7 +179,6 @@ async def run(
     gate: Gate | None = None,
     screen: Screen = pass_through,
     step_limit: int = 5,
-    trace_config: RunnableConfig | None = None,
     tool_span: ToolSpan = no_tool_span,
     request: str = "save a note",
     checkpointer: BaseCheckpointSaver[Any] | None = None,
@@ -197,7 +204,6 @@ async def run(
         screen,
         step_limit,
         lambda usage: None,
-        trace_config,
         tool_span,
         tool_output_chars=tool_output_chars,
         history_tokens=history_tokens,
@@ -539,49 +545,6 @@ async def test_a_tool_result_is_screened_before_the_model_and_the_record_see_it(
     assert (reply.content, reply.status) == (shown, status)
     assert result.executed[0].result == shown
     assert result.flagged == flagged
-
-
-class ModelCallCounter(BaseCallbackHandler):
-    def __init__(self) -> None:
-        self.model_calls = 0
-
-    def on_chat_model_start(self, *args: Any, **kwargs: Any) -> None:
-        self.model_calls += 1
-
-
-@pytest.mark.anyio
-async def test_a_trace_config_sees_every_model_call_and_changes_nothing(
-    mcp_server: RunningServer, connections: OAuthConnections
-) -> None:
-    servers = [server_record(mcp_server)]
-
-    def replies() -> ScriptedModel:
-        return script(calls(("notes__read_note", {})), answer("It says: the note"))
-
-    counter = ModelCallCounter()
-    traced = await run(connections, servers, replies(), trace_config={"callbacks": [counter]})
-    untraced = await run(connections, servers, replies())
-    assert counter.model_calls == 2
-    assert traced == untraced
-
-
-@pytest.mark.anyio
-async def test_a_traced_tool_call_is_a_masked_observation_and_changes_nothing(
-    mcp_server: RunningServer, connections: OAuthConnections
-) -> None:
-    servers = [server_record(mcp_server)]
-
-    def replies() -> ScriptedModel:
-        return script(calls(("notes__read_note", {})), answer("It says: the note"))
-
-    client = MaskingClient()
-    trace = AskTrace({}, None, client)
-    traced = await run(connections, servers, replies(), tool_span=trace.tool_span)
-    untraced = await run(connections, servers, replies())
-    (observation,) = client.observations
-    assert (observation.name, observation.as_type) == ("notes__read_note", "tool")
-    assert observation.output == "[omitted]"
-    assert traced == untraced
 
 
 def bound_names(model: ScriptedModel) -> set[str]:
@@ -1903,3 +1866,74 @@ async def test_an_edited_delete_may_name_an_id_the_employee_typed(
     )
     assert resumed.blocked == ()
     assert append_server.deleted == ["n-9"]
+
+
+@pytest.mark.anyio
+async def test_an_executed_call_says_whether_its_result_was_flagged(
+    mcp_server: RunningServer, connections: OAuthConnections
+) -> None:
+    model = script(calls(("notes__read_note", {})), calls(("notes__read_note", {})), answer("x"))
+    result = await run(connections, [server_record(mcp_server)], model, screen=FlagTheFirstResult())
+    assert [call.flagged for call in result.executed] == [True, False]
+
+
+@pytest.mark.anyio
+async def test_a_pending_call_says_whether_its_server_is_trusted_and_a_flag_came_before(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncPostgresSaver
+) -> None:
+    server = server_record(mcp_server)
+    model = script(calls(("notes__write_note", {"text": "hi"})))
+    plain = await run(connections, [server], model, checkpointer=saver, confirm_writes=True)
+    assert [(call.trusted, call.after_flag) for call in plain.pending] == [(True, False)]
+
+    untrusted = replace(server, trusted=False)
+    model = script(calls(("notes__write_note", {"text": "hi"})))
+    other = await run(
+        connections, [untrusted], model, checkpointer=saver, thread="ada/other", confirm_writes=True
+    )
+    assert [(call.trusted, call.after_flag) for call in other.pending] == [(False, False)]
+
+    model = script(calls(("notes__read_note", {})), calls(("notes__write_note", {"text": "a"})))
+    flagged = await run(
+        connections,
+        [server],
+        model,
+        screen=FlagTheFirstResult(),
+        checkpointer=saver,
+        thread="ada/flagged",
+        confirm_writes=True,
+    )
+    assert [(call.trusted, call.after_flag) for call in flagged.pending] == [(True, True)]
+
+
+@pytest.mark.anyio
+async def test_always_allow_is_refused_for_a_write_that_waits_after_a_flagged_result(
+    append_server: RunningServer,
+    append_connections: OAuthConnections,
+    append_saver: AsyncPostgresSaver,
+) -> None:
+    servers = [server_record(append_server)]
+    model = script(
+        calls(("notes__read_note", {})),
+        calls(("notes__append_note", {"text": "one"})),
+        answer("saved"),
+    )
+    paused = await run(
+        append_connections,
+        servers,
+        model,
+        screen=FlagTheFirstResult(),
+        checkpointer=append_saver,
+        confirm_writes=True,
+    )
+    assert [(call.tool, call.after_flag) for call in paused.pending] == [("append_note", True)]
+    with pytest.raises(AlwaysAllowRefused):
+        await run(
+            append_connections,
+            servers,
+            model,
+            checkpointer=append_saver,
+            confirm_writes=True,
+            decisions={paused.pending[0].id: "approve_always"},
+        )
+    assert append_connections.tokens.get("ada", "notes", "always_allowed") is None

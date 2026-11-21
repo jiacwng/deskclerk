@@ -12,10 +12,9 @@ from deskclerk.auth import Identity, SigningKeyLookup
 from deskclerk.config import Settings
 from deskclerk.conversations import TITLE_CHARS, title_of
 from deskclerk.database import Database
-from test_agent import ScriptedModel, answer
+from test_agent import HeldModel, ScriptedModel, answer
 from test_api import Sign, as_user, ask, ask_in, make_settings, web
 from test_erase import KEY, erase, rows
-from test_scim import HeldModel
 
 
 def replying() -> ScriptedModel:

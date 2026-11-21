@@ -10,12 +10,12 @@ import time
 from typing import Any
 
 
-def _derived_key(key: bytes, purpose: str) -> bytes:
+def derived_key(key: bytes, purpose: str) -> bytes:
     return hmac.new(key, purpose.encode(), hashlib.sha256).digest()
 
 
 def _tag(key: bytes, purpose: str, body: bytes) -> bytes:
-    return hmac.new(_derived_key(key, purpose), body, hashlib.sha256).digest()
+    return hmac.new(derived_key(key, purpose), body, hashlib.sha256).digest()
 
 
 def _encode(raw: bytes) -> str:
