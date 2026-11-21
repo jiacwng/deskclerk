@@ -34,6 +34,23 @@ flowchart LR
   servers and revokes an employee.
 - All state in Postgres, so several copies can run.
 
+## Security
+
+deskclerk assumes the model can be steered by any text it reads and that an MCP server can lie
+about its tools. It trusts the admin, the login server and the database. `SECURITY.md` says how
+to report a flaw.
+
+| Threat | Control | Limit |
+|---|---|---|
+| A tool result tells the agent to do something else | Jev screens each result. A flagged result reaches the model behind a notice, and later calls wait for the employee, read-only ones too. | The screen warns and does not block. After a flag, the employee is the defence. Without a TypeSafe key there is no screen. |
+| The agent changes data the employee did not want changed | A call that is not read-only waits for approval, with editable arguments. Its arguments must fit the tool's schema. A destructive call may only name ids that appear in the request or an earlier tool result. | Always allow skips approval for that tool until a flag. An id planted in a tool result passes the id check. |
+| A server lies about its tools | Servers are untrusted by default. Their read-only and destructive hints are ignored and every call asks first. | On a server the admin marks trusted, read-only calls run without asking. |
+| A server changes a tool after first use | Each tool definition is pinned by its SHA-256 on first use. A changed or new tool is withheld, and its Always allow lapses. | The first definition is trusted as it is. A legitimate upgrade is withheld until the employee reconnects. |
+| One employee reaches another's accounts | Each call uses the asking employee's own OAuth account. Tokens and conversations are stored per employee and encrypted with the token key. | Anyone with the token key and the database can read them. |
+| An employee spends the shared model budget | A monthly budget per employee and a request limit per minute. | The budget is checked before each request, so one request can go past it. |
+| A leaver keeps access | Revoke on the admin page deletes their stored accounts and sessions. | A bearer token they already hold works until it expires, with no connected accounts. Disable them in the login server too. |
+| Someone edits the audit log | Each stored line carries an HMAC of the line before it. `verify-audit` names the first changed line. | Removal of the newest lines is not detected. Whoever holds the chain key can rewrite the chain. |
+
 ## Try it
 
 You need Docker with Compose and an API key for one model provider: Anthropic, OpenAI, Azure
@@ -58,7 +75,8 @@ OpenAI or AWS Bedrock. This runs deskclerk, a development Keycloak and a demo Gi
    `dasovich-j` belongs to the second group. Ask
    "Summarise what changed in the last 10 commits of /sandbox/deskclerk", then "Create a branch
    called release-notes in /sandbox/deskclerk". Approve the change when the page asks. The branch
-   exists only inside the demo container.
+   exists only inside the demo container. The newest commit in that copy is a prompt injection
+   from AgentDojo. With a TypeSafe key, the page marks that result as flagged.
 
 ## Run it at your company
 
@@ -128,11 +146,11 @@ because each copy would otherwise make its own.
 
 ## Why not an existing tool
 
-Open WebUI and LibreChat are chat front ends for many models. Both connect each user's own
-account on an MCP server. Obot, IBM ContextForge and Docker MCP Gateway are gateways that sit
-between MCP clients and MCP servers. deskclerk puts the controls an agent needs on one path:
-approval of calls that change data, tool pinning, prompt injection screening of tool results and
-a monthly budget per employee.
+Open WebUI, LibreChat and Dust can ask before a tool call. Open WebUI and LibreChat also connect
+each user's own account on an MCP server. Obot and Docker MCP Gateway sit between MCP clients and
+MCP servers. Snyk Agent Scan pins tool definitions by hash, and a few small gateways screen for
+prompt injection. deskclerk runs approval, a write check, tool pinning, injection screening and a
+budget per employee on one path, and measures them on public benchmarks.
 
 ## Results
 
