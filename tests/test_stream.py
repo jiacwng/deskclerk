@@ -26,6 +26,7 @@ from deskclerk.connections import OAuthConnections
 from deskclerk.conversations import close_unanswered_calls, open_checkpointer, saved_messages
 from deskclerk.conversations import thread_id as thread_of
 from deskclerk.database import Database
+from deskclerk.jev import Jev
 from deskclerk.servers import McpServer
 from deskclerk.sessions import SessionStore
 from deskclerk.spending import SpendingStore
@@ -274,6 +275,8 @@ def listening(
     signing_key: SigningKeyLookup,
     database: Database,
     key: str,
+    jev: Jev | None = None,
+    port: int = 0,
 ) -> Iterator[str]:
     tokens = TokenStore(database, key)
     app = create_app(
@@ -286,11 +289,11 @@ def listening(
         SessionStore(database),
         model,
         write_check(),
-        None,
+        jev,
         signing_key,
         CollectorRegistry(),
     )
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning"))
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
     thread = threading.Thread(target=server.run)
     thread.start()
     while not server.started:

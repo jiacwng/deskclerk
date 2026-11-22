@@ -110,3 +110,9 @@ def generated_keys_stay_in_a_temporary_directory(
         monkeypatch.setenv(variable, "placeholder")
         monkeypatch.delenv(variable)
     monkeypatch.setenv("DESKCLERK_AUDIT_CHAIN_KEY", CHAIN_KEY.decode())
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    # Playwright's sync driver keeps an event loop running once its first test starts, which breaks
+    # every async test after it, so the browser tests go last.
+    items.sort(key=lambda item: item.get_closest_marker("browser") is not None)
