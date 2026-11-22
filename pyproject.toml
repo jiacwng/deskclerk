@@ -73,5 +73,6 @@ pythonpath = ["src"]
 markers = [
     "llm: calls the paid model API, deselected by default, run with -m llm",
     "keycloak: signs in against the development Keycloak from compose.yaml",
+    "browser: drives the pages in headless Chromium, run with the Playwright browsers installed",
 ]
 addopts = "-m 'not llm'"

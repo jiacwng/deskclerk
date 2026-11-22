@@ -28,6 +28,7 @@ jobs:
       - run: ruff check .
       - run: mypy
       - run: docker compose up -d --wait keycloak postgres demo
+      - run: playwright install --with-deps chromium
       - run: pytest
         env:
           DESKCLERK_DEMO_URL: http://localhost:8100/mcp
