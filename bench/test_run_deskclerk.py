@@ -9,7 +9,7 @@ import os
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 from cryptography.fernet import Fernet
@@ -22,7 +22,6 @@ from deskclerk.agent import Gate, ProposedCall, Verdict
 from deskclerk.config import Settings
 from deskclerk.connections import OAuthConnections
 from deskclerk.database import Database
-from deskclerk.jev import Jev
 from deskclerk.tokens import TokenStore
 from run_deskclerk import (
     CUT_OFF_MESSAGE,
@@ -187,19 +186,6 @@ def test_a_reply_cut_off_at_the_output_limit_sets_the_cut_off_error(
     assert row["error"] == CUT_OFF_MESSAGE
 
 
-class FakeJev:
-    def __init__(self, wanted: set[str]) -> None:
-        self.wanted = wanted
-        self.calls = 0
-
-    def noul_many(
-        self, state: Any, instructions: dict[str, str], on_tokens: Any = None
-    ) -> dict[str, float]:
-        self.calls += 1
-        on_tokens(100)
-        return {name: 1.0 if name in self.wanted else 0.0 for name in instructions}
-
-
 class RecordingModel(ScriptedModel):
     binds: list[list[str]] = []
 
@@ -208,35 +194,15 @@ class RecordingModel(ScriptedModel):
         return super().bind_tools(tools, **kwargs)
 
 
-def selecting_worker(url: str, connections: OAuthConnections, selection: str, jev: Any) -> Worker:
+def test_every_tool_is_offered_to_the_model(
+    url: str, connections: OAuthConnections, text: WorkbenchText
+) -> None:
+    task, _, _ = delete_task()
     model = RecordingModel(messages=iter([AIMessage(content="Nothing to do.")]))
     model.binds = []
-    return Worker(url, connections, model, allow_everything, MODEL, selection, cast(Jev, jev))
-
-
-def test_the_server_arm_offers_only_the_servers_jev_picked_and_bills_jev(
-    url: str, connections: OAuthConnections, text: WorkbenchText
-) -> None:
-    task, _, _ = delete_task()
-    jev = FakeJev({"calendar"})
-    worker = selecting_worker(url, connections, "server", jev)
-    row = run(worker, task, text)
-    [offered] = cast(RecordingModel, worker.model).binds
-    assert offered and all(name.startswith("calendar__") for name in offered)
-    assert jev.calls == 1
-    assert row["jev_input_tokens"] == 100
-    assert row["selection_usd"] == pytest.approx(row["jev_input_tokens"] * 0.042 / 1_000_000)
-
-
-def test_the_all_arm_offers_every_tool_and_asks_nothing(
-    url: str, connections: OAuthConnections, text: WorkbenchText
-) -> None:
-    task, _, _ = delete_task()
-    worker = selecting_worker(url, connections, "all", None)
-    row = run(worker, task, text)
-    [offered] = cast(RecordingModel, worker.model).binds
+    run(worker_for(url, connections, model, allow_everything), task, text)
+    [offered] = model.binds
     assert len(offered) == 27
-    assert row["selection_usd"] == 0
 
 
 def test_a_limited_run_takes_tasks_round_robin_over_the_domains() -> None:

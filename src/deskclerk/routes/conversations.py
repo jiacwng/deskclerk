@@ -24,18 +24,22 @@ from deskclerk.agent import (
     AlwaysAllowRefused,
     CallEnded,
     CallStarted,
+    ConversationThread,
     ConversationWaiting,
     Decision,
     Edit,
     ExecutedCall,
+    Limits,
     McpServerFailed,
     NothingToConfirm,
     RunEvent,
+    ToolAccess,
     WrongDecisions,
     no_tool_span,
     run_agent,
     waiting_calls,
 )
+from deskclerk.audit import FinishedTurn
 from deskclerk.auth import Identity
 from deskclerk.connections import UPSTREAM_ERRORS, first_leaf
 from deskclerk.conversations import (
@@ -417,15 +421,17 @@ def router(services: Services) -> APIRouter:
         ) -> NoReturn:
             await run_in_threadpool(
                 audit.asked,
-                identity,
-                conversation_id,
-                text,
-                started,
-                outcome,
-                None,
-                0.0,
-                entry=entry,
-                edit_of=edit_of,
+                FinishedTurn(
+                    identity,
+                    conversation_id,
+                    text,
+                    started,
+                    outcome,
+                    None,
+                    0.0,
+                    entry=entry,
+                    edit_of=edit_of,
+                ),
             )
             metrics.ask_finished(outcome, started, 0.0, (), None)
             raise HTTPException(status, detail, headers)
@@ -470,27 +476,27 @@ def router(services: Services) -> APIRouter:
                         identity.user_id,
                         text,
                         system_prompt(datetime.now(UTC).date()),
-                        [s for s in catalog.offered if s.open_to(identity.groups)],
-                        connections,
-                        tokens,
-                        checkpointer,
-                        thread,
-                        history,
+                        ToolAccess(
+                            [s for s in catalog.offered if s.open_to(identity.groups)],
+                            connections,
+                            tokens,
+                        ),
+                        ConversationThread(checkpointer, thread, history, fork_from),
                         services.model,
                         services.gate,
                         jev_screen(services.jev, spending.record_jev),
-                        settings.step_limit,
+                        Limits(
+                            settings.step_limit,
+                            settings.tool_output_chars,
+                            settings.history_tokens,
+                            settings.listing_seconds,
+                        ),
                         spending.record,
                         metrics.timed(no_tool_span),
-                        tool_output_chars=settings.tool_output_chars,
-                        history_tokens=settings.history_tokens,
-                        listing_seconds=settings.listing_seconds,
-                        confirm_writes=True,
                         decisions=decisions,
                         executed=executed,
                         emit=lambda event: emit(_stream_event(event)),
                         running=running,
-                        fork_from=fork_from,
                     )
             except ConversationWaiting:
                 await refuse(
@@ -511,17 +517,19 @@ def router(services: Services) -> APIRouter:
                 metrics.ask_finished("cancelled", started, cost, executed, None)
                 await run_in_threadpool(
                     audit.asked,
-                    identity,
-                    conversation,
-                    text,
-                    started,
-                    "cancelled",
-                    None,
-                    cost,
-                    "the client stopped the request",
-                    entry,
-                    executed,
-                    edit_of,
+                    FinishedTurn(
+                        identity,
+                        conversation,
+                        text,
+                        started,
+                        "cancelled",
+                        None,
+                        cost,
+                        "the client stopped the request",
+                        entry,
+                        executed,
+                        edit_of,
+                    ),
                 )
                 await record_turn(database, identity.user_id, conversation, text, edit_of == 0)
                 raise
@@ -533,17 +541,19 @@ def router(services: Services) -> APIRouter:
                 )
                 await run_in_threadpool(
                     audit.asked,
-                    identity,
-                    conversation,
-                    text,
-                    started,
-                    "timed_out",
-                    None,
-                    cost,
-                    detail,
-                    entry,
-                    executed,
-                    edit_of,
+                    FinishedTurn(
+                        identity,
+                        conversation,
+                        text,
+                        started,
+                        "timed_out",
+                        None,
+                        cost,
+                        detail,
+                        entry,
+                        executed,
+                        edit_of,
+                    ),
                 )
                 metrics.ask_finished("timed_out", started, cost, executed, None)
                 raise FailedTurn(504, detail, executed) from None
@@ -574,16 +584,18 @@ def router(services: Services) -> APIRouter:
         outcome = "awaiting_confirmation" if result.pending else "answered"
         await run_in_threadpool(
             audit.asked,
-            identity,
-            conversation,
-            text,
-            started,
-            outcome,
-            result,
-            cost,
-            entry=entry,
-            executed=result.executed,
-            edit_of=edit_of,
+            FinishedTurn(
+                identity,
+                conversation,
+                text,
+                started,
+                outcome,
+                result,
+                cost,
+                entry=entry,
+                executed=result.executed,
+                edit_of=edit_of,
+            ),
         )
         metrics.ask_finished(outcome, started, cost, result.executed, result)
         for call in result.pending:
@@ -617,17 +629,19 @@ def router(services: Services) -> APIRouter:
         detail = _upstream_detail(error)
         await run_in_threadpool(
             audit.asked,
-            identity,
-            conversation,
-            request,
-            started,
-            "upstream_error",
-            None,
-            cost,
-            detail,
-            entry,
-            executed,
-            edit_of,
+            FinishedTurn(
+                identity,
+                conversation,
+                request,
+                started,
+                "upstream_error",
+                None,
+                cost,
+                detail,
+                entry,
+                executed,
+                edit_of,
+            ),
         )
         metrics.ask_finished("upstream_error", started, cost, executed, None)
         return FailedTurn(502, detail, executed)

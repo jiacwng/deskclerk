@@ -41,7 +41,8 @@ from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wai
 from tokenizers import Tokenizer
 from transformers import AutoConfig
 
-from deskclerk.jev import Jev, JevError, jev_from_environment
+from budgeted_jev import budgeted_jev_from_environment
+from deskclerk.jev import Jev, JevError
 from deskclerk.screen import NOTICE, THRESHOLD, is_flagged, probability
 from dojo_summary import model_cost_usd, percent, summarize
 
@@ -243,7 +244,7 @@ def build_arm(defense: str, jev_budget_usd: float) -> Arm:
     elif defense == "deberta":
         pipeline = pipeline_with_detector(llm, system_message, DebertaOnnxDetector())
     elif defense in ("jev", "jev-flag"):
-        jev = jev_from_environment(jev_budget_usd)
+        jev = budgeted_jev_from_environment(jev_budget_usd)
         if jev is None:
             raise SystemExit("TYPESAFE_API_KEY is not set")
         jev_detector = (JevFlagDetector if defense == "jev-flag" else JevDetector)(jev)

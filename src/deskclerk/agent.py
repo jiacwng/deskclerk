@@ -554,35 +554,53 @@ async def offer_tools(
     return Offer(tools, always, not_connected, unavailable_names, changed_tools)
 
 
+@dataclass(frozen=True)
+class ToolAccess:
+    servers: list[McpServer]
+    connections: OAuthConnections
+    tokens: TokenStore
+
+
+@dataclass(frozen=True)
+class Limits:
+    step_limit: int
+    tool_output_chars: int = DEFAULT_TOOL_OUTPUT_CHARS
+    history_tokens: int = DEFAULT_HISTORY_TOKENS
+    listing_seconds: float = DEFAULT_LISTING_SECONDS
+
+
+@dataclass(frozen=True)
+class ConversationThread:
+    checkpointer: BaseCheckpointSaver[Any]
+    thread: str
+    history: list[BaseMessage]
+    fork_from: str | None = None
+
+
 async def run_agent(
     user_id: str,
     request: str,
     system: str,
-    servers: list[McpServer],
-    connections: OAuthConnections,
-    tokens: TokenStore,
-    checkpointer: BaseCheckpointSaver[Any],
-    thread: str,
-    history: list[BaseMessage],
+    access: ToolAccess,
+    conversation: ConversationThread,
     model: BaseChatModel,
     gate: Gate,
     screen: Screen,
-    step_limit: int,
+    limits: Limits,
     record_usage: Callable[[Usage], None],
     tool_span: ToolSpan = no_tool_span,
-    selection: AgentMiddleware[Any, Any, Any] | None = None,
-    tool_output_chars: int = DEFAULT_TOOL_OUTPUT_CHARS,
-    history_tokens: int = DEFAULT_HISTORY_TOKENS,
-    listing_seconds: float = DEFAULT_LISTING_SECONDS,
     *,
-    confirm_writes: bool,
     decisions: dict[str, Decision] | None = None,
     executed: list[ExecutedCall] | None = None,
     emit: Emit = ignore_events,
     running: Callable[[], None] = lambda: None,
-    fork_from: str | None = None,
 ) -> AgentResult:
-    offer = await offer_tools(user_id, servers, connections, tokens, listing_seconds)
+    tokens = access.tokens
+    thread = conversation.thread
+    history = conversation.history
+    offer = await offer_tools(
+        user_id, access.servers, access.connections, tokens, limits.listing_seconds
+    )
     tools, always = offer.tools, offer.always
     not_connected, unavailable_names, changed_tools = (
         offer.not_connected,
@@ -598,8 +616,8 @@ async def run_agent(
         screen,
         tool_span,
         record_usage,
-        tool_output_chars,
-        history_tokens,
+        limits.tool_output_chars,
+        limits.history_tokens,
         emit=emit,
         executed=[] if executed is None else executed,
     )
@@ -608,27 +626,29 @@ async def run_agent(
         name for name, tool in tools.items() if tool.info.read_only
     ]
     middleware: list[AgentMiddleware[Any, Any, Any]] = [
-        ModelCallLimitMiddleware(run_limit=step_limit),
-        *([] if selection is None else [selection]),
+        ModelCallLimitMiddleware(run_limit=limits.step_limit),
         _Guard(shared),
-        *([confirmation] if confirm_writes else []),
+        confirmation,
         _Run(shared),
         ToolRetryMiddleware(tools=read_only_names, retry_on=_is_upstream_error, on_failure="error"),
     ]
     agent = create_agent(
         model,
-        [_langchain_tool(name, tool, user_id, connections) for name, tool in tools.items()],
+        [_langchain_tool(name, tool, user_id, access.connections) for name, tool in tools.items()],
         system_prompt=system
         + not_connected_note(tuple(not_connected))
         + unavailable_note(unavailable_names),
         middleware=middleware,
-        checkpointer=checkpointer,
+        checkpointer=conversation.checkpointer,
     )
     config: RunnableConfig = {"configurable": {"thread_id": thread}}
     saved = await agent.aget_state(config)
     waiting = {interrupt.id: interrupt for interrupt in saved.interrupts}
-    if fork_from is not None:
-        config = {**config, "configurable": {"thread_id": thread, "checkpoint_id": fork_from}}
+    if conversation.fork_from is not None:
+        config = {
+            **config,
+            "configurable": {"thread_id": thread, "checkpoint_id": conversation.fork_from},
+        }
         saved = await agent.aget_state(config)
     if decisions is None:
         if waiting:

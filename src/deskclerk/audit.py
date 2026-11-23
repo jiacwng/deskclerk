@@ -14,6 +14,7 @@ import logging
 import sys
 import time
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -31,34 +32,37 @@ def hmac_hex(key: SecretStr, text: str) -> str:
     return hmac.new(key.get_secret_value().encode(), text.encode(), hashlib.sha256).hexdigest()
 
 
+@dataclass(frozen=True)
+class FinishedTurn:
+    identity: Identity
+    conversation: UUID | None
+    request: str
+    started: float
+    outcome: str
+    result: AgentResult | None
+    cost_usd: float
+    cause: str | None = None
+    entry: str = "ask"
+    executed: Sequence[ExecutedCall] = ()
+    edit_of: int | None = None
+
+
 class Audit:
     def __init__(self, include_text: bool, key: SecretStr | None, store: AuditStore) -> None:
         self.include_text = include_text
         self.key = key
         self.store = store
 
-    def asked(
-        self,
-        identity: Identity,
-        conversation: UUID | None,
-        request: str,
-        started: float,
-        outcome: str,
-        result: AgentResult | None,
-        cost_usd: float,
-        cause: str | None = None,
-        entry: str = "ask",
-        executed: Sequence[ExecutedCall] = (),
-        edit_of: int | None = None,
-    ) -> None:
-        line = self._line(identity, entry)
+    def asked(self, turn: FinishedTurn) -> None:
+        result = turn.result
+        line = self._line(turn.identity, turn.entry)
         line.update(
             {
-                "conversation": None if conversation is None else str(conversation),
-                "outcome": outcome,
-                "text_chars": len(request),
-                "text_hmac": self._hmac(request),
-                "executed": [self._executed(c) for c in executed],
+                "conversation": None if turn.conversation is None else str(turn.conversation),
+                "outcome": turn.outcome,
+                "text_chars": len(turn.request),
+                "text_hmac": self._hmac(turn.request),
+                "executed": [self._executed(c) for c in turn.executed],
                 "blocked": [] if result is None else [self._blocked(c) for c in result.blocked],
                 "pending": [] if result is None else [self._pending(c) for c in result.pending],
                 "decided": [] if result is None else [self._decided(c) for c in result.decided],
@@ -70,16 +74,16 @@ class Audit:
                 "changed_tools": [] if result is None else list(result.changed_tools),
                 "input_tokens": 0 if result is None else result.total_usage.input_tokens,
                 "output_tokens": 0 if result is None else result.total_usage.output_tokens,
-                "cost_usd": cost_usd,
-                "latency_ms": round((time.monotonic() - started) * 1000),
+                "cost_usd": turn.cost_usd,
+                "latency_ms": round((time.monotonic() - turn.started) * 1000),
             }
         )
-        if cause is not None:
-            line["cause"] = cause
-        if edit_of is not None:
-            line["edit_of"] = edit_of
+        if turn.cause is not None:
+            line["cause"] = turn.cause
+        if turn.edit_of is not None:
+            line["edit_of"] = turn.edit_of
         if self.include_text:
-            line["text"] = request
+            line["text"] = turn.request
         self._write(line)
 
     def connection(self, identity: Identity, action: str, server_name: str) -> None:

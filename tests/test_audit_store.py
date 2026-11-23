@@ -15,7 +15,7 @@ import pytest
 
 from conftest import CHAIN_KEY
 from deskclerk import __main__ as entry
-from deskclerk.audit import Audit
+from deskclerk.audit import Audit, FinishedTurn
 from deskclerk.auditstore import AuditFilter, AuditStore, chain_hash
 from deskclerk.auth import Identity, SigningKeyLookup
 from deskclerk.config import Settings
@@ -50,7 +50,7 @@ def test_every_audit_call_is_stored_as_the_line_it_printed(
     audit = Audit(False, None, store)
     who = Identity("ana", "deskclerk-api", "ana")
 
-    audit.asked(who, None, "hello", time.monotonic(), "answered", None, 0.0)
+    audit.asked(FinishedTurn(who, None, "hello", time.monotonic(), "answered", None, 0.0))
     audit.connection(who, "connect", "notes")
     audit.connection(who, "disconnect", "notes")
     audit.admin_action(who, "pause_server", "notes")

@@ -33,6 +33,15 @@ def test_the_budget_counts_cache_costs(database: Database) -> None:
         spending.check()
 
 
+def test_an_employee_who_has_spent_exactly_the_budget_is_stopped(database: Database) -> None:
+    spending_for(database).record(Usage(50_000, 0, 0, 0))
+    spent = spending_for(database).spent_usd()
+
+    with pytest.raises(BudgetExceeded):
+        spending_for(database, budget=spent).check()
+    spending_for(database, budget=spent * 1.01).check()
+
+
 def test_the_cost_is_the_model_plus_jev(database: Database) -> None:
     spending = spending_for(database)
 

@@ -6,16 +6,14 @@ from typing import Any
 
 import pytest
 from cryptography.fernet import Fernet
-from langgraph.checkpoint.memory import InMemorySaver
 
-from deskclerk.agent import ProposedCall, run_agent
+from deskclerk.agent import ProposedCall
 from deskclerk.connections import OAuthConnections, ToolInfo
-from deskclerk.conversations import open_checkpointer, saved_messages
+from deskclerk.conversations import open_checkpointer
 from deskclerk.database import Database
-from deskclerk.screen import pass_through
 from deskclerk.writecheck import write_check
 from mcp_server import running_mcp_server
-from test_agent import answer, calls, script
+from test_agent import answer, calls, run_approving, script
 from test_connections import REDIRECT, connect, server_record, serving_connections
 
 DELETE_SCHEMA = {
@@ -138,22 +136,8 @@ async def test_a_delete_of_an_unseen_id_never_reaches_the_server(
         server = server_record(running)
         await connect(connections, "ada", server)
         model = script(calls(("notes__delete_note", {"note_id": "n-7"})), answer("could not"))
-        result = await run_agent(
-            "ada",
-            "clean up my notes",
-            "system",
-            [server],
-            connections,
-            connections.tokens,
-            InMemorySaver(),
-            "ada/test",
-            [],
-            model,
-            write_check(),
-            pass_through,
-            5,
-            lambda usage: None,
-            confirm_writes=False,
+        result = await run_approving(
+            connections, [server], model, write_check(), request="clean up my notes"
         )
     assert running.deleted == []
     assert result.executed == ()
@@ -175,22 +159,8 @@ async def test_a_delete_may_name_an_id_the_employee_gave_in_an_earlier_turn(
                 script(calls(("notes__delete_note", {"note_id": "n-7"})), answer("deleted")),
             ),
         ):
-            result = await run_agent(
-                "ada",
-                request,
-                "system",
-                [server],
-                connections,
-                connections.tokens,
-                saver,
-                "ada/test",
-                await saved_messages(saver, "ada/test"),
-                model,
-                write_check(),
-                pass_through,
-                5,
-                lambda usage: None,
-                confirm_writes=False,
+            result = await run_approving(
+                connections, [server], model, write_check(), checkpointer=saver, request=request
             )
     assert running.deleted == ["n-7"]
     assert result.blocked == ()

@@ -966,6 +966,69 @@ def test_the_server_keeps_answering_while_an_audit_line_waits_for_the_chain_lock
     assert found is not None and found[0] == 1
 
 
+def ask_answers_once_the_lock_is_released(
+    site: Web, headers: dict[str, str], lock_sql: str, params: tuple[object, ...] = ()
+) -> None:
+    outcome: list[int] = []
+    asking = threading.Thread(target=lambda: outcome.append(ask(site, headers).status_code))
+    livez: list[int] = []
+    probe = threading.Thread(target=lambda: livez.append(site.client.get("/livez").status_code))
+    with psycopg.connect(DATABASE_URL) as holder:
+        try:
+            holder.execute(lock_sql, params)
+            asking.start()
+            time.sleep(0.5)
+            probe.start()
+            probe.join(timeout=1)
+            assert livez == [200]
+            assert asking.is_alive()
+        finally:
+            holder.rollback()
+    asking.join(timeout=10)
+    assert outcome == [200]
+
+
+def test_the_server_keeps_answering_while_the_audit_of_an_ask_waits_for_the_chain_lock(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    model = ScriptedModel(messages=itertools.repeat(answer("ok")))
+    ada = as_user(sign_token, "ada")
+    with web(make_settings(token_settings), [], model, token_signing_key, database) as site:
+        ask_answers_once_the_lock_is_released(
+            site, ada, "SELECT pg_advisory_xact_lock(%s)", (CHAIN_LOCK,)
+        )
+
+
+def test_the_server_keeps_answering_while_the_budget_check_waits_for_the_costs_table(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    model = ScriptedModel(messages=itertools.repeat(answer("ok")))
+    ada = as_user(sign_token, "ada")
+    with web(make_settings(token_settings), [], model, token_signing_key, database) as site:
+        ask_answers_once_the_lock_is_released(
+            site, ada, "LOCK TABLE costs IN ACCESS EXCLUSIVE MODE"
+        )
+
+
+def test_the_server_keeps_answering_while_the_cost_of_a_step_waits_for_the_costs_table(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    model = ScriptedModel(messages=itertools.repeat(answer("ok")))
+    ada = as_user(sign_token, "ada")
+    with web(make_settings(token_settings), [], model, token_signing_key, database) as site:
+        # SHARE mode blocks inserts but lets the budget check read, so only the cost record waits
+        ask_answers_once_the_lock_is_released(site, ada, "LOCK TABLE costs IN SHARE MODE")
+
+
 def test_a_cookie_post_needs_the_custom_header_and_a_bearer_post_does_not(
     sign_token: Sign,
     token_settings: Settings,

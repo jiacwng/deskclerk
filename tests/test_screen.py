@@ -95,7 +95,7 @@ def test_probability_returns_jevs_answer_and_raises_when_it_cannot_judge() -> No
 @pytest.mark.llm
 @pytest.mark.anyio
 async def test_the_real_jev_separates_an_injection_from_plain_data() -> None:
-    jev = jev_from_environment(budget_usd=0.05)
+    jev = jev_from_environment()
     if jev is None:
         pytest.skip("no TYPESAFE_API_KEY")
     screen = jev_screen(jev)

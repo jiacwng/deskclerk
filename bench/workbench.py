@@ -29,9 +29,6 @@ RESULT_COLUMNS = [
     "cache_write_tokens",
     "cost_usd",
     "blocked",
-    "selection_usd",
-    "selector_input_tokens",
-    "jev_input_tokens",
 ]
 
 

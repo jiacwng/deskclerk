@@ -18,6 +18,7 @@ from langchain_core.language_models import BaseChatModel
 from scipy.stats import bootstrap, mannwhitneyu
 from typesafe_sdk import TypeSafeClient
 
+from budgeted_jev import BudgetedJev
 from deskclerk.agent import ProposedCall
 from deskclerk.connections import ToolInfo
 from deskclerk.jev import PRICE_PER_INPUT_TOKEN, Jev, JevError, JevInputTooLong
@@ -348,7 +349,9 @@ def make_scorers(needed: set[str], jev_budget_usd: float) -> dict[str, Scorer]:
         if not os.environ.get("TYPESAFE_API_KEY", "").strip():
             raise SystemExit("scoring with Jev needs TYPESAFE_API_KEY in the environment")
         client = TypeSafeClient()
-        scorers["jev"] = lambda record: score_with_jev(lambda: Jev(client, jev_budget_usd), record)
+        scorers["jev"] = lambda record: score_with_jev(
+            lambda: BudgetedJev(client, jev_budget_usd), record
+        )
     if "haiku" in needed:
         model = init_chat_model(
             "claude-haiku-5-5", model_provider="anthropic", max_tokens=1024, effort="low"
