@@ -9,11 +9,11 @@ from importlib import resources
 
 import pytest
 
-from deskclerk.api import _content_security_policy
 from deskclerk.auth import SigningKeyLookup
 from deskclerk.config import Settings
 from deskclerk.database import Database
 from deskclerk.providers import Usage
+from deskclerk.routes.health import content_security_policy
 from deskclerk.servers import McpServer
 from deskclerk.spending import SpendingStore, month_of
 from test_agent import answer, script
@@ -191,7 +191,7 @@ def test_the_admin_page_has_its_own_hash_policy_and_no_inline_handlers(
     settings = make_settings(token_settings, admin_group=GROUP)
     with web(settings, [], script(answer("ok")), token_signing_key, database) as site:
         page = site.client.get("/admin", headers=bearer(sign_token, "root", [GROUP]))
-    assert page.headers["content-security-policy"] == _content_security_policy(page.text, {})
+    assert page.headers["content-security-policy"] == content_security_policy(page.text, {})
     assert re.search(r"\s(on[a-z]+|style)\s*=", page.text) is None
     assert "default-src 'none'" in page.headers["content-security-policy"]
 

@@ -7,11 +7,11 @@ import time
 
 import pytest
 
-from deskclerk.api import CSRF_HEADER, CSRF_VALUE, SESSION_COOKIE
 from deskclerk.auth import Identity, SigningKeyLookup
 from deskclerk.config import Settings
 from deskclerk.conversations import TITLE_CHARS, title_of
 from deskclerk.database import Database
+from deskclerk.routes.services import CSRF_HEADER, CSRF_VALUE, SESSION_COOKIE
 from test_agent import HeldModel, ScriptedModel, answer
 from test_api import Sign, as_user, ask, ask_in, make_settings, web
 from test_erase import KEY, erase, rows

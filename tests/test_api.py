@@ -37,16 +37,7 @@ from pydantic import SecretStr
 
 from conftest import CHAIN_KEY, DATABASE_URL
 from deskclerk import cookies, sessions
-from deskclerk.api import (
-    CSRF_HEADER,
-    CSRF_VALUE,
-    LOGIN_COOKIE,
-    SESSION_COOKIE,
-    VENDOR_SCRIPTS,
-    MissingSessionKey,
-    _content_security_policy,
-    create_app,
-)
+from deskclerk.api import MissingSessionKey, create_app
 from deskclerk.auditstore import CHAIN_LOCK
 from deskclerk.auth import Identity, SigningKeyLookup, discover_jwks_url, jwks_signing_key
 from deskclerk.bodylimit import MAX_BODY_BYTES
@@ -55,6 +46,9 @@ from deskclerk.connections import OAuthConnections
 from deskclerk.database import Database
 from deskclerk.instructions import system_prompt
 from deskclerk.jev import PRICE_PER_INPUT_TOKEN, Jev
+from deskclerk.routes.health import VENDOR_SCRIPTS, content_security_policy
+from deskclerk.routes.services import CSRF_HEADER, CSRF_VALUE, SESSION_COOKIE
+from deskclerk.routes.signin import LOGIN_COOKIE
 from deskclerk.screen import NOTICE
 from deskclerk.servers import McpServer, ServerEntry
 from deskclerk.serverstore import ServerCatalog, ServerStore
@@ -1180,7 +1174,7 @@ def test_the_vendored_scripts_are_served_as_javascript_and_nothing_else_is(
 def test_the_policy_refuses_a_page_whose_vendored_script_does_not_match_its_file() -> None:
     page = "<style></style><script></script>"
     with pytest.raises(ValueError, match="vendor/marked.js"):
-        _content_security_policy(page, {"marked.js": b"code"})
+        content_security_policy(page, {"marked.js": b"code"})
 
 
 def test_the_page_shows_the_calls_that_ran_before_a_failure(
@@ -2519,7 +2513,7 @@ def test_a_token_exchange_the_login_server_refuses_logs_its_reason_and_redirects
     database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.WARNING, logger="deskclerk.api")
+    caplog.set_level(logging.WARNING, logger="deskclerk.routes")
     settings = make_settings(token_settings)
     idp = FakeIdp(settings.issuer)
 
@@ -2549,7 +2543,7 @@ def test_a_refused_id_token_logs_the_check_that_failed(
     database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.WARNING, logger="deskclerk.api")
+    caplog.set_level(logging.WARNING, logger="deskclerk.routes")
     settings = make_settings(token_settings)
     idp = FakeIdp(settings.issuer)
     with web(settings, [], script(), token_signing_key, database, idp.transport) as site:
@@ -2565,7 +2559,7 @@ def test_an_error_from_the_login_server_on_the_callback_is_logged_and_redirects(
     database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.WARNING, logger="deskclerk.api")
+    caplog.set_level(logging.WARNING, logger="deskclerk.routes")
     settings = make_settings(token_settings)
     with web(settings, [], script(), token_signing_key, database) as site:
         refused = site.client.get(
@@ -2583,7 +2577,7 @@ def test_starting_a_sign_in_when_the_login_server_is_down_redirects_and_logs_why
     database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.WARNING, logger="deskclerk.api")
+    caplog.set_level(logging.WARNING, logger="deskclerk.routes")
     settings = make_settings(token_settings)
 
     def down(request: httpx.Request) -> httpx.Response:
@@ -2605,7 +2599,7 @@ def test_a_failed_connect_logs_why(
     database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.WARNING, logger="deskclerk.api")
+    caplog.set_level(logging.WARNING, logger="deskclerk.routes")
     settings = make_settings(token_settings)
     ada, grace = as_user(sign_token, "ada"), as_user(sign_token, "grace")
     with web(settings, [notes(notes_server)], script(), token_signing_key, database) as site:
