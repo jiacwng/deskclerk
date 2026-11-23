@@ -24,6 +24,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import httpx2
 import openai
+import psycopg
 import pytest
 from botocore.exceptions import ClientError
 from cryptography.fernet import Fernet
@@ -34,7 +35,7 @@ from langchain_core.messages.ai import UsageMetadata
 from prometheus_client import CollectorRegistry
 from pydantic import SecretStr
 
-from conftest import CHAIN_KEY
+from conftest import CHAIN_KEY, DATABASE_URL
 from deskclerk import cookies, sessions
 from deskclerk.api import (
     CSRF_HEADER,
@@ -46,6 +47,7 @@ from deskclerk.api import (
     _content_security_policy,
     create_app,
 )
+from deskclerk.auditstore import CHAIN_LOCK
 from deskclerk.auth import Identity, SigningKeyLookup, discover_jwks_url, jwks_signing_key
 from deskclerk.bodylimit import MAX_BODY_BYTES
 from deskclerk.config import Settings
@@ -932,6 +934,42 @@ def test_a_refused_ask_is_audited_with_its_outcome(
         ask(site, ada)
         ask(site, ada)
     assert [line["outcome"] for line in audit_lines(caplog)] == ["answered", "rate_limited"]
+
+
+def test_the_server_keeps_answering_while_an_audit_line_waits_for_the_chain_lock(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings)
+    ada = as_user(sign_token, "ada")
+    with web(settings, [notes(notes_server)], script(), token_signing_key, database) as site:
+        outcome: list[int] = []
+        disconnecting = threading.Thread(
+            target=lambda: outcome.append(
+                site.client.post("/servers/notes/disconnect", headers=ada).status_code
+            )
+        )
+        livez: list[int] = []
+        probe = threading.Thread(target=lambda: livez.append(site.client.get("/livez").status_code))
+        with psycopg.connect(DATABASE_URL) as holder:
+            try:
+                holder.execute("SELECT pg_advisory_xact_lock(%s)", (CHAIN_LOCK,))
+                disconnecting.start()
+                time.sleep(0.5)
+                probe.start()
+                probe.join(timeout=1)
+                assert livez == [200]
+                assert disconnecting.is_alive()
+            finally:
+                holder.rollback()
+        disconnecting.join(timeout=10)
+    assert outcome == [204]
+    with psycopg.connect(DATABASE_URL) as check:
+        found = check.execute("SELECT count(*) FROM audit_log").fetchone()
+    assert found is not None and found[0] == 1
 
 
 def test_a_cookie_post_needs_the_custom_header_and_a_bearer_post_does_not(

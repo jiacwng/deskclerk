@@ -351,7 +351,7 @@ class _Guard(AgentMiddleware[AgentState[Any], None, Any]):
             raise TypeError(f"the model returned a {type(message).__name__}")
         step_usage = usage_from(message)
         shared.usage.append(step_usage)
-        shared.record_usage(step_usage)
+        await asyncio.to_thread(shared.record_usage, step_usage)
         shared.last_response = message
         return response
 

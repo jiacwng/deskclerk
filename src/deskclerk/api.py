@@ -643,7 +643,7 @@ def create_app(
             except NoSuchServer as error:
                 raise HTTPException(404, str(error)) from None
             await catalog.refresh()
-            audit.admin_action(who.identity, action, target)
+            await run_in_threadpool(audit.admin_action, who.identity, action, target)
             return Response(status_code=204)
 
         @app.get("/admin/servers/{name}")
@@ -705,7 +705,9 @@ def create_app(
                 await connections.cancel_all_for(body.user_id)
                 revoked = await run_in_threadpool(tokens.delete_user_tokens, body.user_id)
                 ended = await run_in_threadpool(sessions.delete_user, body.user_id)
-            audit.admin_action(who.identity, "revoke_employee", body.user_id)
+            await run_in_threadpool(
+                audit.admin_action, who.identity, "revoke_employee", body.user_id
+            )
             return RevokeOut(tokens=revoked, sessions=ended)
 
     @app.get("/vendor/{name}")
@@ -931,7 +933,7 @@ def create_app(
         except UPSTREAM_ERRORS as failure:
             _log.warning("connect failed to complete: %s", _upstream_reason(failure))
             return _link_failure("connect_failed")
-        audit.connection(who.identity, "connect", server_name)
+        await run_in_threadpool(audit.connection, who.identity, "connect", server_name)
         return RedirectResponse("/", status_code=303)
 
     @app.post("/servers/{name}/disconnect", status_code=204)
@@ -939,7 +941,7 @@ def create_app(
         server = known_server(name, who.identity)
         await connections.cancel_for(who.identity.user_id, server.name)
         await run_in_threadpool(tokens.delete_connection, who.identity.user_id, server.name)
-        audit.connection(who.identity, "disconnect", server.name)
+        await run_in_threadpool(audit.connection, who.identity, "disconnect", server.name)
         return Response(status_code=204)
 
     @app.delete("/servers/{name}/always/{tool}", status_code=204)
@@ -1104,10 +1106,11 @@ def create_app(
         entry = "ask" if decisions is None else "confirm"
         started = time.monotonic()
 
-        def refuse(
+        async def refuse(
             status: int, detail: str, outcome: str, headers: dict[str, str] | None = None
         ) -> NoReturn:
-            audit.asked(
+            await run_in_threadpool(
+                audit.asked,
                 identity,
                 conversation_id,
                 text,
@@ -1122,7 +1125,7 @@ def create_app(
             raise HTTPException(status, detail, headers)
 
         if not await quota.allows(identity.user_id):
-            refuse(
+            await refuse(
                 429,
                 f"at most {settings.requests_per_minute} asks a minute",
                 "rate_limited",
@@ -1133,15 +1136,15 @@ def create_app(
         async with database.user_lock(identity.user_id):
             history = await saved_messages(checkpointer, thread)
             if (conversation_id is not None or edit_of is not None) and not history:
-                refuse(404, "no such conversation", "unknown_conversation")
+                await refuse(404, "no such conversation", "unknown_conversation")
             fork_from = None
             if edit_of is not None:
                 if edit_of >= len(past_turns(history)):
-                    refuse(422, "no such request to edit", "wrong_edit")
+                    await refuse(422, "no such request to edit", "wrong_edit")
                 try:
                     fork = await fork_before_request(checkpointer, thread, edit_of)
                 except NoCheckpointBefore:
-                    refuse(422, "that request can no longer be edited", "wrong_edit")
+                    await refuse(422, "that request can no longer be edited", "wrong_edit")
                 fork_from, history = fork.checkpoint_id, fork.messages
             if decisions is not None:
                 text = last_request(history)
@@ -1150,10 +1153,10 @@ def create_app(
                 settings.price_model, settings.budget_usd, spending_store, identity.user_id, month
             )
             try:
-                spending.check()
+                await run_in_threadpool(spending.check)
             except BudgetExceeded as error:
-                refuse(402, str(error), "over_budget")
-            spent_before = spending.cost_usd
+                await refuse(402, str(error), "over_budget")
+            spent_before = await run_in_threadpool(spending.spent_usd)
             executed: list[ExecutedCall] = []
             try:
                 async with asyncio.timeout(settings.ask_seconds):
@@ -1184,29 +1187,31 @@ def create_app(
                         fork_from=fork_from,
                     )
             except ConversationWaiting:
-                refuse(409, "this conversation waits for a confirmation", "conversation_waiting")
+                await refuse(
+                    409, "this conversation waits for a confirmation", "conversation_waiting"
+                )
             except NothingToConfirm:
-                refuse(409, "this conversation has nothing to confirm", "nothing_pending")
+                await refuse(409, "this conversation has nothing to confirm", "nothing_pending")
             except WrongDecisions:
-                refuse(422, "decide every pending call exactly once", "wrong_decisions")
+                await refuse(422, "decide every pending call exactly once", "wrong_decisions")
             except AlwaysAllowRefused:
-                refuse(
+                await refuse(
                     422,
                     "only a call that does not delete or overwrite can be always allowed",
                     "wrong_decisions",
                 )
             except asyncio.CancelledError:
-                metrics.ask_finished(
-                    "cancelled", started, spending.cost_usd - spent_before, executed, None
-                )
-                audit.asked(
+                cost = await run_in_threadpool(spending.spent_usd) - spent_before
+                metrics.ask_finished("cancelled", started, cost, executed, None)
+                await run_in_threadpool(
+                    audit.asked,
                     identity,
                     conversation,
                     text,
                     started,
                     "cancelled",
                     None,
-                    spending.cost_usd - spent_before,
+                    cost,
                     "the client stopped the request",
                     entry,
                     executed,
@@ -1215,12 +1220,13 @@ def create_app(
                 await record_turn(database, identity.user_id, conversation, text, edit_of == 0)
                 raise
             except TimeoutError:
-                cost = spending.cost_usd - spent_before
+                cost = await run_in_threadpool(spending.spent_usd) - spent_before
                 detail = (
                     f"the ask took longer than {settings.ask_seconds} seconds "
                     "(set DESKCLERK_ASK_SECONDS to change it)"
                 )
-                audit.asked(
+                await run_in_threadpool(
+                    audit.asked,
                     identity,
                     conversation,
                     text,
@@ -1236,16 +1242,16 @@ def create_app(
                 metrics.ask_finished("timed_out", started, cost, executed, None)
                 raise FailedTurn(504, detail, executed) from None
             except ask_failures as error:
-                cost = spending.cost_usd - spent_before
-                raise upstream_failure(
+                cost = await run_in_threadpool(spending.spent_usd) - spent_before
+                raise await upstream_failure(
                     identity, conversation, text, started, cost, error, entry, executed, edit_of
                 ) from None
             except BaseExceptionGroup as group:
                 failed = group.subgroup(ask_failures)
                 if failed is None:
                     raise
-                cost = spending.cost_usd - spent_before
-                raise upstream_failure(
+                cost = await run_in_threadpool(spending.spent_usd) - spent_before
+                raise await upstream_failure(
                     identity,
                     conversation,
                     text,
@@ -1258,9 +1264,10 @@ def create_app(
                 ) from None
             await delete_dropped_turns(database, thread)
             await record_turn(database, identity.user_id, conversation, text, edit_of == 0)
-        cost = spending.cost_usd - spent_before
+        cost = await run_in_threadpool(spending.spent_usd) - spent_before
         outcome = "awaiting_confirmation" if result.pending else "answered"
-        audit.asked(
+        await run_in_threadpool(
+            audit.asked,
             identity,
             conversation,
             text,
@@ -1290,7 +1297,7 @@ def create_app(
             cost_usd=cost,
         )
 
-    def upstream_failure(
+    async def upstream_failure(
         identity: Identity,
         conversation: UUID | None,
         request: str,
@@ -1302,7 +1309,8 @@ def create_app(
         edit_of: int | None,
     ) -> FailedTurn:
         detail = _upstream_detail(error)
-        audit.asked(
+        await run_in_threadpool(
+            audit.asked,
             identity,
             conversation,
             request,
