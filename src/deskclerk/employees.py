@@ -1,6 +1,4 @@
-# The display name of each employee, kept in Postgres so the admin page can show a name beside an
-# id. Browser sign-in always records the name. A bearer caller is recorded the first time this
-# process sees that name for them, so most requests cost no query.
+# Each employee's display name, recorded at sign-in and shown on the admin page.
 
 from dataclasses import dataclass
 

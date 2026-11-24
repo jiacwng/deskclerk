@@ -34,7 +34,7 @@ CHECKPOINTER_CONNECTION: dict[str, Any] = {
 
 
 @dataclass
-class UserQueue:
+class _UserQueue:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     users: int = 0
 
@@ -60,7 +60,7 @@ def sqlalchemy_url(url: str) -> URL:
 class Database:
     def __init__(self, url: str) -> None:
         self.url = url
-        self._user_queues: dict[str, UserQueue] = {}
+        self._user_queues: dict[str, _UserQueue] = {}
         self.pool = ConnectionPool(url, min_size=1, max_size=SYNC_POOL_SIZE, open=False)
         self.pool.open(wait=True, timeout=CONNECT_TIMEOUT_SECONDS)
         self.migrate()
@@ -93,7 +93,7 @@ class Database:
 
     @asynccontextmanager
     async def user_lock(self, user_id: str) -> AsyncIterator[None]:
-        queue = self._user_queues.setdefault(user_id, UserQueue())
+        queue = self._user_queues.setdefault(user_id, _UserQueue())
         queue.users += 1
         try:
             async with queue.lock:

@@ -1,5 +1,4 @@
-# The employees table, one row per employee with the display name from their token and when they
-# last signed in or first appeared in this process, so the admin page can show a name beside an id.
+# The employees table: each employee's display name, for the admin page.
 
 from alembic import op
 
