@@ -99,8 +99,9 @@ button:hover { background: var(--sunk); }
 button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 button.danger { color: var(--bad); border-color: var(--bad); }
 .editor, .revoke { display: grid; gap: 0.5rem; margin-top: 0.75rem; }
-.editor textarea, .revoke input { font: 0.8125rem/1.4 var(--mono); color: var(--fg); background: var(--surface); border: 1px solid var(--edge); border-radius: 4px; padding: 0.5rem; width: 100%; }
+.editor textarea, .revoke select { font: 0.8125rem/1.4 var(--mono); color: var(--fg); background: var(--surface); border: 1px solid var(--edge); border-radius: 4px; padding: 0.5rem; width: 100%; }
 .editor textarea { min-height: 16rem; }
+.who .id { display: block; font: 0.75rem/1.3 var(--mono); color: var(--muted); }
 .row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 .filters { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: end; margin-bottom: 0.75rem; }
 .filters label.check { display: flex; align-items: center; gap: 0.4rem; min-height: 1.75rem; }
@@ -110,7 +111,7 @@ button.danger { color: var(--bad); border-color: var(--bad); }
 .tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 4px 4px 0 0; background: transparent; color: var(--muted); font-weight: 600; font-size: 0.875rem; padding: 0.5rem 0.875rem; white-space: nowrap; }
 .tabs button:hover { background: var(--sunk); color: var(--fg); }
 .tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
-.panel { display: grid; gap: 1.75rem; }
+.panel { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.75rem; }
 .badge { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.75rem; font-weight: 600; white-space: nowrap; color: var(--warn); }
 .badge::before { content: ""; width: 0.5rem; height: 0.5rem; background: currentColor; border-radius: 1px; flex: none; }
 .chain { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
@@ -167,9 +168,9 @@ pre { margin: 0.25rem 0 0; font: 0.75rem/1.4 var(--mono); white-space: pre-wrap;
   </section>
   <section aria-labelledby="revoke-title">
     <h2 id="revoke-title">Revoke an employee</h2>
-    <p class="muted small">Deletes the employee's stored sign-ins to every server and ends their browser sessions. They can sign in again. To block them, disable them in your login server.</p>
+    <p class="muted small">Deletes the employee's stored sign-ins, always-allow choices, tool pins and client registrations for every server, and ends their browser sessions. Their conversations stay. They can sign in again. To block them, disable them in your login server.</p>
     <form id="revoke" class="revoke">
-      <input id="revoke-user" type="text" placeholder="Employee id" aria-label="Employee id" required>
+      <select id="revoke-user" aria-label="Employee to revoke" required></select>
       <div class="row"><button type="submit" class="danger">Revoke</button></div>
     </form>
     <p id="revoked" class="note muted small" role="status"></p>
@@ -213,6 +214,22 @@ function cell(text, className) {
   const td = document.createElement("td");
   td.textContent = text;
   if (className) td.className = className;
+  return td;
+}
+
+function personCell(userId, name) {
+  const td = document.createElement("td");
+  td.className = "who";
+  td.title = userId;
+  const label = document.createElement("span");
+  label.textContent = name === null ? userId : name;
+  td.append(label);
+  if (name !== null && name !== userId) {
+    const id = document.createElement("span");
+    id.className = "id";
+    id.textContent = userId;
+    td.append(id);
+  }
   return td;
 }
 
@@ -337,13 +354,14 @@ el("editor").addEventListener("submit", async (event) => {
 });
 el("revoke").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const user = el("revoke-user").value.trim();
-  if (!window.confirm("Revoke " + user + "?")) return;
+  const picked = el("revoke-user").selectedOptions[0];
+  if (!picked || picked.value === "") return;
+  const user = picked.value;
+  if (!window.confirm("Revoke " + picked.textContent + "?")) return;
   const response = await write("POST", "/admin/employees/revoke", { user_id: user });
   if (!response) return;
   const done = await response.json();
-  el("revoked").textContent = "Revoked " + user + ": " + done.tokens + " sign-ins deleted, " + done.sessions + " sessions ended.";
-  el("revoke-user").value = "";
+  el("revoked").textContent = "Revoked " + picked.textContent + ": " + done.secrets + " stored secrets deleted, " + done.sessions + " sessions ended.";
   await load();
 });
 
@@ -397,7 +415,7 @@ async function loadAudit(older) {
   showError("");
   const page = await response.json();
   const rows = page.rows.map((r) => [
-    cell(new Date(r.time).toLocaleString()), cell(r.user), cell(r.entry),
+    cell(new Date(r.time).toLocaleString()), personCell(r.user, r.name), cell(r.entry),
     cell(r.servers.join(", ")), cell(r.tools.join(", ")), cell(r.decisions.join(", ")), flagCell(r.flagged),
     lineCell(r.line),
   ]);
@@ -481,6 +499,22 @@ showTab(tabFromHash(), false);
 const money = (value) => "$" + value.toFixed(4);
 const count = (value) => (value === null ? "n/a" : String(value));
 
+function fillPicker(employees) {
+  const picker = el("revoke-user");
+  const chosen = picker.value;
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = employees.length === 0 ? "No employees seen yet" : "Choose an employee";
+  const options = employees.map((e) => {
+    const option = document.createElement("option");
+    option.value = e.user_id;
+    option.textContent = e.display_name === e.user_id ? e.user_id : e.display_name + " (" + e.user_id + ")";
+    return option;
+  });
+  picker.replaceChildren(placeholder, ...options);
+  if (employees.some((e) => e.user_id === chosen)) picker.value = chosen;
+}
+
 async function load() {
   const response = await fetch("/admin/summary");
   if (response.status === 401) {
@@ -501,12 +535,13 @@ async function load() {
     cell(s.paused ? "paused" : "active"), actions(s),
   ]), 7);
   fill("usage", summary.usage.map((u) => [
-    cell(u.user_id), cell(String(u.calls), "num"),
+    personCell(u.user_id, u.name), cell(String(u.calls), "num"),
     cell(money(u.spent_usd), u.spent_usd >= u.budget_usd ? "num over" : "num"),
     cell(money(u.budget_usd), "num"),
   ]), 4);
+  fillPicker(summary.employees);
   fill("recent", summary.recent.map((r) => [
-    cell(r.user_id), cell(r.title === null ? "hidden (DESKCLERK_AUDIT_TEXT is off)" : r.title), cell(new Date(r.updated_at).toLocaleString()),
+    personCell(r.user_id, r.name), cell(r.title === null ? "hidden (DESKCLERK_AUDIT_TEXT is off)" : r.title), cell(new Date(r.updated_at).toLocaleString()),
   ]), 3);
 }
 

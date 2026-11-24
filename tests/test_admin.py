@@ -1,14 +1,19 @@
 # The admin page and its summary exist only when DESKCLERK_ADMIN_GROUP is set, open only to members
 # of that group, show servers, this month's usage and the latest conversations from stored data.
 # The main page learns from /me whether to show its Admin link. The routes that change servers and
-# revoke an employee are in test_admin_servers.py.
+# revoke an employee are in test_admin_servers.py. Employees are stored by display name when they
+# sign in or call with a token, the admin pages show the name, and revoking deletes every stored
+# secret of the employee.
 
+import json
 import re
 from datetime import UTC, datetime
 from importlib import resources
 
 import pytest
 
+from conftest import CHAIN_KEY
+from deskclerk.auditstore import AuditStore
 from deskclerk.auth import SigningKeyLookup
 from deskclerk.config import Settings
 from deskclerk.database import Database
@@ -16,8 +21,16 @@ from deskclerk.providers import Usage
 from deskclerk.routes.health import content_security_policy
 from deskclerk.servers import McpServer
 from deskclerk.spending import SpendingStore, month_of
+from deskclerk.tokens import Kind
 from test_agent import answer, script
-from test_api import Sign, make_settings, web
+from test_api import (
+    FakeIdp,
+    Sign,
+    begin_sign_in,
+    finish_sign_in,
+    make_settings,
+    web,
+)
 
 GROUP = "it-admins"
 
@@ -129,8 +142,8 @@ def test_a_member_sees_the_servers_usage_and_latest_conversations_that_are_store
         },
     ]
     assert body["usage"] == [
-        {"user_id": "bob", "calls": 1, "spent_usd": 1.0, "budget_usd": 3.0},
-        {"user_id": "ana", "calls": 2, "spent_usd": 0.75, "budget_usd": 3.0},
+        {"user_id": "bob", "name": None, "calls": 1, "spent_usd": 1.0, "budget_usd": 3.0},
+        {"user_id": "ana", "name": None, "calls": 2, "spent_usd": 0.75, "budget_usd": 3.0},
     ]
     assert [(row["user_id"], row["title"]) for row in body["recent"]] == [
         ("ana", "newer question"),
@@ -228,3 +241,122 @@ def test_each_audit_row_shows_whether_a_result_was_flagged() -> None:
     assert "<th>Decisions</th><th>Flagged</th><th>Line</th>" in page
     assert "flagCell(r.flagged)" in page
     assert 'fill("audit", rows, 8)' in page
+
+
+def named(sign_token: Sign, user_id: str, name: str) -> dict[str, str]:
+    claims: dict[str, object] = {"sub": user_id, "preferred_username": name, "groups": [GROUP]}
+    return {"Authorization": f"Bearer {sign_token(claims)}"}
+
+
+def stored_employees(database: Database) -> list[tuple[str, str]]:
+    with database.pool.connection() as connection:
+        found = connection.execute(
+            "SELECT user_id, display_name FROM employees ORDER BY user_id"
+        ).fetchall()
+    return [(str(user), str(name)) for user, name in found]
+
+
+def test_browser_sign_in_and_a_bearer_call_store_the_display_name(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings, admin_group=GROUP)
+    idp = FakeIdp(settings.issuer)
+    with web(settings, [], script(), token_signing_key, database, idp.transport) as site:
+        state, _, _ = begin_sign_in(site)
+        finish_sign_in(
+            site, idp, sign_token, state, {"sub": "u-1", "preferred_username": "Ada Lovelace"}
+        )
+        site.client.cookies.clear()
+        site.client.get("/me", headers=named(sign_token, "u-2", "Grace Hopper"))
+    assert stored_employees(database) == [("u-1", "Ada Lovelace"), ("u-2", "Grace Hopper")]
+
+
+def test_a_bearer_caller_is_written_once_and_again_only_when_the_name_changes(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    def last_seen() -> object:
+        with database.pool.connection() as connection:
+            row = connection.execute("SELECT last_seen FROM employees").fetchone()
+        return None if row is None else row[0]
+
+    settings = make_settings(token_settings, admin_group=GROUP)
+    with web(settings, [], script(), token_signing_key, database) as site:
+        site.client.get("/me", headers=named(sign_token, "u-1", "Ada"))
+        first = last_seen()
+        for _ in range(3):
+            site.client.get("/me", headers=named(sign_token, "u-1", "Ada"))
+        assert last_seen() == first
+        site.client.get("/me", headers=named(sign_token, "u-1", "Ada Lovelace"))
+        assert last_seen() != first
+    assert stored_employees(database) == [("u-1", "Ada Lovelace")]
+
+
+def test_the_summary_and_the_audit_search_give_each_known_employee_a_name(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings, admin_group=GROUP, audit_text=True)
+    month = month_of(datetime.now(UTC))
+    SpendingStore(database).add("u-1", month, "model", Usage(1, 1, 0, 0), 0.25)
+    SpendingStore(database).add("ghost", month, "model", Usage(1, 1, 0, 0), 0.1)
+    add_conversation(database, "u-2", "a question", 1)
+    chain = AuditStore(database, CHAIN_KEY)
+    for user in ("u-1", "ghost"):
+        fields = {"time": datetime.now(UTC).isoformat(), "user": user, "entry": "ask"}
+        chain.append(json.dumps(fields))
+    with web(settings, [], script(), token_signing_key, database) as site:
+        site.client.get("/me", headers=named(sign_token, "u-1", "Ada Lovelace"))
+        admin = named(sign_token, "u-2", "Grace Hopper")
+        summary = site.client.get("/admin/summary", headers=admin).json()
+        audit = site.client.get("/admin/audit", headers=admin).json()
+        download = site.client.get("/admin/audit/download", headers=admin)
+
+    assert {row["user_id"]: row["name"] for row in summary["usage"]} == {
+        "u-1": "Ada Lovelace",
+        "ghost": None,
+    }
+    assert [(row["user_id"], row["name"]) for row in summary["recent"]] == [("u-2", "Grace Hopper")]
+    assert summary["employees"] == [
+        {"user_id": "u-1", "display_name": "Ada Lovelace"},
+        {"user_id": "u-2", "display_name": "Grace Hopper"},
+    ]
+    assert {row["user"]: row["name"] for row in audit["rows"]} == {
+        "u-1": "Ada Lovelace",
+        "ghost": None,
+    }
+    assert all("name" not in row for row in map(json.loads, download.text.splitlines()))
+
+
+def test_revoking_an_employee_deletes_every_kind_of_stored_secret_and_keeps_conversations(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings, admin_group=GROUP)
+    kinds: tuple[Kind, ...] = ("tokens", "client", "tool_pins", "always_allowed", "tool_menu")
+    with web(settings, [], script(), token_signing_key, database) as site:
+        for kind in kinds:
+            site.tokens.put("ana", "notes", kind, "secret")
+            site.tokens.put("ana", "wiki", kind, "secret")
+            site.tokens.put("bob", "notes", kind, "secret")
+        add_conversation(database, "ana", "kept", 1)
+        revoked = site.client.post(
+            "/admin/employees/revoke",
+            json={"user_id": "ana"},
+            headers=bearer(sign_token, "root", [GROUP]),
+        )
+        with database.pool.connection() as connection:
+            left = connection.execute("SELECT DISTINCT user_id FROM secrets").fetchall()
+            conversations = connection.execute("SELECT COUNT(*) FROM conversations").fetchone()
+    assert revoked.json()["secrets"] == 10
+    assert left == [("bob",)]
+    assert conversations == (1,)

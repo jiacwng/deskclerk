@@ -104,6 +104,7 @@ def router(services: Services) -> APIRouter:
             return _sign_in_failed("sign_in_refused", f"the ID token was refused: {refused}")
         except AuthUnavailable as unreachable:
             return _sign_in_failed("login_unreachable", str(unreachable))
+        await run_in_threadpool(services.employees.record, identity)
         session = await run_in_threadpool(
             services.sessions.create, identity, services.session_seconds
         )

@@ -15,6 +15,7 @@ import pytest
 
 from conftest import CHAIN_KEY
 from deskclerk import __main__ as entry
+from deskclerk import auditstore
 from deskclerk.audit import Audit, FinishedTurn
 from deskclerk.auditstore import AuditFilter, AuditStore, chain_hash
 from deskclerk.auth import Identity, SigningKeyLookup
@@ -525,3 +526,20 @@ def test_a_non_admin_is_refused_the_chain_verification(
         outsider = bearer(sign_token, "bob", ["finance"])
         assert site.client.get("/admin/audit/verify", headers=outsider).status_code == 403
         assert site.client.get("/admin/audit/verify").status_code == 401
+
+
+def test_the_download_reads_every_row_in_order_across_batches_without_holding_a_connection(
+    database: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(auditstore, "DOWNLOAD_BATCH", 3)
+    store = AuditStore(database, CHAIN_KEY)
+    written = [line(user="ana", seq=n) for n in range(8)] + [line(user="bob", seq=9)]
+    for text in written:
+        store.append(text)
+    download = store.rows(AuditFilter(employee="ana"))
+    found = [next(download).line]
+    held = [database.pool.getconn(timeout=2) for _ in range(database.pool.max_size)]
+    for connection in held:
+        database.pool.putconn(connection)
+    found.extend(row.line for row in download)
+    assert found == written[:8]

@@ -565,6 +565,12 @@ def router(services: Services) -> APIRouter:
             except BaseExceptionGroup as group:
                 failed = group.subgroup(ask_failures)
                 if failed is None:
+                    if isinstance(group, Exception):
+                        cost = await run_in_threadpool(spending.spent_usd) - spent_before
+                        await unexpected_failure(
+                            identity, conversation, text, started, cost, group, entry, executed,
+                            edit_of,
+                        )  # fmt: skip
                     raise
                 cost = await run_in_threadpool(spending.spent_usd) - spent_before
                 raise await upstream_failure(
@@ -578,6 +584,12 @@ def router(services: Services) -> APIRouter:
                     executed,
                     edit_of,
                 ) from None
+            except Exception as error:
+                cost = await run_in_threadpool(spending.spent_usd) - spent_before
+                await unexpected_failure(
+                    identity, conversation, text, started, cost, error, entry, executed, edit_of
+                )
+                raise
             await delete_dropped_turns(database, thread)
             await record_turn(database, identity.user_id, conversation, text, edit_of == 0)
         cost = await run_in_threadpool(spending.spent_usd) - spent_before
@@ -614,6 +626,35 @@ def router(services: Services) -> APIRouter:
             changed_tools=list(result.changed_tools),
             cost_usd=cost,
         )
+
+    async def unexpected_failure(
+        identity: Identity,
+        conversation: UUID | None,
+        request: str,
+        started: float,
+        cost: float,
+        error: BaseException,
+        entry: str,
+        executed: list[ExecutedCall],
+        edit_of: int | None,
+    ) -> None:
+        await run_in_threadpool(
+            audit.asked,
+            FinishedTurn(
+                identity,
+                conversation,
+                request,
+                started,
+                "error",
+                None,
+                cost,
+                type(error).__name__,
+                entry,
+                executed,
+                edit_of,
+            ),
+        )
+        metrics.ask_finished("error", started, cost, executed, None)
 
     async def upstream_failure(
         identity: Identity,

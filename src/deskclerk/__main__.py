@@ -28,6 +28,7 @@ from deskclerk.auth import AuthUnavailable, discover_jwks_url, jwks_signing_key
 from deskclerk.config import Settings, load_settings
 from deskclerk.connections import OAuthConnections
 from deskclerk.database import Database
+from deskclerk.employees import EmployeeStore
 from deskclerk.erasure import erase_user
 from deskclerk.generated_keys import AUDIT_CHAIN_KEY_FILE, fill_missing_keys
 from deskclerk.jev import jev_from_environment
@@ -68,6 +69,7 @@ def erase(user_id: str) -> None:
         tokens,
         SessionStore(database),
         SpendingStore(database),
+        EmployeeStore(database),
         Audit(settings.audit_text, settings.audit_key, audit_store),
     )
     database.close()

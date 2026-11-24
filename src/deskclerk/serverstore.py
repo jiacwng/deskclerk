@@ -81,9 +81,14 @@ class ServerStore:
     def update(self, entry: ServerEntry) -> None:
         row = _row(entry)
         with self._pool.connection() as connection:
-            changed = connection.execute(UPDATE, [*row[1:], entry.name]).rowcount
-            if changed == 0:
+            old = connection.execute(
+                "SELECT url FROM servers WHERE name = %s FOR UPDATE", (entry.name,)
+            ).fetchone()
+            if old is None:
                 raise NoSuchServer(f"no server named {entry.name}")
+            connection.execute(UPDATE, [*row[1:], entry.name])
+            if old[0] != entry.url:
+                _delete_secrets(connection, [entry.name])
             _announce(connection)
 
     def set_paused(self, name: str, paused: bool) -> None:
@@ -100,14 +105,27 @@ class ServerStore:
             removed = connection.execute("DELETE FROM servers WHERE name = %s", (name,)).rowcount
             if removed == 0:
                 raise NoSuchServer(f"no server named {name}")
+            _delete_secrets(connection, [name])
             _announce(connection)
 
     def replace_all(self, entries: list[ServerEntry]) -> None:
+        new_urls = {entry.name: entry.url for entry in entries}
         with self._pool.connection() as connection:
+            old_urls: dict[str, str] = dict(
+                connection.execute("SELECT name, url FROM servers").fetchall()
+            )
+            stale = [name for name, url in old_urls.items() if new_urls.get(name) != url]
+            _delete_secrets(connection, stale)
             connection.execute("DELETE FROM servers")
             for entry in entries:
                 connection.execute(INSERT, _row(entry))
             _announce(connection)
+
+
+def _delete_secrets(
+    connection: psycopg.Connection[tuple[object, ...]], server_names: list[str]
+) -> None:
+    connection.execute("DELETE FROM secrets WHERE server_name = ANY(%s)", (server_names,))
 
 
 def _announce(connection: psycopg.Connection[tuple[object, ...]]) -> None:
@@ -134,9 +152,12 @@ class ServerCatalog:
     def reload(self) -> None:
         self.servers = tuple(resolve_servers(self.store.entries(), self._environ))
 
+    async def reload_now(self) -> None:
+        await asyncio.to_thread(self.reload)
+
     async def refresh(self) -> None:
         try:
-            await asyncio.to_thread(self.reload)
+            await self.reload_now()
         except ServersError as error:
             _log.error("the server list was not reloaded and the previous list stays: %s", error)
 

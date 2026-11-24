@@ -23,6 +23,7 @@ from deskclerk.config import Settings
 from deskclerk.connections import OAuthConnections
 from deskclerk.conversations import open_checkpointer
 from deskclerk.database import Database
+from deskclerk.employees import EmployeeStore
 from deskclerk.jev import Jev
 from deskclerk.metrics import Metrics
 from deskclerk.providers import Usage, cost_of
@@ -73,6 +74,7 @@ def create_app(
         catalog=catalog,
         connections=connections,
         tokens=tokens,
+        employees=EmployeeStore(database),
         spending_store=spending_store,
         sessions=sessions,
         model=model,

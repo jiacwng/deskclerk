@@ -1,24 +1,29 @@
 # The chat and admin pages in headless Chromium against the real app, the development Keycloak and
 # a scripted model: sign-in, the approval card, inert markup, the flag badge and the admin tabs.
 
+import json
 import socket
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 import pytest
 from cryptography.fernet import Fernet
 from langchain_core.language_models import BaseChatModel
-from playwright.sync_api import ConsoleMessage, Page, expect
+from playwright.sync_api import ConsoleMessage, Page, Route, expect
 from pydantic import SecretStr
 
 from conftest import CHAIN_KEY
+from deskclerk.auditstore import AuditStore
 from deskclerk.auth import discover_jwks_url, jwks_signing_key
 from deskclerk.config import Settings
 from deskclerk.database import Database
 from deskclerk.jev import Jev
+from deskclerk.providers import Usage
 from deskclerk.servers import McpServer
+from deskclerk.spending import SpendingStore, month_of
 from mcp_server import READ_ONLY, running_mcp_server
 from test_agent import answer, calls, script
 from test_api import SESSION_KEY, open_notes
@@ -212,3 +217,254 @@ def test_the_admin_tabs_switch_and_the_audit_tab_checks_the_chain(
         page.get_by_role("tab", name="Audit log").click()
         page.get_by_role("button", name="Verify chain").click()
         expect(page.get_by_text("Chain verified")).to_be_visible()
+
+
+def _server_listing(connected: bool, needs_sign_in: bool = True) -> str:
+    return json.dumps(
+        [
+            {
+                "name": "notes",
+                "url": "http://notes.example/mcp",
+                "title": None,
+                "description": None,
+                "examples": [],
+                "connected": connected,
+                "needs_sign_in": needs_sign_in,
+                "tools": [],
+                "always_allowed": [],
+            }
+        ]
+    )
+
+
+def _conversation_listing(identifier: str, pending: list[Any]) -> str:
+    return json.dumps({"conversation": identifier, "turns": [], "pending": pending})
+
+
+def test_two_overlapping_loads_of_the_server_list_render_one_card(
+    page: Page, port: int, database: Database
+) -> None:
+    held: list[Route] = []
+    with _app(port, database, [], script()) as base:
+        _sign_in(page, base)
+        page.route("**/servers", lambda route: held.append(route))
+        page.evaluate("() => { loadServers(); loadServers(); }")
+        while len(held) < 2:
+            page.wait_for_timeout(50)
+        older, newer = held
+        newer.fulfill(status=200, content_type="application/json", body=_server_listing(True))
+        expect(page.locator("#servers .server")).to_have_count(1)
+        stale = json.loads(_server_listing(True)) * 2
+        older.fulfill(status=200, content_type="application/json", body=json.dumps(stale))
+        page.wait_for_timeout(300)
+        expect(page.locator("#servers .server")).to_have_count(1)
+
+
+def test_a_server_without_sign_in_has_no_disconnect_button(
+    page: Page, port: int, database: Database
+) -> None:
+    with running_mcp_server(REDIRECT, oauth=False) as running:
+        with _app(port, database, [open_notes(running)], script()) as base:
+            _sign_in(page, base)
+            card = page.locator("#servers .server")
+            expect(card).to_contain_text("Connected")
+            expect(card.get_by_role("button")).to_have_count(0)
+
+
+def test_the_cards_follow_the_server_after_a_nothing_to_confirm_answer(
+    page: Page, port: int, database: Database
+) -> None:
+    model = script(calls(("open__write_note", {"text": "buy stamps"})))
+    with running_mcp_server(REDIRECT, oauth=False) as running:
+        with _app(port, database, [open_notes(running)], model) as base:
+            _sign_in(page, base)
+            _ask(page, "Save a note")
+            expect(page.locator(".pending-card")).to_have_count(1)
+            identifier = page.evaluate("conversation")
+
+            def nothing_to_confirm(route: Route) -> None:
+                route.fulfill(
+                    status=409,
+                    content_type="application/json",
+                    body=json.dumps({"detail": "this conversation has nothing to confirm"}),
+                )
+
+            def nothing_pending(route: Route) -> None:
+                if route.request.method != "GET":
+                    return route.fallback()
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=_conversation_listing(identifier, []),
+                )
+
+            page.route("**/ask/confirm", nothing_to_confirm)
+            page.route("**/conversations/*", nothing_pending)
+            page.locator(".pending-card").get_by_role("button", name="Approve").click()
+            expect(page.locator("#error")).to_contain_text("nothing to confirm")
+            expect(page.locator(".pending-card")).to_have_count(0)
+
+
+def test_the_cards_stay_when_the_server_still_holds_the_call_after_a_502(
+    page: Page, port: int, database: Database
+) -> None:
+    model = script(calls(("open__write_note", {"text": "buy stamps"})))
+    with running_mcp_server(REDIRECT, oauth=False) as running:
+        with _app(port, database, [open_notes(running)], model) as base:
+            _sign_in(page, base)
+            _ask(page, "Save a note")
+            expect(page.locator(".pending-card")).to_have_count(1)
+            page.route(
+                "**/ask/confirm",
+                lambda route: route.fulfill(
+                    status=502, content_type="application/json", body='{"detail": "upstream"}'
+                ),
+            )
+            page.locator(".pending-card").get_by_role("button", name="Approve").click()
+            expect(page.locator("#error")).to_contain_text("did not answer")
+            expect(page.locator(".pending-card")).to_have_count(1)
+
+
+def test_a_deleted_conversation_starts_a_new_one_on_the_next_ask(
+    page: Page, port: int, database: Database
+) -> None:
+    model = script(answer("First answer."), answer("Second answer."))
+    with _app(port, database, [], model) as base:
+        _sign_in(page, base)
+        _ask(page, "First")
+        expect(page.get_by_text("First answer.")).to_be_visible()
+        assert page.evaluate("conversation") is not None
+        page.route(
+            "**/ask",
+            lambda route: route.fulfill(
+                status=404,
+                content_type="application/json",
+                body='{"detail": "no such conversation"}',
+            ),
+        )
+        _ask(page, "Second")
+        expect(page.locator("#error")).to_contain_text("That conversation was deleted")
+        assert page.evaluate("conversation") is None
+        assert "#c=" not in page.url
+        expect(page.get_by_label("Your request")).to_have_value("Second")
+        page.unroute("**/ask")
+        page.get_by_role("button", name="Send").click()
+        expect(page.get_by_text("Second answer.")).to_be_visible()
+
+
+def test_the_empty_page_points_to_the_left_panel_when_no_app_is_connected(
+    page: Page, port: int, database: Database
+) -> None:
+    with _app(port, database, [], script()) as base:
+        _sign_in(page, base)
+        page.route(
+            "**/servers",
+            lambda route: route.fulfill(
+                status=200, content_type="application/json", body=_server_listing(False)
+            ),
+        )
+        page.evaluate("loadServers()")
+        hint = page.locator("#connect-hint")
+        expect(hint).to_be_visible()
+        expect(hint).to_contain_text("Connect an app in the left panel.")
+        expect(hint.locator(".phone-only")).to_be_hidden()
+        page.set_viewport_size({"width": 375, "height": 812})
+        expect(hint.locator(".phone-only")).to_contain_text("Conversations button")
+        page.route(
+            "**/servers",
+            lambda route: route.fulfill(
+                status=200, content_type="application/json", body=_server_listing(True)
+            ),
+        )
+        page.evaluate("loadServers()")
+        expect(hint).to_be_hidden()
+
+
+def _seed_people(database: Database) -> None:
+    with database.pool.connection() as connection:
+        connection.execute(
+            "INSERT INTO employees (user_id, display_name, last_seen) "
+            "VALUES ('6f1c0a52-aaaa-4bbb-8ccc-0123456789ab', 'Ada Lovelace', now())"
+        )
+        connection.execute(
+            "INSERT INTO conversations (user_id, id, title, updated_at) "
+            "VALUES ('6f1c0a52-aaaa-4bbb-8ccc-0123456789ab', gen_random_uuid(), 'x', now())"
+        )
+    ada = "6f1c0a52-aaaa-4bbb-8ccc-0123456789ab"
+    month = month_of(datetime.now(UTC))
+    SpendingStore(database).add(ada, month, "model", Usage(1, 1, 0, 0), 0.5)
+    chain = AuditStore(database, CHAIN_KEY)
+    for _ in range(3):
+        fields = {
+            "time": datetime.now(UTC).isoformat(),
+            "user": ada,
+            "entry": "ask",
+            "text": "word " * 200,
+        }
+        chain.append(json.dumps(fields))
+
+
+def test_the_admin_pages_show_each_employee_by_name_with_the_id_beside_it(
+    page: Page, port: int, database: Database
+) -> None:
+    ada = "6f1c0a52-aaaa-4bbb-8ccc-0123456789ab"
+    with _app(port, database, [], script()) as base:
+        _seed_people(database)
+        _sign_in(page, base)
+        page.goto(f"{base}/admin#people")
+        usage = page.locator("#usage tr").first
+        expect(usage).to_contain_text("Ada Lovelace")
+        expect(usage).to_contain_text(ada)
+        expect(usage.locator("td.who")).to_have_attribute("title", ada)
+        expect(page.locator("#recent tr").first).to_contain_text("Ada Lovelace")
+        page.get_by_role("tab", name="Audit log").click()
+        expect(page.locator("#audit tr").first).to_contain_text("Ada Lovelace")
+
+
+def test_revoking_picks_a_known_employee_from_a_list_and_clears_their_stored_secrets(
+    page: Page, port: int, database: Database
+) -> None:
+    ada = "6f1c0a52-aaaa-4bbb-8ccc-0123456789ab"
+    with _app(port, database, [], script()) as base:
+        _seed_people(database)
+        with database.pool.connection() as connection:
+            for kind in ("tokens", "client", "tool_pins", "always_allowed", "tool_menu"):
+                connection.execute(
+                    "INSERT INTO secrets (user_id, server_name, kind, value) "
+                    "VALUES (%s, 'notes', %s, 'x')",
+                    (ada, kind),
+                )
+        _sign_in(page, base)
+        page.goto(f"{base}/admin#people")
+        picker = page.get_by_label("Employee to revoke")
+        expect(picker.locator("option")).to_contain_text(
+            ["Choose an employee", f"Ada Lovelace ({ada})", "kaminski-v"]
+        )
+        assert page.locator("#revoke input[type=text]").count() == 0
+        picker.select_option(ada)
+        page.once("dialog", lambda dialog: dialog.accept())
+        page.get_by_role("button", name="Revoke", exact=True).click()
+        expect(page.locator("#revoked")).to_contain_text("5 stored secrets deleted")
+        with database.pool.connection() as connection:
+            left = connection.execute("SELECT COUNT(*) FROM secrets WHERE user_id = %s", (ada,))
+            assert left.fetchone() == (0,)
+
+
+def test_no_admin_tab_scrolls_the_page_sideways_on_a_phone(
+    page: Page, port: int, database: Database
+) -> None:
+    with _app(port, database, [], script()) as base:
+        _seed_people(database)
+        page.set_viewport_size({"width": 375, "height": 812})
+        _sign_in(page, base)
+        for tab, rows in (
+            ("servers", "#servers tr"),
+            ("people", "#usage tr"),
+            ("audit", "#audit tr"),
+        ):
+            page.goto(f"{base}/admin#{tab}")
+            expect(page.locator(rows).first).to_be_visible()
+            widths = page.evaluate(
+                "[document.documentElement.scrollWidth, document.documentElement.clientWidth]"
+            )
+            assert widths[0] <= widths[1], (tab, widths)

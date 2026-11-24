@@ -23,6 +23,7 @@ from deskclerk.auth import (
 from deskclerk.config import Settings
 from deskclerk.connections import OAuthConnections
 from deskclerk.database import Database
+from deskclerk.employees import EmployeeStore
 from deskclerk.jev import Jev
 from deskclerk.metrics import Metrics
 from deskclerk.quota import Quota
@@ -60,6 +61,7 @@ class Services:
     catalog: ServerCatalog
     connections: OAuthConnections
     tokens: TokenStore
+    employees: EmployeeStore
     spending_store: SpendingStore
     sessions: SessionStore
     model: BaseChatModel
@@ -90,6 +92,8 @@ class Services:
                 raise HTTPException(401, str(error), BEARER) from None
             except AuthUnavailable:
                 raise HTTPException(503, "the login server cannot be reached") from None
+            if not self.employees.recorded(identity):
+                await run_in_threadpool(self.employees.record, identity)
             return Caller(identity, by_cookie=False)
         session_identity = await run_in_threadpool(
             self.sessions.lookup, request.cookies.get(SESSION_COOKIE, "")
