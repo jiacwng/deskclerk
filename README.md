@@ -71,8 +71,9 @@ OpenAI or AWS Bedrock. This runs deskclerk, a development Keycloak and a demo Gi
    docker compose up -d --wait
    ```
 
-4. Open http://localhost:8000 and sign in as `kaminski-v` with the password `deskclerk`. The user
-   `dasovich-j` belongs to the second group. Ask
+4. Open http://localhost:8000 and sign in as `kaminski-v` with the password `deskclerk`.
+   `kaminski-v` is an admin and can open http://localhost:8000/admin. The user `dasovich-j`
+   belongs to the second group and is not. Ask
    "Summarise what changed in the last 10 commits of /sandbox/deskclerk", then "Create a branch
    called release-notes in /sandbox/deskclerk". Approve the change when the page asks. The branch
    exists only inside the demo container. The newest commit in that copy is a prompt injection

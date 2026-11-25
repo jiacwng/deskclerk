@@ -92,6 +92,7 @@ services:
       DESKCLERK_HOST: 0.0.0.0
       DESKCLERK_ISSUER: http://localhost:8080/realms/deskclerk
       DESKCLERK_DATABASE_URL: postgresql://deskclerk:deskclerk@127.0.0.1:5432/deskclerk
+      DESKCLERK_ADMIN_GROUP: research
     volumes:
       - deskclerk-data:/var/lib/deskclerk
     depends_on:
