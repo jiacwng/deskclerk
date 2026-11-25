@@ -8,7 +8,9 @@ from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from typing import Any
 
+import anthropic
 import httpx
+import httpx2
 import pytest
 from cryptography.fernet import Fernet
 from langchain_core.language_models import BaseChatModel
@@ -25,7 +27,7 @@ from deskclerk.providers import Usage
 from deskclerk.servers import McpServer
 from deskclerk.spending import SpendingStore, month_of
 from mcp_server import READ_ONLY, running_mcp_server
-from test_agent import answer, calls, script
+from test_agent import ScriptedModel, answer, calls, script
 from test_api import SESSION_KEY, open_notes
 from test_connections import REDIRECT
 from test_screen import FakeJev, as_jev
@@ -201,6 +203,33 @@ def test_a_flagged_result_shows_the_badge_and_the_next_read_asks_first(
             expect(card).to_contain_text("flagged as a possible prompt injection")
             card.get_by_role("button", name="Approve").click()
             expect(page.get_by_text("Both notes read.")).to_be_visible()
+
+
+class FailsOnTheSecondAsk(ScriptedModel):
+    broken: bool = True
+
+    def _generate(self, *args: Any, **kwargs: Any) -> Any:
+        if len(self.seen) == 1 and self.broken:
+            self.broken = False
+            request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+            raise anthropic.APIConnectionError(request=request)
+        return super()._generate(*args, **kwargs)
+
+
+def test_retrying_a_failed_ask_replaces_the_failed_request_instead_of_sending_it_twice(
+    page: Page, port: int, database: Database
+) -> None:
+    model = FailsOnTheSecondAsk(messages=iter([answer("one"), answer("two")]))
+    with _app(port, database, [], model) as base:
+        _sign_in(page, base)
+        _ask(page, "first")
+        expect(page.get_by_text("one", exact=True)).to_be_visible()
+        _ask(page, "second")
+        expect(page.locator(".turn-error")).to_contain_text("did not answer")
+        page.get_by_role("button", name="Retry").click()
+        expect(page.get_by_text("two", exact=True)).to_be_visible()
+    asked = [m.content for m in model.seen[1] if m.type == "human"]
+    assert asked == ["first", "second"]
 
 
 def test_the_admin_tabs_switch_and_the_audit_tab_checks_the_chain(

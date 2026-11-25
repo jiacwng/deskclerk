@@ -161,3 +161,19 @@ def model_errors() -> tuple[type[Exception], ...]:
     except ImportError:
         pass
     return tuple(errors)
+
+
+def model_refusal(error: BaseException) -> str | None:
+    errors: list[type[Exception]] = [anthropic.APIStatusError]
+    try:
+        import openai
+
+        errors.append(openai.APIStatusError)
+    except ImportError:
+        pass
+    if not isinstance(error, tuple(errors)):
+        return None
+    status = getattr(error, "status_code", 0)
+    if not 400 <= status < 500 or status in (408, 429):
+        return None
+    return str(getattr(error, "message", error))

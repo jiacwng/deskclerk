@@ -106,6 +106,17 @@ class ScriptedModel(GenericFakeChatModel):
         yield ChatGenerationChunk(message=last)
 
 
+class ThinkingModel(ScriptedModel):
+    def _stream(
+        self, messages: list[BaseMessage], *args: Any, **kwargs: Any
+    ) -> Iterator[ChatGenerationChunk]:
+        self.seen.append(list(messages))
+        thinking = {"type": "thinking", "thinking": "", "signature": "sig", "index": 1}
+        for content in ("", [thinking], "the answer text"):
+            yield ChatGenerationChunk(message=AIMessageChunk(content=content))
+        yield ChatGenerationChunk(message=AIMessageChunk(content="", chunk_position="last"))
+
+
 class HeldModel(ScriptedModel):
     entered: threading.Event = threading.Event()
     release: threading.Event = threading.Event()
@@ -837,6 +848,23 @@ async def test_a_follow_up_sees_the_earlier_turn_and_its_per_ask_fields_stay_per
     ]
     assert len(first.executed) == 1
     assert (second.executed, len(second.usage), second.step_limit_hit) == ((), 1, False)
+
+
+@pytest.mark.anyio
+async def test_a_follow_up_is_sent_no_empty_text_piece_from_a_thinking_answer(
+    connections: OAuthConnections, saver: AsyncPostgresSaver
+) -> None:
+    first = ThinkingModel(messages=iter([]))
+    await run(connections, [], first, request="first", checkpointer=saver)
+    second = script(answer("again"))
+    await run(connections, [], second, request="second", checkpointer=saver)
+    earlier = [m for m in second.seen[0] if isinstance(m, AIMessage)]
+    assert [m.content for m in earlier] == [
+        [
+            {"type": "thinking", "thinking": "", "signature": "sig", "index": 1},
+            "the answer text",
+        ]
+    ]
 
 
 @pytest.mark.anyio

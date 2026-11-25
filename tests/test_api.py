@@ -21,6 +21,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
 
+import anthropic
 import httpx
 import httpx2
 import openai
@@ -1684,6 +1685,48 @@ def test_a_model_that_fails_gives_502_naming_the_model_and_the_audit_cause(
     assert response.json()["detail"] == "the model did not answer (APIConnectionError)"
     asks = [line for line in audit_lines(caplog) if line["entry"] == "ask"]
     assert asks[0]["cause"] == "the model did not answer (APIConnectionError)"
+
+
+REFUSAL = "messages: text content blocks must be non-empty " + "x" * 400
+
+
+def refusals() -> list[Exception]:
+    message = REFUSAL
+    request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    anthropic_refusal = anthropic.BadRequestError(
+        message, response=httpx2.Response(400, request=request), body=None
+    )
+    openai_refusal = openai.BadRequestError(
+        message, response=httpx2.Response(400, request=request), body=None
+    )
+    return [anthropic_refusal, openai_refusal]
+
+
+class Refusing(ScriptedModel):
+    error: Exception
+
+    def _generate(self, *args: Any, **kwargs: Any) -> Any:
+        raise self.error
+
+
+@pytest.mark.parametrize("error", refusals(), ids=["anthropic", "openai"])
+def test_a_request_the_model_refuses_gives_400_with_the_capped_provider_message(
+    error: Exception,
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="deskclerk.audit")
+    model = Refusing(messages=iter([]), error=error)
+    with web(make_settings(token_settings), [], model, token_signing_key, database) as site:
+        response = ask(site, as_user(sign_token, "ada"))
+    expected = f"the model refused the request: {REFUSAL[:300]}"
+    assert response.status_code == 400
+    assert response.json()["detail"] == expected
+    asks = [line for line in audit_lines(caplog) if line["entry"] == "ask"]
+    assert (asks[0]["outcome"], asks[0]["cause"]) == ("model_refused", expected)
 
 
 class BlocksAfterScript(ScriptedModel):
