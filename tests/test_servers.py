@@ -34,14 +34,14 @@ def test_servers_are_read_with_the_secret_from_the_environment(tmp_path: Path) -
 name = "github"
 url = "https://example.com/mcp"
 client_id = "abc"
-client_secret_env = "GITHUB_SECRET"
+client_secret_env = "DESKCLERK_SERVER_GITHUB_SECRET"
 
 [[server]]
 name = "local"
 url = "http://127.0.0.1:9000/mcp"
 """,
     )
-    servers = load_servers(path, {"GITHUB_SECRET": "shh"})
+    servers = load_servers(path, {"DESKCLERK_SERVER_GITHUB_SECRET": "shh"})
     assert servers == [
         McpServer("github", "https://example.com/mcp", "abc", "shh"),
         McpServer("local", "http://127.0.0.1:9000/mcp", None, None),
@@ -84,19 +84,20 @@ def test_a_missing_secret_variable_is_named(tmp_path: Path) -> None:
     path = write(
         tmp_path,
         '[[server]]\nname = "a"\nurl = "https://a.test/mcp"\n'
-        'client_id = "abc"\nclient_secret_env = "NO_SUCH_SECRET"\n',
+        'client_id = "abc"\nclient_secret_env = "DESKCLERK_SERVER_NO_SUCH_SECRET"\n',
     )
-    with pytest.raises(ServersError, match="NO_SUCH_SECRET"):
+    with pytest.raises(ServersError, match="DESKCLERK_SERVER_NO_SUCH_SECRET"):
         load_servers(path, {})
 
 
 def test_a_secret_without_a_client_id_is_refused(tmp_path: Path) -> None:
     path = write(
         tmp_path,
-        '[[server]]\nname = "a"\nurl = "https://a.test/mcp"\nclient_secret_env = "X"\n',
+        '[[server]]\nname = "a"\nurl = "https://a.test/mcp"\n'
+        'client_secret_env = "DESKCLERK_SERVER_X"\n',
     )
     with pytest.raises(ServersError, match="without client_id"):
-        load_servers(path, {"X": "y"})
+        load_servers(path, {"DESKCLERK_SERVER_X": "y"})
 
 
 def test_a_missing_file_is_an_error_naming_it(tmp_path: Path) -> None:
@@ -137,7 +138,7 @@ def test_an_mcp_json_file_gives_the_same_servers_as_toml(tmp_path: Path) -> None
     toml = write(
         tmp_path,
         '[[server]]\nname = "github"\nurl = "https://example.com/mcp"\nclient_id = "abc"\n'
-        'client_secret_env = "GITHUB_SECRET"\ntools = ["x"]\n'
+        'client_secret_env = "DESKCLERK_SERVER_GITHUB_SECRET"\ntools = ["x"]\n'
         '[[server]]\nname = "local"\nurl = "http://127.0.0.1:9000/mcp"\nauth = "none"\n',
     )
     json_file = write_json(
@@ -149,7 +150,7 @@ def test_an_mcp_json_file_gives_the_same_servers_as_toml(tmp_path: Path) -> None
                         "type": "http",
                         "url": "https://example.com/mcp",
                         "client_id": "abc",
-                        "client_secret_env": "GITHUB_SECRET",
+                        "client_secret_env": "DESKCLERK_SERVER_GITHUB_SECRET",
                         "tools": ["x"],
                     },
                     "local": {"url": "http://127.0.0.1:9000/mcp", "auth": "none"},
@@ -157,12 +158,12 @@ def test_an_mcp_json_file_gives_the_same_servers_as_toml(tmp_path: Path) -> None
             }
         ),
     )
-    from_toml = load_servers(toml, {"GITHUB_SECRET": "shh"})
+    from_toml = load_servers(toml, {"DESKCLERK_SERVER_GITHUB_SECRET": "shh"})
     assert from_toml == [
         McpServer("github", "https://example.com/mcp", "abc", "shh", "oauth", ("x",)),
         McpServer("local", "http://127.0.0.1:9000/mcp", None, None, "none"),
     ]
-    assert load_servers(json_file, {"GITHUB_SECRET": "shh"}) == from_toml
+    assert load_servers(json_file, {"DESKCLERK_SERVER_GITHUB_SECRET": "shh"}) == from_toml
 
 
 def test_a_stdio_server_is_refused_in_mcp_json(tmp_path: Path) -> None:
@@ -196,9 +197,10 @@ def test_headers_are_read_with_environment_values_filled_in(tmp_path: Path) -> N
     path = write(
         tmp_path,
         '[[server]]\nname = "a"\nurl = "https://a.test/mcp"\nauth = "none"\n'
-        '[server.headers]\nX-Api-Key = "${env:A_KEY}"\nX-Team = "ops-${env:A_TEAM}"\n',
+        '[server.headers]\nX-Api-Key = "${env:DESKCLERK_SERVER_A_KEY}"\n'
+        'X-Team = "ops-${env:DESKCLERK_SERVER_A_TEAM}"\n',
     )
-    servers = load_servers(path, {"A_KEY": "k1", "A_TEAM": "red"})
+    servers = load_servers(path, {"DESKCLERK_SERVER_A_KEY": "k1", "DESKCLERK_SERVER_A_TEAM": "red"})
     assert servers[0].headers == (("X-Api-Key", "k1"), ("X-Team", "ops-red"))
 
 
@@ -211,22 +213,22 @@ def test_headers_in_mcp_json_match_toml(tmp_path: Path) -> None:
                     "a": {
                         "url": "https://a.test/mcp",
                         "auth": "none",
-                        "headers": {"X-Api-Key": "${env:A_KEY}"},
+                        "headers": {"X-Api-Key": "${env:DESKCLERK_SERVER_A_KEY}"},
                     }
                 }
             }
         ),
     )
-    assert load_servers(path, {"A_KEY": "k1"})[0].headers == (("X-Api-Key", "k1"),)
+    assert load_servers(path, {"DESKCLERK_SERVER_A_KEY": "k1"})[0].headers == (("X-Api-Key", "k1"),)
 
 
 def test_a_missing_header_variable_is_named(tmp_path: Path) -> None:
     path = write(
         tmp_path,
         '[[server]]\nname = "a"\nurl = "https://a.test/mcp"\nauth = "none"\n'
-        '[server.headers]\nX-Api-Key = "${env:A_KEY}"\n',
+        '[server.headers]\nX-Api-Key = "${env:DESKCLERK_SERVER_A_KEY}"\n',
     )
-    with pytest.raises(ServersError, match="A_KEY"):
+    with pytest.raises(ServersError, match="DESKCLERK_SERVER_A_KEY"):
         load_servers(path, {})
 
 
@@ -402,12 +404,12 @@ def test_variables_named_in_a_server_entry_can_come_from_files(tmp_path: Path) -
     path = write(
         tmp_path,
         '[[server]]\nname = "crm"\nurl = "https://crm.example.com/mcp"\nclient_id = "c"\n'
-        'client_secret_env = "CRM_SECRET"\n'
-        'headers = { X-Api-Key = "${env:CRM_BEARER}" }\n',
+        'client_secret_env = "DESKCLERK_SERVER_CRM_SECRET"\n'
+        'headers = { X-Api-Key = "${env:DESKCLERK_SERVER_CRM_BEARER}" }\n',
     )
     environ = {
-        "CRM_SECRET_FILE": str(tmp_path / "pass"),
-        "CRM_BEARER_FILE": str(tmp_path / "bearer"),
+        "DESKCLERK_SERVER_CRM_SECRET_FILE": str(tmp_path / "pass"),
+        "DESKCLERK_SERVER_CRM_BEARER_FILE": str(tmp_path / "bearer"),
     }
     [server] = load_servers(path, environ)
     assert server.client_secret == "s3cret"
@@ -424,8 +426,8 @@ def test_entries_written_as_toml_are_read_back_unchanged(tmp_path: Path) -> None
     path = write(
         tmp_path,
         '[[server]]\nname = "crm"\nurl = "http://crm.test/mcp"\nplain_http = true\n'
-        'client_id = "c"\nclient_secret_env = "CRM_SECRET"\ntools = ["a", "b"]\n'
-        'headers = { X-Team = "${env:TEAM} \\"quoted\\"" }\ngroups = ["sales"]\n'
+        'client_id = "c"\nclient_secret_env = "DESKCLERK_SERVER_CRM_SECRET"\ntools = ["a", "b"]\n'
+        'headers = { X-Team = "${env:DESKCLERK_SERVER_TEAM} \\"quoted\\"" }\ngroups = ["sales"]\n'
         'always_allow = false\nconfirm_tools = ["send"]\ntrusted = true\ntitle = "CRM"\n'
         'description = "Accounts"\nexamples = ["Find acme", "Naïve café"]\npaused = true\n'
         '[[server]]\nname = "open"\nurl = "https://a.test/mcp"\nauth = "none"\ntools = []\n',
@@ -433,3 +435,25 @@ def test_entries_written_as_toml_are_read_back_unchanged(tmp_path: Path) -> None
     entries = read_entries(path)
     again = write(tmp_path, toml_text(entries))
     assert read_entries(again) == entries
+
+
+def test_a_header_may_not_read_a_variable_outside_the_server_prefix(tmp_path: Path) -> None:
+    path = write(
+        tmp_path,
+        '[[server]]\nname = "a"\nurl = "https://a.test/mcp"\nauth = "none"\n'
+        '[server.headers]\nX-Api-Key = "${env:DESKCLERK_TOKEN_KEY}"\n',
+    )
+    with pytest.raises(ServersError, match="start with DESKCLERK_SERVER_"):
+        load_servers(path, {"DESKCLERK_TOKEN_KEY": "key"})
+
+
+def test_a_client_secret_may_not_read_a_variable_outside_the_server_prefix(
+    tmp_path: Path,
+) -> None:
+    path = write(
+        tmp_path,
+        '[[server]]\nname = "a"\nurl = "https://a.test/mcp"\n'
+        'client_id = "abc"\nclient_secret_env = "ANTHROPIC_API_KEY"\n',
+    )
+    with pytest.raises(ServersError, match="start with DESKCLERK_SERVER_"):
+        load_servers(path, {"ANTHROPIC_API_KEY": "key"})
