@@ -145,7 +145,7 @@ pre { margin: 0.25rem 0 0; font: 0.75rem/1.4 var(--mono); white-space: pre-wrap;
     <form id="editor" class="editor" hidden>
       <label for="entry" class="muted small" id="editor-title"></label>
       <textarea id="entry" spellcheck="false"></textarea>
-      <p class="muted small">One server as JSON. Secrets are references: client_secret_env names an environment variable, and a header value may hold ${env:NAME}.</p>
+      <p class="muted small">One server as JSON. Secrets are references: client_secret_env names an environment variable, and a header value may hold ${env:NAME}. Both names must start with DESKCLERK_SERVER_.</p>
       <div class="row"><button type="submit" class="primary">Save</button><button type="button" id="cancel">Cancel</button></div>
     </form>
   </section>

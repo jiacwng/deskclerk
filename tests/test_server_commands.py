@@ -64,7 +64,10 @@ async def test_a_stored_entry_that_cannot_be_loaded_leaves_the_previous_list(
     store.add(ServerEntry(name="first", url="https://first.test/mcp"))
     await catalog.refresh()
     broken = ServerEntry(
-        name="second", url="https://second.test/mcp", client_id="c", client_secret_env="NOT_SET"
+        name="second",
+        url="https://second.test/mcp",
+        client_id="c",
+        client_secret_env="DESKCLERK_SERVER_NOT_SET",
     )
     store.add(broken)
     await catalog.refresh()

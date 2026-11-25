@@ -27,6 +27,7 @@ from deskclerk.secret_files import SecretFileError, file_secret
 LOCAL_HOSTS = {"localhost", "127.0.0.1"}
 ENV_REFERENCE = re.compile(r"\$\{env:([^}]+)\}")
 SERVER_NAME = re.compile(r"[A-Za-z0-9-]+(_[A-Za-z0-9-]+)*")
+SERVER_VARIABLE_PREFIX = "DESKCLERK_SERVER_"
 
 
 class ServersError(Exception):
@@ -281,6 +282,11 @@ def resolve_servers(
 
 
 def _secret(variable: str, environ: Mapping[str, str]) -> str | None:
+    if not variable.startswith(SERVER_VARIABLE_PREFIX):
+        raise ServersError(
+            f"server settings may read only environment variables that start with "
+            f"{SERVER_VARIABLE_PREFIX}, and {variable} does not"
+        )
     try:
         from_file = file_secret(variable, environ)
     except SecretFileError as error:
