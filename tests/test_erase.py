@@ -1,6 +1,6 @@
-# Erasing an employee removes their tokens, conversations and spending rows from the real database
-# and nothing of another employee whose id starts the same way; the command logs one audit line
-# with the counts and exits with the reason when the token key is wrong.
+# Erasing an employee removes their tokens, conversations, spending rows and display name from the
+# real database and nothing of another employee whose id starts the same way; the command logs one
+# audit line with the counts and exits with the reason when the token key is wrong.
 
 import asyncio
 import json
@@ -17,6 +17,7 @@ from deskclerk import __main__ as entry
 from deskclerk.auth import Identity
 from deskclerk.conversations import delete_user_threads, open_checkpointer, thread_id
 from deskclerk.database import Database
+from deskclerk.employees import EmployeeStore
 from deskclerk.providers import Usage
 from deskclerk.sessions import SessionStore
 from deskclerk.spending import SpendingStore
@@ -120,3 +121,17 @@ def test_erase_with_the_wrong_token_key_exits_with_an_error(
 
     assert "not encrypted with this token key" in str(stopped.value)
     assert rows(database, "SELECT COUNT(*) FROM secrets") == [(6,)]
+
+
+def test_erase_deletes_the_display_name_of_that_employee_only(
+    database: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    employees = EmployeeStore(database)
+    employees.record(Identity("ana", "deskclerk-api", "Ana Diaz"))
+    employees.record(Identity("anabel", "deskclerk-api", "Anabel Cho"))
+
+    erase(monkeypatch, "ana")
+
+    assert rows(database, "SELECT user_id, display_name FROM employees") == [
+        ("anabel", "Anabel Cho")
+    ]

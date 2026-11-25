@@ -38,6 +38,7 @@ class ServerOut(BaseModel):
     description: str | None
     examples: list[str]
     connected: bool
+    needs_sign_in: bool
     tools: list[MenuEntry]
     always_allowed: list[str]
 
@@ -97,6 +98,7 @@ def router(services: Services) -> APIRouter:
                     description=server.description,
                     examples=list(server.examples),
                     connected=connected,
+                    needs_sign_in=server.auth != "none",
                     tools=allowed,
                     always_allowed=always,
                 )

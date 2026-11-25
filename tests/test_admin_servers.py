@@ -6,14 +6,18 @@
 from typing import Any
 
 import pytest
+from cryptography.fernet import Fernet
 
 from deskclerk.auth import Identity, SigningKeyLookup
 from deskclerk.config import Settings
 from deskclerk.database import Database
 from deskclerk.routes.services import CSRF_HEADER, CSRF_VALUE, SESSION_COOKIE
+from deskclerk.servers import ServerEntry
+from deskclerk.serverstore import ServerStore
+from deskclerk.tokens import Kind, TokenStore
 from test_admin import GROUP, bearer
 from test_agent import answer, script
-from test_api import Sign, as_user, audit_lines, make_settings, session_cookie, web
+from test_api import Sign, Web, as_user, audit_lines, make_settings, session_cookie, web
 
 WIKI = {"name": "wiki", "url": "http://127.0.0.1:9/mcp", "auth": "none"}
 WRITES: list[tuple[str, str, dict[str, Any] | None]] = [
@@ -179,10 +183,119 @@ def test_revoking_an_employee_deletes_their_tokens_and_ends_their_sessions(
         ana_token = site.tokens.get("ana", "notes", "tokens")
         bob_token = site.tokens.get("bob", "notes", "tokens")
     assert before.status_code == 200
-    assert (revoked.status_code, revoked.json()) == (200, {"tokens": 1, "sessions": 1})
+    assert (revoked.status_code, revoked.json()) == (200, {"secrets": 1, "sessions": 1})
     assert after.status_code == 401
     assert (ana_token, bob_token) == (None, "t")
     revoked_lines = [line for line in audit_lines(caplog) if line["entry"] == "admin"]
     assert [(line["action"], line["target"]) for line in revoked_lines] == [
         ("revoke_employee", "ana")
     ]
+
+
+KINDS: list[Kind] = ["tokens", "client", "tool_pins", "always_allowed", "tool_menu"]
+
+
+def connect_ana(site: Web, server_name: str) -> None:
+    for kind in KINDS:
+        site.tokens.put("ana", server_name, kind, "stored")
+
+
+def stored_kinds(site: Web, server_name: str) -> list[Kind]:
+    return [kind for kind in KINDS if site.tokens.get("ana", server_name, kind) is not None]
+
+
+def test_changing_the_url_of_a_server_deletes_every_stored_secret_and_keeping_it_does_not(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings, admin_group=GROUP)
+    with web(settings, [], script(answer("ok")), token_signing_key, database) as site:
+        admin = bearer(sign_token, "root", [GROUP])
+        site.client.post("/admin/servers", json=WIKI, headers=admin)
+        site.client.post("/admin/servers", json=WIKI | {"name": "crm"}, headers=admin)
+        connect_ana(site, "wiki")
+        connect_ana(site, "crm")
+        same_url = site.client.put(
+            "/admin/servers/wiki", json=WIKI | {"title": "Wiki"}, headers=admin
+        )
+        kept = stored_kinds(site, "wiki")
+        moved = WIKI | {"url": "http://127.0.0.1:10/mcp"}
+        new_url = site.client.put("/admin/servers/wiki", json=moved, headers=admin)
+        dropped = stored_kinds(site, "wiki")
+        other = stored_kinds(site, "crm")
+    assert (same_url.status_code, new_url.status_code) == (204, 204)
+    assert kept == KINDS
+    assert dropped == []
+    assert other == KINDS
+
+
+def test_removing_a_server_deletes_every_stored_secret_for_its_name(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings, admin_group=GROUP)
+    with web(settings, [], script(answer("ok")), token_signing_key, database) as site:
+        admin = bearer(sign_token, "root", [GROUP])
+        site.client.post("/admin/servers", json=WIKI, headers=admin)
+        connect_ana(site, "wiki")
+        removed = site.client.delete("/admin/servers/wiki", headers=admin)
+        site.client.post("/admin/servers", json=WIKI, headers=admin)
+        remaining = stored_kinds(site, "wiki")
+    assert removed.status_code == 204
+    assert remaining == []
+
+
+def test_an_import_deletes_secrets_of_servers_that_are_gone_or_moved_and_keeps_the_rest(
+    token_settings: Settings, database: Database
+) -> None:
+    store = ServerStore(database)
+    tokens = TokenStore(database, Fernet.generate_key().decode())
+    names = ["gone", "moved", "same"]
+    store.replace_all(
+        [ServerEntry(name=name, url="https://old.test/mcp", auth="none") for name in names]
+    )
+    for name in names:
+        for kind in KINDS:
+            tokens.put("ana", name, kind, "stored")
+    store.replace_all(
+        [
+            ServerEntry(name="moved", url="https://new.test/mcp", auth="none"),
+            ServerEntry(name="same", url="https://old.test/mcp", auth="none"),
+        ]
+    )
+    left = {
+        name: [kind for kind in KINDS if tokens.get("ana", name, kind) is not None]
+        for name in names
+    }
+    assert left == {"gone": [], "moved": [], "same": KINDS}
+
+
+def test_a_pause_that_leaves_the_list_unloadable_fails_and_is_not_audited_as_a_success(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings = make_settings(token_settings, admin_group=GROUP)
+    caplog.set_level("INFO", logger="deskclerk.audit")
+    with web(settings, [], script(answer("ok")), token_signing_key, database) as site:
+        admin = bearer(sign_token, "root", [GROUP])
+        site.client.post("/admin/servers", json=WIKI, headers=admin)
+        site.catalog.store.add(
+            ServerEntry(
+                name="crm",
+                url="https://crm.test/mcp",
+                client_id="c",
+                client_secret_env="NOT_SET_ANYWHERE",
+            )
+        )
+        paused = site.client.post("/admin/servers/wiki/pause", headers=admin)
+    assert paused.status_code == 500
+    assert "NOT_SET_ANYWHERE" in paused.text
+    pause_lines = [line for line in audit_lines(caplog) if line.get("action") == "pause_server"]
+    assert pause_lines == []

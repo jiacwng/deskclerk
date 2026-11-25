@@ -193,6 +193,8 @@ button.conv-delete:hover:not(:disabled) { color: var(--bad); }
 .chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.5rem; margin-top: 0.5rem; }
 .chips:empty { display: none; }
 .chip { border-radius: 999px; font-weight: 500; text-align: left; }
+.phone-only { display: none; }
+@media (max-width: 51.99rem) { .phone-only { display: inline; } }
 @media (max-width: 30rem) { .empty { padding-block: 4vh 1rem; } }
 .turns { display: grid; gap: 1.75rem; padding-bottom: 1.5rem; }
 .turn { display: grid; gap: 0.625rem; min-width: 0; }
@@ -399,6 +401,7 @@ textarea::placeholder { color: var(--muted); }
     <div id="empty" class="empty">
       <h2 class="empty-title">What do you need from your connected apps?</h2>
       <p>Ask for something to look up or change in your connected apps.</p>
+      <p id="connect-hint" hidden>Connect an app in the left panel.<span class="phone-only"> Open it with the Conversations button.</span></p>
       <div id="chips" class="chips"></div>
     </div>
     <div id="turns" class="turns"></div>
@@ -743,25 +746,32 @@ async function refreshBudget() {
   showBudget(me.spent_usd, me.budget_usd);
 }
 
+let serversLoad = 0;
+
 async function loadServers() {
+  const mine = ++serversLoad;
   const response = await api("/servers");
+  if (mine !== serversLoad) return;
   if (!response.ok) return reportFailure(response);
-  const list = el("servers");
-  list.replaceChildren();
   const servers = await response.json();
+  if (mine !== serversLoad) return;
+  const cards = [];
   const connected = servers.filter((server) => server.connected).length;
   el("rail-summary").textContent = "Connected apps: " + connected + " of " + servers.length + " connected";
   showChips(servers.filter((server) => server.connected));
+  el("connect-hint").hidden = servers.length === 0 || connected > 0;
   for (const server of servers) {
     const card = make("div", "server");
     card.append(make("div", "server-name", server.title || server.name), make("div", server.description ? "server-about" : "server-url", server.description || server.url));
     const foot = make("div", "server-foot");
     foot.append(make("span", server.connected ? "state on" : "state", server.connected ? "Connected" : "Not connected"));
-    const toggle = server.connected
-      ? button("Disconnect", () => disconnect(server.name), "small")
-      : button("Connect", () => connect(server.name), "small primary");
-    toggle.setAttribute("aria-label", toggle.textContent + " " + server.name);
-    foot.append(toggle);
+    if (server.needs_sign_in) {
+      const toggle = server.connected
+        ? button("Disconnect", () => disconnect(server.name), "small")
+        : button("Connect", () => connect(server.name), "small primary");
+      toggle.setAttribute("aria-label", toggle.textContent + " " + server.name);
+      foot.append(toggle);
+    }
     card.append(foot);
     if (server.connected && server.always_allowed.length > 0) {
       const names = Object.fromEntries(server.tools.map((tool) => [tool.name, tool.title || tool.name]));
@@ -775,8 +785,9 @@ async function loadServers() {
       }
       card.append(make("div", "always-heading", "Always allowed"), items);
     }
-    list.append(card);
+    cards.push(card);
   }
+  el("servers").replaceChildren(...cards);
 }
 
 function part(title, content) {
@@ -1513,6 +1524,16 @@ async function adoptConversation(id) {
   } catch (error) {}
 }
 
+async function reloadPending() {
+  try {
+    const response = await api("/conversations/" + encodeURIComponent(conversation));
+    if (response.ok) showPending((await response.json()).pending);
+    else updateDecided(waiting);
+  } catch (error) {
+    updateDecided(waiting);
+  }
+}
+
 async function showStopped(turn) {
   stopPainting(turn);
   if (turn.text !== "") setAnswer(turn, turn.text);
@@ -1566,6 +1587,14 @@ async function ask(resent, edit) {
     const { response, outcome } = await streamed("/ask", { request, conversation, edit_of: edit?.index }, turn);
     if (!response.ok) {
       refused = true;
+      if (response.status === 404 && conversation !== null) {
+        drop();
+        resetView();
+        el("request").value = request;
+        fitRequest();
+        showError("That conversation was deleted, so your request is back in the box. Send it to start a new one.");
+        return;
+      }
       const kept = await reportFailure(response, turn, retryable(response.status) ? retry : undefined);
       if (!kept) drop();
     } else if (outcome === null) {
@@ -1609,18 +1638,16 @@ async function send() {
   try {
     const { response, outcome } = await streamed("/ask/confirm", { conversation, decisions }, turn);
     if (!response.ok) {
-      if (response.status >= 500) showPending([]);
-      else updateDecided(waiting);
+      await reloadPending();
       return await reportFailure(response, turn);
     }
     if (outcome === null) {
-      showPending([]);
+      await reloadPending();
       lostStream(turn);
     } else if (outcome.name === "error") {
       stopPainting(turn);
       endLiveCalls(turn, "No result");
-      if (outcome.data.status >= 500) showPending([]);
-      else updateDecided(waiting);
+      await reloadPending();
       reportProblem(outcome.data.status, outcome.data, "", turn);
     } else {
       showResult(outcome.data);

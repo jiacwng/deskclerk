@@ -19,6 +19,7 @@ from deskclerk.cookies import derived_key
 from deskclerk.database import Database, lock_key
 
 CHAIN_LOCK = lock_key("audit_chain")
+DOWNLOAD_BATCH = 500
 ARGUMENTS_PURPOSE = "audit-arguments"
 CALL_LISTS = ("executed", "blocked", "pending", "decided")
 COLUMNS = "id, time, user_id AS user, entry, servers, tools, decisions, flagged, hash, line"
@@ -162,12 +163,23 @@ class AuditStore:
 
     def rows(self, found: AuditFilter) -> Iterator[AuditRow]:
         where, values = _where(found)
-        query = f"SELECT {COLUMNS} FROM audit_log WHERE {where} ORDER BY id"  # noqa: S608
-        with self._pool.connection() as connection:
-            with connection.cursor(name="audit_rows", row_factory=dict_row) as cursor:
-                cursor.execute(query, values)
-                for row in cursor:
-                    yield AuditRow(**row)
+        query = (
+            f"SELECT {COLUMNS} FROM audit_log "  # noqa: S608
+            f"WHERE ({where}) AND id > %s ORDER BY id LIMIT %s"
+        )
+        last_id = 0
+        while True:
+            with self._pool.connection() as connection:
+                batch = (
+                    connection.cursor(row_factory=dict_row)
+                    .execute(query, [*values, last_id, DOWNLOAD_BATCH])
+                    .fetchall()
+                )
+            for row in batch:
+                yield AuditRow(**row)
+            if len(batch) < DOWNLOAD_BATCH:
+                return
+            last_id = batch[-1]["id"]
 
     def verify(self) -> ChainReport:
         checked = 0

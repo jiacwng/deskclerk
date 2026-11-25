@@ -1,8 +1,8 @@
 # The baseline migration builds the schema the modules used to create themselves, the servers
 # migration adds the table of MCP servers, the audit migration adds the audit log and its
 # checkpoint, the fourth drops the table nothing uses any more, the fifth fills the flagged
-# column from the stored lines, and several copies of the app starting at once on an empty
-# database all succeed.
+# column from the stored lines, the sixth adds the employees table, and several copies of the app
+# starting at once on an empty database all succeed.
 
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -52,7 +52,7 @@ def describe(connection: psycopg.Connection[tuple[object, ...]], schema: str) ->
         for row in connection.execute(
             "SELECT table_name FROM information_schema.tables "
             "WHERE table_schema = %s AND table_name NOT IN "
-            "('alembic_version', 'servers', 'audit_log', 'audit_checkpoint')",
+            "('alembic_version', 'servers', 'audit_log', 'audit_checkpoint', 'employees')",
             (schema,),
         )
     )
@@ -95,7 +95,7 @@ def test_migrating_again_changes_nothing(database: Database) -> None:
     database.migrate()
     with psycopg.connect(DATABASE_URL) as connection:
         versions = connection.execute("SELECT version_num FROM alembic_version").fetchall()
-    assert versions == [("0005",)]
+    assert versions == [("0006",)]
 
 
 def test_the_flagged_migration_fills_the_column_from_the_stored_lines(database: Database) -> None:
@@ -107,6 +107,7 @@ def test_the_flagged_migration_fills_the_column_from_the_stored_lines(database: 
         {"entry": "connect"},
     ]
     with psycopg.connect(DATABASE_URL, autocommit=True) as connection:
+        connection.execute("DROP TABLE employees")
         connection.execute("DROP INDEX audit_log_flagged")
         connection.execute("ALTER TABLE audit_log DROP COLUMN flagged")
         connection.execute("UPDATE alembic_version SET version_num = '0004'")
@@ -138,7 +139,7 @@ def test_copies_starting_at_once_on_an_empty_database_all_succeed(database: Data
         tables = connection.execute(
             "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'"
         ).fetchone()
-    assert tables == (12,)
+    assert tables == (13,)
 
 
 def test_a_keyword_connection_string_becomes_a_sqlalchemy_url() -> None:
@@ -156,3 +157,20 @@ def test_the_servers_table_has_a_column_for_every_field_of_a_server_entry(
             "SELECT column_name FROM information_schema.columns WHERE table_name = 'servers'"
         ).fetchall()
     assert {row[0] for row in found} == {"position", *ServerEntry.model_fields}
+
+
+def test_the_employees_table_holds_a_display_name_and_a_last_seen_time_for_each_user(
+    database: Database,
+) -> None:
+    with psycopg.connect(DATABASE_URL) as connection:
+        found = connection.execute(
+            "SELECT column_name, is_nullable FROM information_schema.columns "
+            "WHERE table_name = 'employees' ORDER BY ordinal_position"
+        ).fetchall()
+        key = connection.execute(
+            "SELECT a.attname FROM pg_index i JOIN pg_attribute a "
+            "ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) "
+            "WHERE i.indrelid = 'employees'::regclass AND i.indisprimary"
+        ).fetchall()
+    assert found == [("user_id", "NO"), ("display_name", "NO"), ("last_seen", "NO")]
+    assert key == [("user_id",)]

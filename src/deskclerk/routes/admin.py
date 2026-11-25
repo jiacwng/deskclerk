@@ -17,6 +17,7 @@ from deskclerk.admin import (
     AdminSummary,
     audit_page,
     audit_row,
+    employee_rows,
     recent_rows,
     server_rows,
     usage_rows,
@@ -39,7 +40,7 @@ class RevokeBody(BaseModel):
 
 
 class RevokeOut(BaseModel):
-    tokens: int
+    secrets: int
     sessions: int
 
 
@@ -75,13 +76,16 @@ def router(services: Services) -> APIRouter:
     @routes.get("/admin/summary")
     async def admin_summary(_: Caller = Depends(services.admin_caller)) -> AdminSummary:
         month = month_of(datetime.now(UTC))
+        employees = await run_in_threadpool(services.employees.all)
+        names = {employee.user_id: employee.display_name for employee in employees}
         return AdminSummary(
             month=month,
             servers=await run_in_threadpool(server_rows, list(catalog.servers), services.tokens),
             usage=await run_in_threadpool(
-                usage_rows, services.spending_store, month, services.settings.budget_usd
+                usage_rows, services.spending_store, month, services.settings.budget_usd, names
             ),
-            recent=await recent_rows(services.database, services.settings.audit_text),
+            recent=await recent_rows(services.database, services.settings.audit_text, names),
+            employees=employee_rows(employees),
         )
 
     @routes.get("/admin/audit")
@@ -92,7 +96,8 @@ def router(services: Services) -> APIRouter:
         _: Caller = Depends(services.admin_caller),
     ) -> AdminAuditPage:
         rows = await run_in_threadpool(services.audit_store.search, found, limit, cursor)
-        return audit_page(rows)
+        names = await run_in_threadpool(services.employees.names)
+        return audit_page(rows, names)
 
     @routes.get("/admin/audit/verify")
     async def admin_audit_verify(_: Caller = Depends(services.admin_caller)) -> AdminChain:
@@ -106,7 +111,7 @@ def router(services: Services) -> APIRouter:
         found: AuditFilter = Depends(audit_filter), _: Caller = Depends(services.admin_caller)
     ) -> StreamingResponse:
         rows = services.audit_store.rows(found)
-        lines = (audit_row(row).model_dump_json() + "\n" for row in rows)
+        lines = (audit_row(row, {}).model_dump_json(exclude={"name"}) + "\n" for row in rows)
         return StreamingResponse(
             lines,
             media_type="application/x-ndjson",
@@ -128,7 +133,12 @@ def router(services: Services) -> APIRouter:
             raise HTTPException(409, str(error)) from None
         except NoSuchServer as error:
             raise HTTPException(404, str(error)) from None
-        await catalog.refresh()
+        try:
+            await catalog.reload_now()
+        except ServersError as error:
+            raise HTTPException(
+                500, f"the change was saved but the server list did not load: {error}"
+            ) from None
         await run_in_threadpool(services.audit.admin_action, who.identity, action, target)
         return Response(status_code=204)
 
@@ -183,11 +193,11 @@ def router(services: Services) -> APIRouter:
     ) -> RevokeOut:
         async with services.database.user_lock(body.user_id):
             await services.connections.cancel_all_for(body.user_id)
-            revoked = await run_in_threadpool(services.tokens.delete_user_tokens, body.user_id)
+            revoked = await run_in_threadpool(services.tokens.delete_user, body.user_id)
             ended = await run_in_threadpool(services.sessions.delete_user, body.user_id)
         await run_in_threadpool(
             services.audit.admin_action, who.identity, "revoke_employee", body.user_id
         )
-        return RevokeOut(tokens=revoked, sessions=ended)
+        return RevokeOut(secrets=revoked, sessions=ended)
 
     return routes

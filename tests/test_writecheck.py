@@ -33,6 +33,26 @@ UUID_SCHEMA = {
     "type": "object",
     "properties": {"target": {"type": "string", "format": "uuid"}},
 }
+BULK_DELETE_SCHEMA = {
+    "type": "object",
+    "properties": {"note_ids": {"type": "array", "items": {"type": "string"}}},
+}
+NESTED_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "owner": {"type": "object", "properties": {"user_id": {"type": "string"}}},
+    },
+}
+UUID_LIST_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "targets": {"type": "array", "items": {"type": "string", "format": "uuid"}},
+    },
+}
+BROKEN_REF_SCHEMA = {
+    "type": "object",
+    "properties": {"note_id": {"$ref": "#/$defs/missing"}},
+}
 
 
 def proposed(
@@ -110,6 +130,36 @@ async def test_arguments_that_break_the_schema_are_refused() -> None:
             False,
             (),
             id="a-write-missing-a-required-field-is-refused",
+        ),
+        pytest.param(
+            proposed(BULK_DELETE_SCHEMA, {"note_ids": ["n-1", "invented"]}, observed=("n-1",)),
+            False,
+            ("grounding check", "note_ids[1]=invented"),
+            id="an-ungrounded-id-inside-a-list-is-refused",
+        ),
+        pytest.param(
+            proposed(BULK_DELETE_SCHEMA, {"note_ids": ["n-1", "n-2"]}, observed=("n-1 n-2",)),
+            True,
+            (),
+            id="grounded-ids-inside-a-list-are-allowed",
+        ),
+        pytest.param(
+            proposed(NESTED_SCHEMA, {"owner": {"user_id": "u-9"}}),
+            False,
+            ("grounding check", "owner.user_id=u-9"),
+            id="an-ungrounded-id-inside-a-nested-object-is-refused",
+        ),
+        pytest.param(
+            proposed(UUID_LIST_SCHEMA, {"targets": ["0b1f"]}),
+            False,
+            ("grounding check", "targets[0]=0b1f"),
+            id="a-uuid-string-inside-an-array-is-an-identifier",
+        ),
+        pytest.param(
+            proposed(BROKEN_REF_SCHEMA, {"note_id": "n-1"}, observed=("n-1",)),
+            False,
+            ("schema check", "cannot be resolved"),
+            id="a-schema-with-an-unresolvable-reference-is-refused",
         ),
     ],
 )

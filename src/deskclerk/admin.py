@@ -1,8 +1,10 @@
 # The summary behind /admin: each configured server, paused or not, with how many employees have
 # connected it, what each employee spent this month, and the conversations most recently active.
 # Recent activity comes from the conversations table, which holds the employee, the title and the
-# time of the last message. A title is the start of a request, so it is shown only when
-# DESKCLERK_AUDIT_TEXT allows request text in the logs. The audit routes read the audit table.
+# time of the last message. Each employee row also carries the display name recorded at sign-in,
+# or none when the employee has not been seen since names were stored. A title is the start of a
+# request, so it is shown only when DESKCLERK_AUDIT_TEXT allows request text in the logs. The audit
+# routes read the audit table.
 
 from datetime import datetime
 
@@ -11,6 +13,7 @@ from pydantic import BaseModel
 from deskclerk.auditstore import AuditPage, AuditRow
 from deskclerk.conversations import recent_conversations
 from deskclerk.database import Database
+from deskclerk.employees import Employee
 from deskclerk.servers import McpServer
 from deskclerk.spending import SpendingStore
 from deskclerk.tokens import TokenStore
@@ -27,8 +30,14 @@ class AdminServer(BaseModel):
     allowlist_size: int | None
 
 
+class AdminEmployee(BaseModel):
+    user_id: str
+    display_name: str
+
+
 class AdminUsage(BaseModel):
     user_id: str
+    name: str | None
     calls: int
     spent_usd: float
     budget_usd: float
@@ -36,6 +45,7 @@ class AdminUsage(BaseModel):
 
 class AdminActivity(BaseModel):
     user_id: str
+    name: str | None
     title: str | None
     updated_at: datetime
 
@@ -45,12 +55,14 @@ class AdminSummary(BaseModel):
     servers: list[AdminServer]
     usage: list[AdminUsage]
     recent: list[AdminActivity]
+    employees: list[AdminEmployee]
 
 
 class AdminAuditRow(BaseModel):
     id: int
     time: datetime
     user: str
+    name: str | None
     entry: str
     servers: list[str]
     tools: list[str]
@@ -86,28 +98,45 @@ def server_rows(servers: list[McpServer], tokens: TokenStore) -> list[AdminServe
     ]
 
 
-def usage_rows(spending: SpendingStore, month: str, budget_usd: float) -> list[AdminUsage]:
+def employee_rows(employees: list[Employee]) -> list[AdminEmployee]:
+    return [AdminEmployee(user_id=e.user_id, display_name=e.display_name) for e in employees]
+
+
+def usage_rows(
+    spending: SpendingStore, month: str, budget_usd: float, names: dict[str, str]
+) -> list[AdminUsage]:
     return [
         AdminUsage(
-            user_id=row.user_id, calls=row.calls, spent_usd=row.total_usd, budget_usd=budget_usd
+            user_id=row.user_id,
+            name=names.get(row.user_id),
+            calls=row.calls,
+            spent_usd=row.total_usd,
+            budget_usd=budget_usd,
         )
         for row in spending.report(month)
     ]
 
 
-async def recent_rows(database: Database, show_titles: bool) -> list[AdminActivity]:
+async def recent_rows(
+    database: Database, show_titles: bool, names: dict[str, str]
+) -> list[AdminActivity]:
     found = await recent_conversations(database, RECENT_LIMIT)
     return [
         AdminActivity(
-            user_id=c.user_id, title=c.title if show_titles else None, updated_at=c.updated_at
+            user_id=c.user_id,
+            name=names.get(c.user_id),
+            title=c.title if show_titles else None,
+            updated_at=c.updated_at,
         )
         for c in found
     ]
 
 
-def audit_row(row: AuditRow) -> AdminAuditRow:
-    return AdminAuditRow(**vars(row))
+def audit_row(row: AuditRow, names: dict[str, str]) -> AdminAuditRow:
+    return AdminAuditRow(**vars(row), name=names.get(row.user))
 
 
-def audit_page(page: AuditPage) -> AdminAuditPage:
-    return AdminAuditPage(rows=[audit_row(row) for row in page.rows], next_cursor=page.next_cursor)
+def audit_page(page: AuditPage, names: dict[str, str]) -> AdminAuditPage:
+    return AdminAuditPage(
+        rows=[audit_row(row, names) for row in page.rows], next_cursor=page.next_cursor
+    )

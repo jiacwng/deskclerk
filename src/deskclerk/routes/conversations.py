@@ -470,6 +470,25 @@ def router(services: Services) -> APIRouter:
                 await refuse(402, str(error), "over_budget")
             spent_before = await run_in_threadpool(spending.spent_usd)
             executed: list[ExecutedCall] = []
+
+            async def record_failure(outcome: str, detail: str) -> None:
+                cost = await run_in_threadpool(spending.spent_usd) - spent_before
+                turn = FinishedTurn(
+                    identity,
+                    conversation,
+                    text,
+                    started,
+                    outcome,
+                    None,
+                    cost,
+                    detail,
+                    entry,
+                    executed,
+                    edit_of,
+                )
+                await run_in_threadpool(audit.asked, turn)
+                metrics.ask_finished(outcome, started, cost, executed, None)
+
             try:
                 async with asyncio.timeout(settings.ask_seconds):
                     result = await run_agent(
@@ -513,71 +532,32 @@ def router(services: Services) -> APIRouter:
                     "wrong_decisions",
                 )
             except asyncio.CancelledError:
-                cost = await run_in_threadpool(spending.spent_usd) - spent_before
-                metrics.ask_finished("cancelled", started, cost, executed, None)
-                await run_in_threadpool(
-                    audit.asked,
-                    FinishedTurn(
-                        identity,
-                        conversation,
-                        text,
-                        started,
-                        "cancelled",
-                        None,
-                        cost,
-                        "the client stopped the request",
-                        entry,
-                        executed,
-                        edit_of,
-                    ),
-                )
+                await record_failure("cancelled", "the client stopped the request")
                 await record_turn(database, identity.user_id, conversation, text, edit_of == 0)
                 raise
             except TimeoutError:
-                cost = await run_in_threadpool(spending.spent_usd) - spent_before
                 detail = (
                     f"the ask took longer than {settings.ask_seconds} seconds "
                     "(set DESKCLERK_ASK_SECONDS to change it)"
                 )
-                await run_in_threadpool(
-                    audit.asked,
-                    FinishedTurn(
-                        identity,
-                        conversation,
-                        text,
-                        started,
-                        "timed_out",
-                        None,
-                        cost,
-                        detail,
-                        entry,
-                        executed,
-                        edit_of,
-                    ),
-                )
-                metrics.ask_finished("timed_out", started, cost, executed, None)
+                await record_failure("timed_out", detail)
                 raise FailedTurn(504, detail, executed) from None
             except ask_failures as error:
-                cost = await run_in_threadpool(spending.spent_usd) - spent_before
-                raise await upstream_failure(
-                    identity, conversation, text, started, cost, error, entry, executed, edit_of
-                ) from None
+                detail = _upstream_detail(error)
+                await record_failure("upstream_error", detail)
+                raise FailedTurn(502, detail, executed) from None
             except BaseExceptionGroup as group:
                 failed = group.subgroup(ask_failures)
                 if failed is None:
+                    if isinstance(group, Exception):
+                        await record_failure("error", type(group).__name__)
                     raise
-                cost = await run_in_threadpool(spending.spent_usd) - spent_before
-                raise await upstream_failure(
-                    identity,
-                    conversation,
-                    text,
-                    started,
-                    cost,
-                    first_leaf(failed),
-                    entry,
-                    executed,
-                    edit_of,
-                ) from None
+                detail = _upstream_detail(first_leaf(failed))
+                await record_failure("upstream_error", detail)
+                raise FailedTurn(502, detail, executed) from None
+            except Exception as error:
+                await record_failure("error", type(error).__name__)
+                raise
             await delete_dropped_turns(database, thread)
             await record_turn(database, identity.user_id, conversation, text, edit_of == 0)
         cost = await run_in_threadpool(spending.spent_usd) - spent_before
@@ -614,36 +594,5 @@ def router(services: Services) -> APIRouter:
             changed_tools=list(result.changed_tools),
             cost_usd=cost,
         )
-
-    async def upstream_failure(
-        identity: Identity,
-        conversation: UUID | None,
-        request: str,
-        started: float,
-        cost: float,
-        error: BaseException,
-        entry: str,
-        executed: list[ExecutedCall],
-        edit_of: int | None,
-    ) -> FailedTurn:
-        detail = _upstream_detail(error)
-        await run_in_threadpool(
-            audit.asked,
-            FinishedTurn(
-                identity,
-                conversation,
-                request,
-                started,
-                "upstream_error",
-                None,
-                cost,
-                detail,
-                entry,
-                executed,
-                edit_of,
-            ),
-        )
-        metrics.ask_finished("upstream_error", started, cost, executed, None)
-        return FailedTurn(502, detail, executed)
 
     return routes

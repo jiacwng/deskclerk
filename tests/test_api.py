@@ -43,7 +43,7 @@ from deskclerk.auth import Identity, SigningKeyLookup, discover_jwks_url, jwks_s
 from deskclerk.bodylimit import MAX_BODY_BYTES
 from deskclerk.config import Settings
 from deskclerk.connections import OAuthConnections
-from deskclerk.database import Database
+from deskclerk.database import Database, lock_key
 from deskclerk.instructions import system_prompt
 from deskclerk.jev import PRICE_PER_INPUT_TOKEN, Jev
 from deskclerk.routes.health import VENDOR_SCRIPTS, content_security_policy
@@ -964,6 +964,68 @@ def test_the_server_keeps_answering_while_an_audit_line_waits_for_the_chain_lock
     with psycopg.connect(DATABASE_URL) as check:
         found = check.execute("SELECT count(*) FROM audit_log").fetchone()
     assert found is not None and found[0] == 1
+
+
+class BrokenModel(ScriptedModel):
+    def _generate(self, *args: Any, **kwargs: Any) -> Any:
+        raise ZeroDivisionError("a bug in the model client")
+
+
+def test_an_unexpected_failure_in_a_turn_is_audited_counted_and_still_reaches_the_client(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="deskclerk.audit")
+    ada = as_user(sign_token, "ada")
+    model = BrokenModel(messages=iter([]))
+    with web(make_settings(token_settings), [], model, token_signing_key, database) as site:
+        with pytest.raises(ZeroDivisionError):
+            ask(site, ada)
+        counted = site.registry.get_sample_value("deskclerk_asks_total", {"outcome": "error"})
+    [line] = audit_lines(caplog)
+    assert (line["outcome"], line["cause"]) == ("error", "ZeroDivisionError")
+    assert counted == 1
+
+
+def test_one_employee_with_many_waiting_asks_takes_one_lock_connection_and_others_are_unaffected(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    model = ScriptedModel(messages=itertools.repeat(answer("ok")))
+    ada = as_user(sign_token, "ada")
+    bea = as_user(sign_token, "bea")
+    settings = make_settings(token_settings, requests_per_minute=1000)
+    with web(settings, [], model, token_signing_key, database) as site:
+        ada_statuses: list[int] = []
+        bea_statuses: list[int] = []
+        waiting = [
+            threading.Thread(target=lambda: ada_statuses.append(ask(site, ada).status_code))
+            for _ in range(25)
+        ]
+        other = threading.Thread(target=lambda: bea_statuses.append(ask(site, bea).status_code))
+        with psycopg.connect(DATABASE_URL) as holder:
+            try:
+                holder.execute("SELECT pg_advisory_xact_lock(%s)", (lock_key("ada"),))
+                for sender in waiting:
+                    sender.start()
+                time.sleep(1)
+                stats = database.lock_pool.get_stats()
+                other.start()
+                other.join(timeout=5)
+            finally:
+                holder.rollback()
+        for sender in [*waiting, other]:
+            sender.join(timeout=30)
+    assert stats["requests_waiting"] == 0
+    assert stats["pool_size"] - stats["pool_available"] <= 1
+    assert bea_statuses == [200]
+    assert len(ada_statuses) == 25
+    assert 500 not in ada_statuses
 
 
 def ask_answers_once_the_lock_is_released(

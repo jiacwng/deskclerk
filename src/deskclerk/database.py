@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,12 @@ CHECKPOINTER_CONNECTION: dict[str, Any] = {
 }
 
 
+@dataclass
+class _UserQueue:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    users: int = 0
+
+
 def lock_key(name: str) -> int:
     return int.from_bytes(hashlib.sha256(name.encode()).digest()[:8], "big", signed=True)
 
@@ -53,6 +60,7 @@ def sqlalchemy_url(url: str) -> URL:
 class Database:
     def __init__(self, url: str) -> None:
         self.url = url
+        self._user_queues: dict[str, _UserQueue] = {}
         self.pool = ConnectionPool(url, min_size=1, max_size=SYNC_POOL_SIZE, open=False)
         self.pool.open(wait=True, timeout=CONNECT_TIMEOUT_SECONDS)
         self.migrate()
@@ -85,9 +93,19 @@ class Database:
 
     @asynccontextmanager
     async def user_lock(self, user_id: str) -> AsyncIterator[None]:
-        async with self.lock_pool.connection() as connection, connection.transaction():
-            await connection.execute("SELECT pg_advisory_xact_lock(%s)", (lock_key(user_id),))
-            yield
+        queue = self._user_queues.setdefault(user_id, _UserQueue())
+        queue.users += 1
+        try:
+            async with queue.lock:
+                async with self.lock_pool.connection() as connection, connection.transaction():
+                    await connection.execute(
+                        "SELECT pg_advisory_xact_lock(%s)", (lock_key(user_id),)
+                    )
+                    yield
+        finally:
+            queue.users -= 1
+            if queue.users == 0:
+                del self._user_queues[user_id]
 
     @asynccontextmanager
     async def schema_lock(self) -> AsyncIterator[None]:
