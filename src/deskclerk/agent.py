@@ -330,6 +330,19 @@ class _Shared:
     guarded: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
+def _is_empty_text(piece: str | dict[str, Any]) -> bool:
+    if isinstance(piece, str):
+        return piece == ""
+    return piece.get("type") == "text" and piece.get("text") == ""
+
+
+def _without_empty_text(message: AIMessage) -> AIMessage:
+    if isinstance(message.content, str):
+        return message
+    kept = [piece for piece in message.content if not _is_empty_text(piece)]
+    return message.model_copy(update={"content": kept})
+
+
 class _Guard(AgentMiddleware[AgentState[Any], None, Any]):
     def __init__(self, shared: _Shared) -> None:
         super().__init__()
@@ -349,6 +362,8 @@ class _Guard(AgentMiddleware[AgentState[Any], None, Any]):
         message = response.result[-1]
         if not isinstance(message, AIMessage):
             raise TypeError(f"the model returned a {type(message).__name__}")
+        message = _without_empty_text(message)
+        response = replace(response, result=[*response.result[:-1], message])
         step_usage = usage_from(message)
         shared.usage.append(step_usage)
         await asyncio.to_thread(shared.record_usage, step_usage)

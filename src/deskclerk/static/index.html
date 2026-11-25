@@ -567,6 +567,7 @@ function detail(body, statusText) {
 
 const FAILURE_SENTENCES = {
   402: "You have reached this month's budget. It resets at the start of next month.",
+  400: "The model refused the request.",
   422: "The request was not accepted. Check it and try again.",
   429: "Too many requests in a short time. Wait a minute and try again.",
   502: "A service deskclerk relies on did not answer. Try again.",
@@ -603,7 +604,8 @@ function retryable(status) {
 function failTurn(turn, text, retry) {
   const box = make("div", "error turn-error");
   box.setAttribute("role", "alert");
-  box.append(make("span", "", text), button("Retry", retry, "small"));
+  box.append(make("span", "", text));
+  if (retry !== undefined) box.append(button("Retry", retry, "small"));
   turn.node.append(box);
   revealTurn(turn.node);
 }
@@ -616,6 +618,10 @@ function reportProblem(status, body, statusText, turn, retry) {
   const raw = detail(body, statusText);
   const sentence = FAILURE_SENTENCES[status];
   const calls = Array.isArray(body?.calls) ? body.calls : [];
+  if (status === 400 && calls.length === 0) {
+    failTurn(turn, sentence + " " + raw.slice(raw.indexOf(": ") + 2));
+    return true;
+  }
   if (retry !== undefined && calls.length === 0) {
     failTurn(turn, sentence ?? (raw === "" ? "Something went wrong (status " + status + ")" : raw), retry);
     return true;
@@ -1571,10 +1577,13 @@ async function ask(resent, edit) {
     if (edit === undefined) discardTurn(turn, previous, request);
     else restoreTurns(turn, removed, before);
   };
-  const retry = () => {
+  const retry = async () => {
+    const saved = turn.index === at;
+    if (saved) await adoptConversation(turn.id);
     turn.node.remove();
     currentTurn = previous;
-    ask(request, edit && { index: edit.index, position: el("turns").children.length });
+    const replace = saved || edit !== undefined;
+    ask(request, replace ? { index: at, position: el("turns").children.length } : undefined);
   };
   following = true;
   if (resent === undefined) {

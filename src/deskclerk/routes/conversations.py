@@ -55,12 +55,13 @@ from deskclerk.conversations import (
     thread_id,
 )
 from deskclerk.instructions import system_prompt
-from deskclerk.providers import BudgetExceeded, model_errors
+from deskclerk.providers import BudgetExceeded, model_errors, model_refusal
 from deskclerk.routes.services import Caller, Services
 from deskclerk.screen import jev_screen
 from deskclerk.spending import Spending, month_of
 
 MAX_REQUEST_CHARS = 4000
+MAX_REFUSAL_CHARS = 300
 STREAM_PING_SECONDS = 15.0
 MODEL_ERRORS = model_errors()
 
@@ -243,6 +244,13 @@ def _upstream_detail(error: BaseException) -> str:
     if isinstance(error, MODEL_ERRORS):
         return f"the model did not answer ({type(error).__name__})"
     return f"an MCP server did not answer ({type(error).__name__})"
+
+
+def _upstream_failure(error: BaseException) -> tuple[int, str, str]:
+    refusal = model_refusal(error)
+    if refusal is not None:
+        return 400, f"the model refused the request: {refusal[:MAX_REFUSAL_CHARS]}", "model_refused"
+    return 502, _upstream_detail(error), "upstream_error"
 
 
 def router(services: Services) -> APIRouter:
@@ -543,18 +551,18 @@ def router(services: Services) -> APIRouter:
                 await record_failure("timed_out", detail)
                 raise FailedTurn(504, detail, executed) from None
             except ask_failures as error:
-                detail = _upstream_detail(error)
-                await record_failure("upstream_error", detail)
-                raise FailedTurn(502, detail, executed) from None
+                status, detail, outcome = _upstream_failure(error)
+                await record_failure(outcome, detail)
+                raise FailedTurn(status, detail, executed) from None
             except BaseExceptionGroup as group:
                 failed = group.subgroup(ask_failures)
                 if failed is None:
                     if isinstance(group, Exception):
                         await record_failure("error", type(group).__name__)
                     raise
-                detail = _upstream_detail(first_leaf(failed))
-                await record_failure("upstream_error", detail)
-                raise FailedTurn(502, detail, executed) from None
+                status, detail, outcome = _upstream_failure(first_leaf(failed))
+                await record_failure(outcome, detail)
+                raise FailedTurn(status, detail, executed) from None
             except Exception as error:
                 await record_failure("error", type(error).__name__)
                 raise
