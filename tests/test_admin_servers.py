@@ -115,7 +115,7 @@ def test_an_invalid_entry_is_refused_with_the_message_of_the_entry_check(
             "name": "crm",
             "url": "https://crm.test/mcp",
             "client_id": "c",
-            "client_secret_env": "NOT_SET_ANYWHERE",
+            "client_secret_env": "DESKCLERK_SERVER_NOT_SET_ANYWHERE",
         }
         refused = [
             site.client.post("/admin/servers", json=entry, headers=admin)
@@ -126,7 +126,7 @@ def test_an_invalid_entry_is_refused_with_the_message_of_the_entry_check(
     assert [r.status_code for r in refused] == [422, 422, 422]
     assert "must be https" in refused[0].text
     assert "must use only letters" in refused[1].text
-    assert "NOT_SET_ANYWHERE" in refused[2].text
+    assert "DESKCLERK_SERVER_NOT_SET_ANYWHERE" in refused[2].text
     assert renamed.status_code == 422
     assert stored == []
 
@@ -291,11 +291,28 @@ def test_a_pause_that_leaves_the_list_unloadable_fails_and_is_not_audited_as_a_s
                 name="crm",
                 url="https://crm.test/mcp",
                 client_id="c",
-                client_secret_env="NOT_SET_ANYWHERE",
+                client_secret_env="DESKCLERK_SERVER_NOT_SET_ANYWHERE",
             )
         )
         paused = site.client.post("/admin/servers/wiki/pause", headers=admin)
     assert paused.status_code == 500
-    assert "NOT_SET_ANYWHERE" in paused.text
+    assert "DESKCLERK_SERVER_NOT_SET_ANYWHERE" in paused.text
     pause_lines = [line for line in audit_lines(caplog) if line.get("action") == "pause_server"]
     assert pause_lines == []
+
+
+def test_a_header_that_reads_a_variable_outside_the_server_prefix_is_refused(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings, admin_group=GROUP)
+    with web(settings, [], script(answer("ok")), token_signing_key, database) as site:
+        admin = bearer(sign_token, "root", [GROUP])
+        leaking = {**WIKI, "headers": {"X-Token": "${env:DESKCLERK_TOKEN_KEY}"}}
+        refused = site.client.post("/admin/servers", json=leaking, headers=admin)
+        stored = site.catalog.store.entries()
+    assert refused.status_code == 422
+    assert "start with DESKCLERK_SERVER_" in refused.text
+    assert stored == []
