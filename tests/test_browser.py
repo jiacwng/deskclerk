@@ -333,7 +333,7 @@ def test_a_deleted_conversation_starts_a_new_one_on_the_next_ask(
         _sign_in(page, base)
         _ask(page, "First")
         expect(page.get_by_text("First answer.")).to_be_visible()
-        assert page.evaluate("conversation") is not None
+        page.wait_for_function("conversation !== null")
         page.route(
             "**/ask",
             lambda route: route.fulfill(
