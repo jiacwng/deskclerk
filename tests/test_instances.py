@@ -13,11 +13,11 @@ import pytest
 from langchain_core.messages.ai import UsageMetadata
 
 from conftest import CHAIN_KEY, DATABASE_URL
-from deskclerk.api import SESSION_COOKIE
 from deskclerk.auditstore import AuditStore
 from deskclerk.auth import SigningKeyLookup
 from deskclerk.config import Settings
 from deskclerk.database import Database
+from deskclerk.routes.services import SESSION_COOKIE
 from mcp_server import RunningServer
 from test_admin import GROUP, bearer
 from test_agent import HeldModel, ScriptedModel, answer, script

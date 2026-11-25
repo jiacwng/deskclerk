@@ -24,6 +24,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import httpx2
 import openai
+import psycopg
 import pytest
 from botocore.exceptions import ClientError
 from cryptography.fernet import Fernet
@@ -34,18 +35,10 @@ from langchain_core.messages.ai import UsageMetadata
 from prometheus_client import CollectorRegistry
 from pydantic import SecretStr
 
-from conftest import CHAIN_KEY
+from conftest import CHAIN_KEY, DATABASE_URL
 from deskclerk import cookies, sessions
-from deskclerk.api import (
-    CSRF_HEADER,
-    CSRF_VALUE,
-    LOGIN_COOKIE,
-    SESSION_COOKIE,
-    VENDOR_SCRIPTS,
-    MissingSessionKey,
-    _content_security_policy,
-    create_app,
-)
+from deskclerk.api import MissingSessionKey, create_app
+from deskclerk.auditstore import CHAIN_LOCK
 from deskclerk.auth import Identity, SigningKeyLookup, discover_jwks_url, jwks_signing_key
 from deskclerk.bodylimit import MAX_BODY_BYTES
 from deskclerk.config import Settings
@@ -53,6 +46,9 @@ from deskclerk.connections import OAuthConnections
 from deskclerk.database import Database
 from deskclerk.instructions import system_prompt
 from deskclerk.jev import PRICE_PER_INPUT_TOKEN, Jev
+from deskclerk.routes.health import VENDOR_SCRIPTS, content_security_policy
+from deskclerk.routes.services import CSRF_HEADER, CSRF_VALUE, SESSION_COOKIE
+from deskclerk.routes.signin import LOGIN_COOKIE
 from deskclerk.screen import NOTICE
 from deskclerk.servers import McpServer, ServerEntry
 from deskclerk.serverstore import ServerCatalog, ServerStore
@@ -934,6 +930,105 @@ def test_a_refused_ask_is_audited_with_its_outcome(
     assert [line["outcome"] for line in audit_lines(caplog)] == ["answered", "rate_limited"]
 
 
+def test_the_server_keeps_answering_while_an_audit_line_waits_for_the_chain_lock(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings)
+    ada = as_user(sign_token, "ada")
+    with web(settings, [notes(notes_server)], script(), token_signing_key, database) as site:
+        outcome: list[int] = []
+        disconnecting = threading.Thread(
+            target=lambda: outcome.append(
+                site.client.post("/servers/notes/disconnect", headers=ada).status_code
+            )
+        )
+        livez: list[int] = []
+        probe = threading.Thread(target=lambda: livez.append(site.client.get("/livez").status_code))
+        with psycopg.connect(DATABASE_URL) as holder:
+            try:
+                holder.execute("SELECT pg_advisory_xact_lock(%s)", (CHAIN_LOCK,))
+                disconnecting.start()
+                time.sleep(0.5)
+                probe.start()
+                probe.join(timeout=1)
+                assert livez == [200]
+                assert disconnecting.is_alive()
+            finally:
+                holder.rollback()
+        disconnecting.join(timeout=10)
+    assert outcome == [204]
+    with psycopg.connect(DATABASE_URL) as check:
+        found = check.execute("SELECT count(*) FROM audit_log").fetchone()
+    assert found is not None and found[0] == 1
+
+
+def ask_answers_once_the_lock_is_released(
+    site: Web, headers: dict[str, str], lock_sql: str, params: tuple[object, ...] = ()
+) -> None:
+    outcome: list[int] = []
+    asking = threading.Thread(target=lambda: outcome.append(ask(site, headers).status_code))
+    livez: list[int] = []
+    probe = threading.Thread(target=lambda: livez.append(site.client.get("/livez").status_code))
+    with psycopg.connect(DATABASE_URL) as holder:
+        try:
+            holder.execute(lock_sql, params)
+            asking.start()
+            time.sleep(0.5)
+            probe.start()
+            probe.join(timeout=1)
+            assert livez == [200]
+            assert asking.is_alive()
+        finally:
+            holder.rollback()
+    asking.join(timeout=10)
+    assert outcome == [200]
+
+
+def test_the_server_keeps_answering_while_the_audit_of_an_ask_waits_for_the_chain_lock(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    model = ScriptedModel(messages=itertools.repeat(answer("ok")))
+    ada = as_user(sign_token, "ada")
+    with web(make_settings(token_settings), [], model, token_signing_key, database) as site:
+        ask_answers_once_the_lock_is_released(
+            site, ada, "SELECT pg_advisory_xact_lock(%s)", (CHAIN_LOCK,)
+        )
+
+
+def test_the_server_keeps_answering_while_the_budget_check_waits_for_the_costs_table(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    model = ScriptedModel(messages=itertools.repeat(answer("ok")))
+    ada = as_user(sign_token, "ada")
+    with web(make_settings(token_settings), [], model, token_signing_key, database) as site:
+        ask_answers_once_the_lock_is_released(
+            site, ada, "LOCK TABLE costs IN ACCESS EXCLUSIVE MODE"
+        )
+
+
+def test_the_server_keeps_answering_while_the_cost_of_a_step_waits_for_the_costs_table(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    model = ScriptedModel(messages=itertools.repeat(answer("ok")))
+    ada = as_user(sign_token, "ada")
+    with web(make_settings(token_settings), [], model, token_signing_key, database) as site:
+        # SHARE mode blocks inserts but lets the budget check read, so only the cost record waits
+        ask_answers_once_the_lock_is_released(site, ada, "LOCK TABLE costs IN SHARE MODE")
+
+
 def test_a_cookie_post_needs_the_custom_header_and_a_bearer_post_does_not(
     sign_token: Sign,
     token_settings: Settings,
@@ -1142,7 +1237,7 @@ def test_the_vendored_scripts_are_served_as_javascript_and_nothing_else_is(
 def test_the_policy_refuses_a_page_whose_vendored_script_does_not_match_its_file() -> None:
     page = "<style></style><script></script>"
     with pytest.raises(ValueError, match="vendor/marked.js"):
-        _content_security_policy(page, {"marked.js": b"code"})
+        content_security_policy(page, {"marked.js": b"code"})
 
 
 def test_the_page_shows_the_calls_that_ran_before_a_failure(
@@ -2481,7 +2576,7 @@ def test_a_token_exchange_the_login_server_refuses_logs_its_reason_and_redirects
     database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.WARNING, logger="deskclerk.api")
+    caplog.set_level(logging.WARNING, logger="deskclerk.routes")
     settings = make_settings(token_settings)
     idp = FakeIdp(settings.issuer)
 
@@ -2511,7 +2606,7 @@ def test_a_refused_id_token_logs_the_check_that_failed(
     database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.WARNING, logger="deskclerk.api")
+    caplog.set_level(logging.WARNING, logger="deskclerk.routes")
     settings = make_settings(token_settings)
     idp = FakeIdp(settings.issuer)
     with web(settings, [], script(), token_signing_key, database, idp.transport) as site:
@@ -2527,7 +2622,7 @@ def test_an_error_from_the_login_server_on_the_callback_is_logged_and_redirects(
     database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.WARNING, logger="deskclerk.api")
+    caplog.set_level(logging.WARNING, logger="deskclerk.routes")
     settings = make_settings(token_settings)
     with web(settings, [], script(), token_signing_key, database) as site:
         refused = site.client.get(
@@ -2545,7 +2640,7 @@ def test_starting_a_sign_in_when_the_login_server_is_down_redirects_and_logs_why
     database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.WARNING, logger="deskclerk.api")
+    caplog.set_level(logging.WARNING, logger="deskclerk.routes")
     settings = make_settings(token_settings)
 
     def down(request: httpx.Request) -> httpx.Response:
@@ -2567,7 +2662,7 @@ def test_a_failed_connect_logs_why(
     database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.WARNING, logger="deskclerk.api")
+    caplog.set_level(logging.WARNING, logger="deskclerk.routes")
     settings = make_settings(token_settings)
     ada, grace = as_user(sign_token, "ada"), as_user(sign_token, "grace")
     with web(settings, [notes(notes_server)], script(), token_signing_key, database) as site:

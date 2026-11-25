@@ -87,12 +87,11 @@ class Spending:
         self._user_id = user_id
         self._month = month
 
-    @property
-    def cost_usd(self) -> float:
+    def spent_usd(self) -> float:
         return self._store.load(self._user_id, self._month)
 
     def check(self) -> None:
-        spent = self.cost_usd
+        spent = self.spent_usd()
         if spent >= self.budget_usd:
             raise BudgetExceeded(
                 f"spent {spent:.4f} USD this month, the budget is "

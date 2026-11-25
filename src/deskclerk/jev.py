@@ -1,7 +1,7 @@
 # TypeSafe's Jev decision model through its official SDK: yes/no questions (Nouls) about one
 # piece of state, each answered with the probability of yes. The SDK reads TYPESAFE_API_KEY, retries
 # busy or failed calls, and keeps credentials out of its errors; this module adds the running
-# cost, an optional spending cap and one exception type for the callers.
+# cost and one exception type for the callers.
 
 import os
 import threading
@@ -30,9 +30,8 @@ class JevInputTooLong(JevError):
 
 
 class Jev:
-    def __init__(self, client: TypeSafeClient, budget_usd: float | None) -> None:
+    def __init__(self, client: TypeSafeClient) -> None:
         self._client = client
-        self.budget_usd = budget_usd
         self._lock = threading.Lock()
         self.input_tokens = 0
 
@@ -48,27 +47,14 @@ class Jev:
         on_tokens: Callable[[int], None] | None = None,
     ) -> float:
         question = Noul(instructions=instructions, criteria=criteria)
-        return self._ask(state, {"answer": question}, on_tokens)["answer"]
+        return self.ask(state, {"answer": question}, on_tokens)["answer"]
 
-    def noul_many(
-        self,
-        state: Any,
-        instructions: Mapping[str, str],
-        on_tokens: Callable[[int], None] | None = None,
-    ) -> dict[str, float]:
-        questions = {name: Noul(instructions=text) for name, text in instructions.items()}
-        return self._ask(state, questions, on_tokens)
-
-    def _ask(
+    def ask(
         self,
         state: Any,
         questions: Mapping[str, Noul],
         on_tokens: Callable[[int], None] | None,
     ) -> dict[str, float]:
-        if self.budget_usd is not None and self.cost_usd >= self.budget_usd:
-            raise JevError(
-                f"Jev spent {self.cost_usd:.4f} USD, its budget is {self.budget_usd} USD"
-            )
         try:
             response = self._client.system_one(state, questions, model=MODEL)
         except TypeSafeBadRequestError as error:
@@ -85,7 +71,7 @@ class Jev:
         return {name: float(response.nouls[name].noul) for name in questions}
 
 
-def jev_from_environment(budget_usd: float | None = None) -> Jev | None:
+def jev_from_environment() -> Jev | None:
     if not os.environ.get("TYPESAFE_API_KEY", "").strip():
         return None
-    return Jev(TypeSafeClient(), budget_usd)
+    return Jev(TypeSafeClient())

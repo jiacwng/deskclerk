@@ -17,8 +17,9 @@ from typing import Any
 
 import anthropic
 
+from budgeted_jev import budgeted_jev_from_environment
 from compare import mcnemar_exact
-from deskclerk.jev import Jev, jev_from_environment
+from deskclerk.jev import Jev
 from deskclerk.screen import Screen, jev_screen
 from dojo_summary import model_cost_usd
 
@@ -367,7 +368,7 @@ def run(arguments: argparse.Namespace) -> None:
     print(f"{len(records)} cases cached, {len(todo)} to run", file=sys.stderr)
 
     spend = Spend()
-    jev: Jev | None = jev_from_environment(JEV_BUDGET_USD)
+    jev: Jev | None = budgeted_jev_from_environment(JEV_BUDGET_USD)
     if jev is None:
         raise SystemExit("TYPESAFE_API_KEY is not set")
     client = anthropic.Anthropic(max_retries=4, timeout=45.0)

@@ -7,10 +7,10 @@ from typing import Any
 
 import pytest
 
-from deskclerk.api import CSRF_HEADER, CSRF_VALUE, SESSION_COOKIE
 from deskclerk.auth import Identity, SigningKeyLookup
 from deskclerk.config import Settings
 from deskclerk.database import Database
+from deskclerk.routes.services import CSRF_HEADER, CSRF_VALUE, SESSION_COOKIE
 from test_admin import GROUP, bearer
 from test_agent import answer, script
 from test_api import Sign, as_user, audit_lines, make_settings, session_cookie, web

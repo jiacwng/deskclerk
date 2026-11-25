@@ -1,6 +1,6 @@
 # Runs deskclerk's agent loop on one WorkBench split against the five WorkBench MCP servers, one
-# per domain, with one of four ways of choosing the tools the model sees, and writes a results
-# file in the format of the reference runner.
+# per domain, offering the model every tool, and writes a results file in the format of the
+# reference runner.
 import argparse
 import asyncio
 import json
@@ -9,9 +9,9 @@ import socket
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import ExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from itertools import zip_longest
 from pathlib import Path
 from typing import Any
@@ -20,27 +20,31 @@ import anthropic
 import httpx
 import httpx2
 from cryptography.fernet import Fernet
-from langchain.agents.middleware import AgentMiddleware, LLMToolSelectorMiddleware
 from langchain.chat_models import init_chat_model
-from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage
-from langchain_core.outputs import ChatGeneration, LLMResult
 from langgraph.checkpoint.memory import InMemorySaver
 from mcp.shared.exceptions import MCPError
 
-from deskclerk.agent import AgentResult, Gate, ProposedCall, Verdict, run_agent
+from deskclerk.agent import (
+    AgentResult,
+    ConversationThread,
+    Decision,
+    Gate,
+    Limits,
+    ProposedCall,
+    ToolAccess,
+    Verdict,
+    run_agent,
+)
 from deskclerk.config import Settings
 from deskclerk.connections import OAuthConnections
 from deskclerk.database import Database
 from deskclerk.instructions import INSTRUCTIONS
-from deskclerk.jev import PRICE_PER_INPUT_TOKEN, Jev, jev_from_environment
-from deskclerk.providers import Usage, cost_of, model_options, usage_from
+from deskclerk.providers import Usage, cost_of, model_options
 from deskclerk.screen import pass_through
 from deskclerk.servers import McpServer
 from deskclerk.tokens import TokenStore
 from deskclerk.writecheck import write_check
-from scope import jev_tool_selection
 from workbench import SERVERS, Task, date_line, split_tasks, write_results
 
 SERVER = Path(__file__).parent / "workbench_server.py"
@@ -49,27 +53,12 @@ MODEL_RETRIES = 10
 USER = "bench"
 CUT_OFF_MESSAGE = "reply cut off at the output limit"
 PROVIDER_FAILURES = (anthropic.APIError, MCPError, httpx2.HTTPError)
-SELECTOR_CRASH = "tool selector crashed"
-SELECTIONS = ("all", "server", "llm")
 
 
 @dataclass(frozen=True)
 class WorkbenchText:
     system: str
     stopped_message: str
-
-
-class SelectorUsage(BaseCallbackHandler):
-    def __init__(self) -> None:
-        self.calls: list[Usage] = []
-
-    def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
-        for generations in response.generations:
-            for generation in generations:
-                if isinstance(generation, ChatGeneration) and isinstance(
-                    generation.message, AIMessage
-                ):
-                    self.calls.append(usage_from(generation.message))
 
 
 @dataclass(frozen=True)
@@ -79,10 +68,6 @@ class Worker:
     model: BaseChatModel
     gate: Gate
     model_name: str
-    selection: str = "all"
-    jev: Jev | None = None
-    selector: BaseChatModel | None = None
-    selector_usage: SelectorUsage = field(default_factory=SelectorUsage)
 
 
 def load_workbench_text(workbench: Path) -> WorkbenchText:
@@ -95,60 +80,58 @@ def load_workbench_text(workbench: Path) -> WorkbenchText:
     return WorkbenchText(system, AGENT_STOPPED_MESSAGE)
 
 
-def make_selection(
-    worker: Worker, on_jev_tokens: Callable[[int], None]
-) -> AgentMiddleware[Any, Any, Any] | None:
-    if worker.selection == "llm":
-        return LLMToolSelectorMiddleware(model=worker.selector, on_parsing_failure="all")
-    if worker.selection == "server":
-        return jev_tool_selection(worker.jev, True, on_jev_tokens)
-    return None
+async def approve_until_done(
+    start: Callable[[dict[str, Decision] | None], Awaitable[AgentResult]], limit: int
+) -> list[AgentResult]:
+    results = [await start(None)]
+    for _ in range(limit):
+        if not results[-1].pending:
+            break
+        results.append(await start({call.id: "approve" for call in results[-1].pending}))
+    return results
 
 
 async def run_task(worker: Worker, task: Task, text: WorkbenchText) -> dict[str, Any]:
     base = worker.url
     servers = [McpServer(name, f"{base}/{name}/mcp", None, None, "none") for name in SERVERS]
-    jev_tokens: list[int] = []
-    selector_start = len(worker.selector_usage.calls)
     usage: list[Usage] = []
     answer, error = "", ""
     blocked: list[dict[str, Any]] = []
+    step_limit: int = Settings.model_fields["step_limit"].default
+    conversation = ConversationThread(InMemorySaver(), f"{USER}/{task.domain}-{task.index}", [])
+
+    async def start(decisions: dict[str, Decision] | None) -> AgentResult:
+        return await run_agent(
+            USER,
+            task.text,
+            text.system,
+            ToolAccess(servers, worker.connections, worker.connections.tokens),
+            conversation,
+            worker.model,
+            worker.gate,
+            pass_through,
+            Limits(step_limit),
+            usage.append,
+            decisions=decisions,
+        )
+
     async with httpx.AsyncClient() as http:
         (await http.post(f"{base}/bench/reset")).raise_for_status()
         try:
-            result: AgentResult = await run_agent(
-                USER,
-                task.text,
-                text.system,
-                servers,
-                worker.connections,
-                worker.connections.tokens,
-                InMemorySaver(),
-                f"{USER}/{task.domain}-{task.index}",
-                [],
-                worker.model,
-                worker.gate,
-                pass_through,
-                Settings.model_fields["step_limit"].default,
-                usage.append,
-                selection=make_selection(worker, jev_tokens.append),
-                confirm_writes=False,
-            )
-            answer = result.answer
-            for call in result.blocked:
-                blocked.append(
-                    {"tool": call.tool, "arguments": call.arguments, "reason": call.reason}
-                )
-            if result.cut_off:
+            results = await approve_until_done(start, step_limit)
+            last = results[-1]
+            answer = last.answer
+            for result in results:
+                for call in result.blocked:
+                    blocked.append(
+                        {"tool": call.tool, "arguments": call.arguments, "reason": call.reason}
+                    )
+            if last.cut_off:
                 error = CUT_OFF_MESSAGE
-            elif result.step_limit_hit:
+            elif last.step_limit_hit or last.pending:
                 error = text.stopped_message
         except PROVIDER_FAILURES as failure:
             error = str(failure)
-        except ValueError as failure:
-            if worker.selection != "llm":
-                raise
-            error = f"{SELECTOR_CRASH}: {type(failure).__name__}: {failure}"
         logged = (await http.get(f"{base}/bench/calls")).raise_for_status().json()
 
     total = Usage(
@@ -157,15 +140,6 @@ async def run_task(worker: Worker, task: Task, text: WorkbenchText) -> dict[str,
         sum(step.cache_read_tokens for step in usage),
         sum(step.cache_write_tokens for step in usage),
     )
-    selector = Usage(0, 0, 0, 0)
-    for call in worker.selector_usage.calls[selector_start:]:
-        selector = Usage(
-            selector.input_tokens + call.input_tokens,
-            selector.output_tokens + call.output_tokens,
-            selector.cache_read_tokens + call.cache_read_tokens,
-            selector.cache_write_tokens + call.cache_write_tokens,
-        )
-    selection_usd = sum(jev_tokens) * PRICE_PER_INPUT_TOKEN + cost_of(worker.model_name, selector)
     return {
         "domain": task.domain,
         "task": task.text,
@@ -176,11 +150,8 @@ async def run_task(worker: Worker, task: Task, text: WorkbenchText) -> dict[str,
         "output_tokens": total.output_tokens,
         "cache_read_tokens": total.cache_read_tokens,
         "cache_write_tokens": total.cache_write_tokens,
-        "cost_usd": cost_of(worker.model_name, total) + selection_usd,
+        "cost_usd": cost_of(worker.model_name, total),
         "blocked": json.dumps(blocked),
-        "selection_usd": selection_usd,
-        "selector_input_tokens": selector.input_tokens,
-        "jev_input_tokens": sum(jev_tokens),
     }
 
 
@@ -250,8 +221,6 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--gate", choices=["none", "rules"], required=True)
     parser.add_argument("--model", default="anthropic:claude-haiku-5-5")
     parser.add_argument("--server-python", required=True)
-    parser.add_argument("--selection", choices=SELECTIONS, default="all")
-    parser.add_argument("--jev-budget-usd", type=float, default=1.0)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--out", type=Path, required=True)
@@ -276,32 +245,18 @@ def mixed_domains(tasks: list[Task], limit: int) -> list[Task]:
     return interleaved[:limit]
 
 
-def make_model(name: str, provider: str, callbacks: list[BaseCallbackHandler] | None) -> Any:
+def make_model(name: str, provider: str) -> Any:
     return init_chat_model(
         name,
         model_provider=provider,
         max_retries=MODEL_RETRIES,
-        callbacks=callbacks,
         **model_options(provider),
     )
 
 
-def make_worker(
-    url: str, connections: OAuthConnections, gate: Gate, jev: Jev | None, arguments: Any
-) -> Worker:
-    provider, name = arguments.model.split(":", 1)
-    usage = SelectorUsage()
-    return Worker(
-        url,
-        connections,
-        make_model(name, provider, None),
-        gate,
-        arguments.model,
-        arguments.selection,
-        jev,
-        make_model(name, provider, [usage]) if arguments.selection == "llm" else None,
-        usage,
-    )
+def make_worker(url: str, connections: OAuthConnections, gate: Gate, model_id: str) -> Worker:
+    provider, name = model_id.split(":", 1)
+    return Worker(url, connections, make_model(name, provider), gate, model_id)
 
 
 def main() -> None:
@@ -313,9 +268,6 @@ def main() -> None:
     tasks = split_tasks(workbench, arguments.split)
     if arguments.limit is not None:
         tasks = mixed_domains(tasks, arguments.limit)
-    jev = jev_from_environment(arguments.jev_budget_usd)
-    if arguments.selection == "server" and jev is None:
-        raise SystemExit("TYPESAFE_API_KEY is not set")
     database = Database(os.environ["DESKCLERK_DATABASE_URL"])
     with ExitStack() as stack:
         tokens = TokenStore(database, Fernet.generate_key().decode())
@@ -325,8 +277,7 @@ def main() -> None:
                 start_server(stack, arguments.server_python, workbench),
                 connections,
                 gate,
-                jev,
-                arguments,
+                arguments.model,
             )
             for _ in range(arguments.workers)
         ]

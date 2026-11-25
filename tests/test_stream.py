@@ -259,7 +259,7 @@ def test_a_comment_line_keeps_a_quiet_stream_alive(
     database: Database,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("deskclerk.api.STREAM_PING_SECONDS", 0.05)
+    monkeypatch.setattr("deskclerk.routes.conversations.STREAM_PING_SECONDS", 0.05)
     model = SlowModel(messages=iter([answer("slow")]))
     with web(make_settings(token_settings), [], model, token_signing_key, database) as site:
         response = stream(site, as_user(sign_token, "ada"))

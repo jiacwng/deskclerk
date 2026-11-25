@@ -28,9 +28,18 @@ def test_the_budget_counts_cache_costs(database: Database) -> None:
     spending.check()
     spending.record(second)
 
-    assert spending.cost_usd == pytest.approx(total)
+    assert spending.spent_usd() == pytest.approx(total)
     with pytest.raises(BudgetExceeded):
         spending.check()
+
+
+def test_an_employee_who_has_spent_exactly_the_budget_is_stopped(database: Database) -> None:
+    spending_for(database).record(Usage(50_000, 0, 0, 0))
+    spent = spending_for(database).spent_usd()
+
+    with pytest.raises(BudgetExceeded):
+        spending_for(database, budget=spent).check()
+    spending_for(database, budget=spent * 1.01).check()
 
 
 def test_the_cost_is_the_model_plus_jev(database: Database) -> None:
@@ -39,7 +48,7 @@ def test_the_cost_is_the_model_plus_jev(database: Database) -> None:
     spending.record(Usage(50_000, 0, 0, 0))
     spending.record_jev(500_000)
 
-    assert spending.cost_usd == pytest.approx(
+    assert spending.spent_usd() == pytest.approx(
         cost_of(MODEL, Usage(50_000, 0, 0, 0)) + 500_000 * PRICE_PER_INPUT_TOKEN
     )
     spending.check()
@@ -52,7 +61,7 @@ def test_spending_survives_a_new_store_on_the_same_database(database: Database) 
 
     again = spending_for(database, budget=0.04)
 
-    assert again.cost_usd == pytest.approx(
+    assert again.spent_usd() == pytest.approx(
         cost_of(MODEL, Usage(90_000, 200, 3, 4)) + 1_000_000 * PRICE_PER_INPUT_TOKEN
     )
     with pytest.raises(BudgetExceeded):
@@ -72,15 +81,17 @@ def test_a_new_month_starts_at_zero(database: Database) -> None:
 
     november = spending_for(database, month="2026-11", budget=cost / 2)
 
-    assert november.cost_usd == 0.0
+    assert november.spent_usd() == 0.0
     november.check()
-    assert spending_for(database, month="2026-10", budget=cost / 2).cost_usd == pytest.approx(cost)
+    assert spending_for(database, month="2026-10", budget=cost / 2).spent_usd() == pytest.approx(
+        cost
+    )
 
 
 def test_each_employee_has_their_own_spending(database: Database) -> None:
     spending_for(database, user_id="ada").record(Usage(90_000, 0, 0, 0))
 
-    assert spending_for(database, user_id="grace").cost_usd == 0.0
+    assert spending_for(database, user_id="grace").spent_usd() == 0.0
 
 
 def test_each_call_is_priced_on_its_own(database: Database) -> None:
@@ -90,6 +101,6 @@ def test_each_call_is_priced_on_its_own(database: Database) -> None:
     spending.record(Usage(60_000, 0, 0, 0))
 
     one_call = cost_of(MODEL, Usage(60_000, 0, 0, 0))
-    assert spending.cost_usd == pytest.approx(2 * one_call)
-    assert spending.cost_usd < cost_of(MODEL, Usage(120_000, 0, 0, 0))
-    assert spending_for(database).cost_usd == pytest.approx(2 * one_call)
+    assert spending.spent_usd() == pytest.approx(2 * one_call)
+    assert spending.spent_usd() < cost_of(MODEL, Usage(120_000, 0, 0, 0))
+    assert spending_for(database).spent_usd() == pytest.approx(2 * one_call)
