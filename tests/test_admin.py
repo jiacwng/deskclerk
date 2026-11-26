@@ -86,7 +86,7 @@ def test_someone_not_signed_in_is_sent_to_sign_in(
     with web(settings, [], script(answer("ok")), token_signing_key, database) as site:
         page = site.client.get("/admin", follow_redirects=False)
         assert page.status_code == 302
-        assert page.headers["location"] == "/login"
+        assert page.headers["location"] == "/login?next=/admin"
         assert site.client.get("/admin/summary").status_code == 401
 
 

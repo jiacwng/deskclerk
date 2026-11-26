@@ -79,7 +79,7 @@ def router(services: Services) -> APIRouter:
             await services.admin_caller(request)
         except HTTPException as refused:
             if refused.status_code == 401:
-                return RedirectResponse("/login", status_code=302)
+                return RedirectResponse("/login?next=/admin", status_code=302)
             raise
         return HTMLResponse(admin_page, headers=headers)
 
