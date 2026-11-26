@@ -4,13 +4,15 @@
 # time of the last message. Each employee row also carries the display name recorded at sign-in,
 # or none when the employee has not been seen since names were stored. A title is the start of a
 # request, so it is shown only when DESKCLERK_AUDIT_TEXT allows request text in the logs. The audit
-# routes read the audit table.
+# routes read the audit table. A server's tools are listed live, as the admin, to show whether the
+# server answers and which of its tools write.
 
 from datetime import datetime
 
 from pydantic import BaseModel
 
 from deskclerk.auditstore import AuditPage, AuditRow
+from deskclerk.connections import ToolInfo
 from deskclerk.conversations import recent_conversations
 from deskclerk.database import Database
 from deskclerk.employees import Employee
@@ -25,9 +27,25 @@ class AdminServer(BaseModel):
     name: str
     url: str
     auth: str
+    has_headers: bool
+    trusted: bool
     paused: bool
     employees_connected: int | None
     allowlist_size: int | None
+
+
+class AdminTool(BaseModel):
+    name: str
+    title: str
+    read_only: bool
+    allowlisted: bool
+    asks_first: bool
+
+
+class AdminServerTools(BaseModel):
+    reachable: bool | None
+    error: str | None
+    tools: list[AdminTool]
 
 
 class AdminEmployee(BaseModel):
@@ -90,11 +108,28 @@ def server_rows(servers: list[McpServer], tokens: TokenStore) -> list[AdminServe
             name=server.name,
             url=server.url,
             auth=server.auth,
+            has_headers=bool(server.headers),
+            trusted=server.trusted,
             paused=server.paused,
             employees_connected=None if server.auth == "none" else counts.get(server.name, 0),
             allowlist_size=None if server.tools is None else len(server.tools),
         )
         for server in servers
+    ]
+
+
+def tool_rows(server: McpServer, listed: list[ToolInfo]) -> list[AdminTool]:
+    return [
+        AdminTool(
+            name=tool.name,
+            title=tool.title,
+            read_only=tool.read_only,
+            allowlisted=server.tools is None or tool.name in server.tools,
+            asks_first=not tool.read_only
+            or not server.trusted
+            or tool.name in server.confirm_tools,
+        )
+        for tool in listed
     ]
 
 

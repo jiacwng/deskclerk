@@ -1,7 +1,7 @@
 # The admin routes that change things: members of the admin group add, edit, pause, resume and
 # remove a server and revoke an employee, each change is audited, a non-member is refused, a
-# browser session must send the request header, and an invalid entry is refused with the entry
-# check's message.
+# browser session must send the request header, an invalid entry is refused with the entry
+# check's message, and an admin lists a server's tools live to see whether it answers.
 
 from typing import Any
 
@@ -12,12 +12,14 @@ from deskclerk.auth import Identity, SigningKeyLookup
 from deskclerk.config import Settings
 from deskclerk.database import Database
 from deskclerk.routes.services import CSRF_HEADER, CSRF_VALUE, SESSION_COOKIE
-from deskclerk.servers import ServerEntry
+from deskclerk.servers import McpServer, ServerEntry
 from deskclerk.serverstore import ServerStore
 from deskclerk.tokens import Kind, TokenStore
+from mcp_server import running_mcp_server
 from test_admin import GROUP, bearer
 from test_agent import answer, script
 from test_api import Sign, Web, as_user, audit_lines, make_settings, session_cookie, web
+from test_connections import REDIRECT
 
 WIKI = {"name": "wiki", "url": "http://127.0.0.1:9/mcp", "auth": "none"}
 WRITES: list[tuple[str, str, dict[str, Any] | None]] = [
@@ -316,3 +318,36 @@ def test_a_header_that_reads_a_variable_outside_the_server_prefix_is_refused(
     assert refused.status_code == 422
     assert "start with DESKCLERK_SERVER_" in refused.text
     assert stored == []
+
+
+def test_an_admin_sees_whether_each_server_answers_and_which_of_its_tools_write(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings, admin_group=GROUP)
+    with running_mcp_server(REDIRECT, oauth=False) as running:
+        servers = [
+            McpServer("open", running.url, None, None, "none", tools=("read_note",), trusted=True),
+            McpServer("gone", "http://127.0.0.1:9/mcp", None, None, "none"),
+            McpServer("notes", running.url, None, None, "oauth"),
+        ]
+        with web(settings, servers, script(answer("ok")), token_signing_key, database) as site:
+            admin = bearer(sign_token, "root", [GROUP])
+            listed = site.client.get("/admin/servers/open/tools", headers=admin).json()
+            gone = site.client.get("/admin/servers/gone/tools", headers=admin).json()
+            unsigned = site.client.get("/admin/servers/notes/tools", headers=admin).json()
+            missing = site.client.get("/admin/servers/nope/tools", headers=admin)
+            outsider = bearer(sign_token, "bob", ["finance"])
+            refused = site.client.get("/admin/servers/open/tools", headers=outsider)
+    tools = {
+        t["name"]: (t["read_only"], t["allowlisted"], t["asks_first"]) for t in listed["tools"]
+    }
+    assert listed["reachable"] is True
+    assert tools["read_note"] == (True, True, False)
+    assert tools["write_note"] == (False, False, True)
+    assert (gone["reachable"], gone["tools"]) == (False, [])
+    assert gone["error"].startswith("ConnectError")
+    assert unsigned == {"reachable": None, "error": None, "tools": []}
+    assert (missing.status_code, refused.status_code) == (404, 403)
