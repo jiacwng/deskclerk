@@ -333,7 +333,7 @@ async function send(path, options, problem) {
     return null;
   }
   if (response.status === 401) {
-    window.location.assign("/login");
+    window.location.assign("/login?next=/admin");
     return null;
   }
   if (!response.ok) {
@@ -895,7 +895,7 @@ function fillPicker(employees) {
 async function load() {
   const response = await fetch("/admin/summary");
   if (response.status === 401) {
-    window.location.assign("/login");
+    window.location.assign("/login?next=/admin");
     return;
   }
   if (!response.ok) {

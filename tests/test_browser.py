@@ -599,7 +599,7 @@ def test_a_write_after_the_session_lapsed_goes_to_the_sign_in_page(
         with _app(port, database, [open_notes(running)], script()) as base:
             _open_admin(page, base)
             page.route("**/admin/servers/open/pause", lambda route: route.fulfill(status=401))
-            with page.expect_request(lambda request: request.url == f"{base}/login"):
+            with page.expect_request(lambda request: request.url == f"{base}/login?next=/admin"):
                 page.get_by_role("button", name="Pause").click()
 
 
