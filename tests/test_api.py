@@ -31,7 +31,7 @@ from botocore.exceptions import ClientError
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_core.messages.ai import UsageMetadata
 from prometheus_client import CollectorRegistry
 from pydantic import SecretStr
@@ -47,6 +47,7 @@ from deskclerk.connections import OAuthConnections
 from deskclerk.database import Database, lock_key
 from deskclerk.instructions import system_prompt
 from deskclerk.jev import PRICE_PER_INPUT_TOKEN, Jev
+from deskclerk.routes.conversations import MAX_REQUEST_CHARS
 from deskclerk.routes.health import VENDOR_SCRIPTS, content_security_policy
 from deskclerk.routes.services import CSRF_HEADER, CSRF_VALUE, SESSION_COOKIE
 from deskclerk.routes.signin import LOGIN_COOKIE
@@ -308,7 +309,7 @@ def test_the_page_has_a_banner_for_unscreened_results() -> None:
 
 def test_the_flag_reason_says_the_flag_holds_for_the_whole_conversation() -> None:
     page = resources.files("deskclerk").joinpath("static/index.html").read_text(encoding="utf-8")
-    assert "An earlier result in this conversation was flagged" in page
+    assert "an earlier result in this conversation" in page
     assert "in this turn" not in page
 
 
@@ -660,7 +661,7 @@ def test_the_page_tells_an_employee_when_a_tool_result_was_flagged(
     settings = make_settings(token_settings)
     with web(settings, [], script(), token_signing_key, database) as site:
         page = site.client.get("/").text
-    assert "looked like it contained instructions" in page
+    assert "Possible prompt injection detected in a tool result" in page
 
 
 def test_asks_beyond_the_per_minute_quota_get_429_for_that_employee_only(
@@ -2388,6 +2389,41 @@ def test_an_edited_confirmation_runs_the_edited_arguments_and_is_audited_as_an_e
     [executed] = cast(list[dict[str, Any]], confirmed["executed"])
     assert executed["arguments_hmac"] == arguments_hmac({"text": "hello"})
     assert executed["arguments_hmac"] != arguments_hmac({"text": "hi"})
+
+
+def test_a_rejection_reason_reaches_the_model_and_the_audit_log_and_its_length_is_bounded(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    database: Database,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="deskclerk.audit")
+    model = script(calls(("notes__write_note", {"text": "hi"})), answer("not saved"))
+    ada = as_user(sign_token, "ada")
+    settings = make_settings(token_settings, audit_text=True)
+    with web(settings, [notes(notes_server)], model, token_signing_key, database) as site:
+        connect(site, ada)
+        paused = ask(site, ada, "save a note").json()
+        call_id = paused["pending"][0]["id"]
+        too_long = {call_id: {"reject": "x" * (MAX_REQUEST_CHARS + 1)}}
+        assert confirm(site, ada, paused["conversation"], too_long).status_code == 422
+        done = confirm(site, ada, paused["conversation"], {call_id: {"reject": "wrong day"}})
+    assert done.status_code == 200
+    assert notes_server.notes == []
+    told = [message for message in model.seen[-1] if isinstance(message, ToolMessage)]
+    assert "wrong day" in str(told[-1].content)
+    confirmed = [line for line in audit_lines(caplog) if line["entry"] == "confirm"][-1]
+    assert confirmed["decided"] == [
+        {
+            "server": "notes",
+            "tool": "write_note",
+            "decision": "reject",
+            "arguments_hmac": arguments_hmac({"text": "hi"}),
+            "reason": "wrong day",
+        }
+    ]
 
 
 def test_a_malformed_edit_is_refused_and_the_client_cannot_name_another_tool(
