@@ -1,5 +1,5 @@
 # The chat and admin pages in headless Chromium against the real app, the development Keycloak and
-# a scripted model: sign-in, the approval card, inert markup, the flag badge and the admin tabs.
+# a scripted model: sign-in, the approval card, inert markup, the flag badge and the admin page.
 
 import json
 import socket
@@ -558,8 +558,10 @@ def test_revoking_picks_a_known_employee_from_a_list_and_clears_their_stored_sec
         )
         assert page.locator("#revoke input[type=text]").count() == 0
         picker.select_option(ada)
-        page.once("dialog", lambda dialog: dialog.accept())
         page.get_by_role("button", name="Revoke", exact=True).click()
+        dialog = page.get_by_role("dialog")
+        expect(dialog).to_contain_text("ends their browser sessions")
+        dialog.get_by_role("button", name="Revoke employee").click()
         expect(page.locator("#revoked")).to_contain_text("5 stored secrets deleted")
         with database.pool.connection() as connection:
             left = connection.execute("SELECT COUNT(*) FROM secrets WHERE user_id = %s", (ada,))
@@ -584,3 +586,167 @@ def test_no_admin_tab_scrolls_the_page_sideways_on_a_phone(
                 "[document.documentElement.scrollWidth, document.documentElement.clientWidth]"
             )
             assert widths[0] <= widths[1], (tab, widths)
+
+
+def _open_admin(page: Page, base: str) -> None:
+    _sign_in(page, base)
+    page.on("dialog", lambda dialog: pytest.fail(f"a browser dialog opened: {dialog.message}"))
+    page.goto(f"{base}/admin")
+
+
+def _add_server(page: Page, name: str, url: str) -> None:
+    page.get_by_role("button", name="Add a server").click()
+    page.get_by_label("Name", exact=True).fill(name)
+    page.get_by_label("URL", exact=True).fill(url)
+
+
+def test_a_server_added_through_the_form_posts_the_entry_and_focus_returns_to_its_row(
+    page: Page, port: int, database: Database
+) -> None:
+    with _app(port, database, [], script()) as base:
+        _open_admin(page, base)
+        _add_server(page, "wiki", "http://127.0.0.1:9/mcp")
+        page.get_by_label("Sign-in").select_option("none")
+        expect(page.get_by_label("Client secret variable")).to_be_hidden()
+        page.get_by_label("Groups").fill("research, finance")
+        page.get_by_label("Allowed tools").fill("read_note")
+        page.get_by_label("Offer Always allow").uncheck()
+        with page.expect_request("**/admin/servers") as posted:
+            page.get_by_role("button", name="Save").click()
+        assert posted.value.post_data_json == {
+            "name": "wiki",
+            "url": "http://127.0.0.1:9/mcp",
+            "auth": "none",
+            "groups": ["research", "finance"],
+            "tools": ["read_note"],
+            "always_allow": False,
+        }
+        edit = page.locator("#servers tr", has_text="wiki").get_by_role("button", name="Edit")
+        expect(edit).to_be_focused()
+        expect(page.locator("#editor")).to_be_hidden()
+
+
+def test_a_shared_header_is_saved_as_a_header_and_a_refusal_shows_beside_the_form(
+    page: Page, port: int, database: Database
+) -> None:
+    with _app(port, database, [], script()) as base:
+        _open_admin(page, base)
+        _add_server(page, "wiki", "http://127.0.0.1:9/mcp")
+        page.get_by_label("Sign-in").select_option("header")
+        expect(page.get_by_label("Client ID")).to_be_hidden()
+        value = "Bearer ${env:DESKCLERK_SERVER_WIKI_TOKEN}"
+        page.get_by_label("Header value").fill(value)
+        with page.expect_request("**/admin/servers") as posted:
+            page.get_by_role("button", name="Save").click()
+        assert posted.value.post_data_json == {
+            "name": "wiki",
+            "url": "http://127.0.0.1:9/mcp",
+            "auth": "none",
+            "headers": {"Authorization": value},
+        }
+        expect(page.locator("#editor-error")).to_contain_text("which is not set")
+        expect(page.locator("#error")).to_be_hidden()
+        page.get_by_role("button", name="Edit as JSON").click()
+        shown = json.loads(page.locator("#entry").input_value())
+        assert shown == posted.value.post_data_json
+
+
+def test_editing_keeps_the_fields_the_form_does_not_show_and_json_it_cannot_show_stays_json(
+    page: Page, port: int, database: Database
+) -> None:
+    with _app(port, database, [], script()) as base:
+        _open_admin(page, base)
+        _add_server(page, "wiki", "http://127.0.0.1:9/mcp")
+        page.get_by_label("Sign-in").select_option("none")
+        page.get_by_role("button", name="Save").click()
+        row = page.locator("#servers tr", has_text="wiki")
+        row.get_by_role("button", name="Pause").click()
+        expect(row.get_by_role("button", name="Resume")).to_be_focused()
+        row.get_by_role("button", name="Edit").click()
+        page.get_by_label("Title").fill("Wiki")
+        with page.expect_request("**/admin/servers/wiki") as put:
+            page.get_by_role("button", name="Save").click()
+        sent = put.value.post_data_json
+        assert sent is not None
+        assert (sent["paused"], sent["title"]) == (True, "Wiki")
+        row.get_by_role("button", name="Edit").click()
+        page.get_by_role("button", name="Edit as JSON").click()
+        two_headers: dict[str, Any] = {"name": "wiki", "url": "http://127.0.0.1:9/mcp"}
+        two_headers |= {"auth": "none", "headers": {"A": "1", "B": "2"}}
+        page.locator("#entry").fill(json.dumps(two_headers))
+        page.get_by_role("button", name="Edit as a form").click()
+        expect(page.locator("#editor-error")).to_contain_text("the form cannot show")
+        expect(page.locator("#entry")).to_be_visible()
+
+
+def test_a_write_after_the_session_lapsed_goes_to_the_sign_in_page(
+    page: Page, port: int, database: Database
+) -> None:
+    with running_mcp_server(REDIRECT, oauth=False) as running:
+        with _app(port, database, [open_notes(running)], script()) as base:
+            _open_admin(page, base)
+            page.route("**/admin/servers/open/pause", lambda route: route.fulfill(status=401))
+            with page.expect_request(lambda request: request.url == f"{base}/login"):
+                page.get_by_role("button", name="Pause").click()
+
+
+def test_removing_a_server_asks_in_a_dialog_that_says_what_is_deleted(
+    page: Page, port: int, database: Database
+) -> None:
+    with running_mcp_server(REDIRECT, oauth=False) as running:
+        with _app(port, database, [open_notes(running)], script()) as base:
+            _open_admin(page, base)
+            remove = page.locator("#servers").get_by_role("button", name="Remove")
+            remove.click()
+            dialog = page.get_by_role("dialog")
+            expect(dialog).to_contain_text("Remove open?")
+            expect(dialog).to_contain_text("stored sign-in, always-allow choices and tool pins")
+            dialog.get_by_role("button", name="Cancel").click()
+            expect(remove).to_be_focused()
+            remove.click()
+            dialog.get_by_role("button", name="Remove server").click()
+            expect(page.locator("#servers")).to_contain_text("Nothing yet.")
+            expect(page.get_by_role("button", name="Add a server")).to_be_focused()
+
+
+def test_the_servers_table_shows_whether_each_server_answers_and_which_tools_write(
+    page: Page, port: int, database: Database
+) -> None:
+    gone = McpServer("gone", "http://127.0.0.1:9/mcp", None, None, "none")
+    with running_mcp_server(REDIRECT, oauth=False) as running:
+        with _app(port, database, [open_notes(running), gone], script()) as base:
+            _open_admin(page, base)
+            reachable = page.locator("#servers tr", has_text="open")
+            expect(reachable).to_contain_text("Reachable")
+            reachable.locator("summary").click()
+            expect(reachable.locator("li", has_text="write_note")).to_contain_text("write")
+            expect(reachable.locator("li", has_text="read_note")).to_contain_text("read")
+            unreachable = page.locator("#servers tr", has_text="gone")
+            expect(unreachable).to_contain_text("Unreachable")
+            expect(unreachable).to_contain_text("ConnectError")
+
+
+def test_the_audit_log_shows_plain_labels_and_filters_by_an_outcome_from_a_list(
+    page: Page, port: int, database: Database
+) -> None:
+    ada = "6f1c0a52-aaaa-4bbb-8ccc-0123456789ab"
+    with _app(port, database, [], script()) as base:
+        _seed_people(database)
+        chain = AuditStore(database, CHAIN_KEY)
+        time = datetime.now(UTC).isoformat()
+        failed = {"time": time, "user": ada, "entry": "ask", "outcome": "upstream_error"}
+        chain.append(json.dumps(failed))
+        removed = {"time": time, "user": ada, "entry": "admin", "action": "remove_server"}
+        chain.append(json.dumps(removed | {"target": "wiki"}))
+        _open_admin(page, base)
+        page.get_by_role("tab", name="Audit log").click()
+        expect(page.locator("#audit tr").first).to_contain_text("removed server wiki")
+        page.get_by_label("Outcome").select_option(label="A server or the model did not answer")
+        page.get_by_role("button", name="Search").click()
+        rows = page.locator("#audit tr")
+        expect(rows).to_have_count(1)
+        expect(rows.first).to_contain_text("Request")
+        expect(rows.first.locator("td").nth(1)).to_contain_text("Ada Lovelace")
+        expect(rows.first).to_contain_text("A server or the model did not answer")
+        rows.first.get_by_text("Show").click()
+        expect(rows.first.locator("pre")).to_contain_text("upstream_error")

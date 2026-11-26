@@ -1,6 +1,7 @@
 # The admin page and its JSON routes: usage and recent asks, the searchable audit log with its
-# chain check and download, server changes, and revoking an employee. Only the admins group may use
-# them, and create_app includes this router only when that group is configured.
+# chain check and download, server changes, each server's live tool list, and revoking an employee.
+# Only the admins group may use them, and create_app includes this router only when that group is
+# configured.
 
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -14,17 +15,20 @@ from starlette.concurrency import run_in_threadpool
 from deskclerk.admin import (
     AdminAuditPage,
     AdminChain,
+    AdminServerTools,
     AdminSummary,
     audit_page,
     audit_row,
     employee_rows,
     recent_rows,
     server_rows,
+    tool_rows,
     usage_rows,
 )
 from deskclerk.auditstore import AuditFilter
+from deskclerk.connections import UPSTREAM_ERRORS, NotConnected, first_leaf
 from deskclerk.routes.health import page_headers
-from deskclerk.routes.services import Caller, Services
+from deskclerk.routes.services import MAX_REASON_CHARS, Caller, Services
 from deskclerk.servers import ServerEntry, ServersError
 from deskclerk.serverstore import NoSuchServer, ServerExists
 from deskclerk.spending import month_of
@@ -42,6 +46,12 @@ class RevokeBody(BaseModel):
 class RevokeOut(BaseModel):
     secrets: int
     sessions: int
+
+
+def _unreachable(error: BaseException) -> AdminServerTools:
+    leaf = first_leaf(error)
+    reason = f"{type(leaf).__name__}: {str(leaf)[:MAX_REASON_CHARS]}"
+    return AdminServerTools(reachable=False, error=reason, tools=[])
 
 
 def audit_filter(
@@ -148,6 +158,27 @@ def router(services: Services) -> APIRouter:
             return await run_in_threadpool(catalog.store.entry, name)
         except NoSuchServer as error:
             raise HTTPException(404, str(error)) from None
+
+    @routes.get("/admin/servers/{name}/tools")
+    async def admin_server_tools(
+        name: str, who: Caller = Depends(services.admin_caller)
+    ) -> AdminServerTools:
+        found = [server for server in catalog.servers if server.name == name]
+        if not found:
+            raise HTTPException(404, f"no server named {name}")
+        server = found[0]
+        try:
+            listed = await services.connections.tools(who.identity.user_id, server)
+        except NotConnected:
+            return AdminServerTools(reachable=None, error=None, tools=[])
+        except UPSTREAM_ERRORS as failure:
+            return _unreachable(failure)
+        except BaseExceptionGroup as group:
+            upstream = group.subgroup(UPSTREAM_ERRORS)
+            if upstream is None:
+                raise
+            return _unreachable(upstream)
+        return AdminServerTools(reachable=True, error=None, tools=tool_rows(server, listed))
 
     @routes.post("/admin/servers", status_code=204)
     async def admin_add_server(

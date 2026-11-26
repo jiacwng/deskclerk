@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- The admin page, in three tabs: servers with their controls, people (usage, revoke, recent activity) and the searchable audit log with its chain check. Everything is set with textContent. -->
+<!-- The admin page, in three tabs: servers with their health, tools and controls, people (usage, revoke, recent activity) and the searchable audit log with its chain check. Everything is set with textContent. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -99,8 +99,28 @@ button:hover { background: var(--sunk); }
 button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 button.danger { color: var(--bad); border-color: var(--bad); }
 .editor, .revoke { display: grid; gap: 0.5rem; margin-top: 0.75rem; }
-.editor textarea, .revoke select { font: 0.8125rem/1.4 var(--mono); color: var(--fg); background: var(--surface); border: 1px solid var(--edge); border-radius: 4px; padding: 0.5rem; width: 100%; }
-.editor textarea { min-height: 16rem; }
+.editor { border: 1px solid var(--line); border-radius: 4px; background: var(--surface); padding: 0.75rem; max-width: 40rem; }
+.editor h3 { margin: 0; font-size: 0.9375rem; }
+.fields { display: grid; gap: 0.75rem; }
+.field { display: grid; gap: 0.2rem; }
+.fields label { display: grid; gap: 0.2rem; font-size: 0.8125rem; font-weight: 600; }
+.fields label.check { display: flex; align-items: flex-start; gap: 0.5rem; font-weight: 400; }
+.fields fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 0.75rem; }
+.fields input:not([type=checkbox]), .fields select, .fields textarea, .editor #entry, .revoke select { font: 0.8125rem/1.4 var(--sans); color: var(--fg); background: var(--bg); border: 1px solid var(--edge); border-radius: 4px; padding: 0.35rem 0.5rem; width: 100%; }
+.fields input:read-only:not([type=checkbox]) { color: var(--muted); }
+.fields textarea { min-height: 3.5rem; }
+.editor #entry { font-family: var(--mono); min-height: 16rem; }
+.hint { font-size: 0.75rem; font-weight: 400; color: var(--muted); }
+.ok { color: var(--ok); font-weight: 600; }
+.bad { color: var(--bad); font-weight: 600; }
+.detail { display: block; font-size: 0.75rem; color: var(--muted); }
+.tools { margin: 0.25rem 0 0; padding-left: 1rem; font-size: 0.8125rem; }
+.tag { font-size: 0.75rem; font-weight: 600; color: var(--muted); }
+.tag.write { color: var(--warn); }
+dialog { border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--fg); padding: 1rem; max-width: min(28rem, calc(100vw - 32px)); }
+dialog::backdrop { background: rgb(0 0 0 / 0.35); }
+dialog h2 { font-size: 0.9375rem; color: var(--fg); }
+dialog p { margin: 0.5rem 0 1rem; font-size: 0.875rem; }
 .who .id { display: block; font: 0.75rem/1.3 var(--mono); color: var(--muted); }
 .row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 .filters { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: end; margin-bottom: 0.75rem; }
@@ -138,15 +158,44 @@ pre { margin: 0.25rem 0 0; font: 0.75rem/1.4 var(--mono); white-space: pre-wrap;
   <section aria-labelledby="servers-title">
     <h2 id="servers-title">Servers</h2>
     <div class="scroll"><table>
-      <thead><tr><th>Name</th><th>URL</th><th>Auth</th><th class="num">Employees connected</th><th class="num">Allowlisted tools</th><th>Status</th><th></th></tr></thead>
+      <thead><tr><th>Name</th><th>URL</th><th>Sign-in</th><th class="num">Employees connected</th><th>Status</th><th>Tools</th><th></th></tr></thead>
       <tbody id="servers"></tbody>
     </table></div>
+    <p id="servers-error" class="error note" role="alert" hidden></p>
     <div class="row note"><button type="button" id="add" class="primary">Add a server</button></div>
-    <form id="editor" class="editor" hidden>
-      <label for="entry" class="muted small" id="editor-title"></label>
-      <textarea id="entry" spellcheck="false"></textarea>
-      <p class="muted small">One server as JSON. Secrets are references: client_secret_env names an environment variable, and a header value may hold ${env:NAME}. Both names must start with DESKCLERK_SERVER_.</p>
-      <div class="row"><button type="submit" class="primary">Save</button><button type="button" id="cancel">Cancel</button></div>
+    <form id="editor" class="editor" novalidate hidden>
+      <h3 id="editor-title"></h3>
+      <div id="server-form" class="fields">
+        <div class="field"><label>Name<input id="server-name" autocomplete="off" spellcheck="false"></label><span class="hint">Letters, digits and hyphens, with single underscores between them, such as google-drive. A saved server keeps its name.</span></div>
+        <div class="field"><label>URL<input id="server-url" autocomplete="off" spellcheck="false" placeholder="https://mcp.example.com/mcp"></label><span class="hint">The server's MCP address. It must be https, or http on localhost or 127.0.0.1.</span></div>
+        <label class="check"><input id="server-plain-http" type="checkbox"><span>Allow http:// for this server<span class="hint detail">For a server on a private network.</span></span></label>
+        <div class="field"><label>Title<input id="server-title" autocomplete="off"></label><span class="hint">Optional. The name employees see in Connected apps instead of the URL.</span></div>
+        <div class="field"><label>Description<input id="server-description" autocomplete="off"></label><span class="hint">Optional. One line employees see under the title.</span></div>
+        <div class="field"><label>Example requests<textarea id="server-examples"></textarea></label><span class="hint">Optional. One per line. They come first in the suggestions on an empty conversation.</span></div>
+        <label>Sign-in<select id="server-auth">
+          <option value="oauth">Each employee signs in with OAuth</option>
+          <option value="none">No sign-in</option>
+          <option value="header">A shared secret sent in a header</option>
+        </select></label>
+        <fieldset id="auth-oauth">
+          <div class="field"><label>Client ID<input id="server-client-id" autocomplete="off" spellcheck="false"></label><span class="hint">Optional. The client registered with the server's login. Leave it empty and deskclerk registers itself.</span></div>
+          <div class="field"><label>Client secret variable<input id="server-secret-env" autocomplete="off" spellcheck="false" placeholder="DESKCLERK_SERVER_LINEAR_SECRET"></label><span class="hint">Optional, and only with a client ID. The name of the environment variable that holds the client secret, never the secret itself. The name must start with DESKCLERK_SERVER_.</span></div>
+        </fieldset>
+        <fieldset id="auth-header" hidden>
+          <label>Header name<input id="server-header-name" autocomplete="off" spellcheck="false"></label>
+          <div class="field"><label>Header value<input id="server-header-value" autocomplete="off" spellcheck="false" placeholder="Bearer ${env:DESKCLERK_SERVER_WIKI_TOKEN}"></label><span class="hint">Write ${env:NAME} where the secret goes, and keep the secret in the environment variable NAME. NAME must start with DESKCLERK_SERVER_.</span></div>
+        </fieldset>
+        <div class="field"><label>Groups<input id="server-groups" autocomplete="off" spellcheck="false"></label><span class="hint">Optional. Login server groups that see this server, separated by commas. Leave it empty for everyone.</span></div>
+        <div class="field"><label>Allowed tools<input id="server-tools" autocomplete="off" spellcheck="false"></label><span class="hint">Optional. The only tools the agent may use, separated by commas. Leave it empty for every tool.</span></div>
+        <div class="field"><label>Tools that always ask first<input id="server-confirm-tools" autocomplete="off" spellcheck="false"></label><span class="hint">Optional. Tools that always ask with a confirm card and never get Always allow, separated by commas.</span></div>
+        <label class="check"><input id="server-trusted" type="checkbox"><span>Trust the server's read-only hints<span class="hint detail">Read-only calls then run without asking. Without it, every call asks first.</span></span></label>
+        <label class="check"><input id="server-always-allow" type="checkbox"><span>Offer Always allow on write tools<span class="hint detail">Clear it so every write asks each time.</span></span></label>
+      </div>
+      <div id="server-json" class="fields" hidden>
+        <div class="field"><label>The server as JSON<textarea id="entry" spellcheck="false"></textarea></label><span class="hint">Every field the server list accepts, including client_cert and client_key for mutual TLS.</span></div>
+      </div>
+      <p id="editor-error" class="error" role="alert" hidden></p>
+      <div class="row"><button type="submit" class="primary">Save</button><button type="button" id="cancel">Cancel</button><button type="button" id="advanced" aria-pressed="false">Edit as JSON</button></div>
     </form>
   </section>
   </div>
@@ -168,9 +217,10 @@ pre { margin: 0.25rem 0 0; font: 0.75rem/1.4 var(--mono); white-space: pre-wrap;
   </section>
   <section aria-labelledby="revoke-title">
     <h2 id="revoke-title">Revoke an employee</h2>
-    <p class="muted small">Deletes the employee's stored sign-ins, always-allow choices, tool pins and client registrations for every server, and ends their browser sessions. Their conversations stay. They can sign in again. To block them, disable them in your login server.</p>
+    <p id="revoke-what" class="muted small">Deletes the employee's stored sign-ins, always-allow choices, tool pins and client registrations for every server, and ends their browser sessions. Their conversations stay. They can sign in again. To block them, disable them in your login server.</p>
     <form id="revoke" class="revoke">
       <select id="revoke-user" aria-label="Employee to revoke" required></select>
+      <p id="revoke-error" class="error" role="alert" hidden></p>
       <div class="row"><button type="submit" class="danger">Revoke</button></div>
     </form>
     <p id="revoked" class="note muted small" role="status"></p>
@@ -184,29 +234,34 @@ pre { margin: 0.25rem 0 0; font: 0.75rem/1.4 var(--mono); white-space: pre-wrap;
       <p id="chain" class="small" role="status"></p>
     </div>
     <form id="audit-filter" class="filters">
-      <label>Employee<input id="audit-employee" type="text"></label>
-      <label>Kind<select id="audit-entry">
-        <option value="">any</option>
-        <option>ask</option><option>confirm</option><option>connect</option><option>disconnect</option><option>admin</option><option>erase</option>
-      </select></label>
+      <label>Employee ID<input id="audit-employee" type="text"></label>
+      <label>Kind<select id="audit-entry"><option value="">Any</option></select></label>
       <label>Server<input id="audit-server" type="text"></label>
       <label>Tool<input id="audit-tool" type="text"></label>
-      <label>Decision<input id="audit-decision" type="text" placeholder="approve, reject, answered"></label>
+      <label>Outcome<select id="audit-decision"><option value="">Any</option></select></label>
       <label class="check"><input id="audit-flagged" type="checkbox"> Flagged by the screen</label>
       <label>From<input id="audit-since" type="datetime-local"></label>
       <label>Until<input id="audit-until" type="datetime-local"></label>
       <button type="submit" class="primary">Search</button>
       <button type="button" id="audit-download">Download</button>
     </form>
+    <p id="audit-error" class="error" role="alert" hidden></p>
     <div class="scroll"><table>
-      <thead><tr><th>Time</th><th>Employee</th><th>Kind</th><th>Servers</th><th>Tools</th><th>Decisions</th><th>Flagged</th><th>Line</th></tr></thead>
+      <thead><tr><th>Time</th><th>Employee</th><th>Kind</th><th>Servers</th><th>Tools</th><th>Outcome</th><th>Flagged</th><th>Raw line</th></tr></thead>
       <tbody id="audit"></tbody>
     </table></div>
     <div class="row note"><button type="button" id="audit-more" hidden>Older rows</button></div>
-    <p class="note muted small">Newest first. Each row is chained by hash to the one before it, and python -m deskclerk verify-audit checks the chain.</p>
+    <p class="note muted small">Newest first. Each row is chained by hash to the one before it, and python -m deskclerk verify-audit checks the chain. The download keeps the raw codes.</p>
   </section>
   </div>
 </main>
+<dialog id="confirm" aria-labelledby="confirm-title" aria-describedby="confirm-text">
+  <form method="dialog">
+    <h2 id="confirm-title"></h2>
+    <p id="confirm-text"></p>
+    <div class="row"><button type="submit" value="yes" id="confirm-yes" class="danger"></button><button type="submit" value="no" autofocus>Cancel</button></div>
+  </form>
+</dialog>
 <script>
 const el = (id) => document.getElementById(id);
 
@@ -217,19 +272,19 @@ function cell(text, className) {
   return td;
 }
 
+function span(text, className) {
+  const element = document.createElement("span");
+  element.textContent = text;
+  if (className) element.className = className;
+  return element;
+}
+
 function personCell(userId, name) {
   const td = document.createElement("td");
   td.className = "who";
   td.title = userId;
-  const label = document.createElement("span");
-  label.textContent = name === null ? userId : name;
-  td.append(label);
-  if (name !== null && name !== userId) {
-    const id = document.createElement("span");
-    id.className = "id";
-    id.textContent = userId;
-    td.append(id);
-  }
+  td.append(span(name === null ? userId : name));
+  if (name !== null && name !== userId) td.append(span(userId, "id"));
   return td;
 }
 
@@ -256,11 +311,10 @@ function fill(id, rows, columns) {
 }
 
 const WRITE_HEADERS = { "X-Requested-With": "deskclerk", "Content-Type": "application/json" };
-let editing = null;
 
-function showError(text) {
-  el("error").textContent = text;
-  el("error").hidden = text === "";
+function showProblem(target, text) {
+  target.textContent = text;
+  target.hidden = text === "";
 }
 
 async function failure(response) {
@@ -270,16 +324,42 @@ async function failure(response) {
   return typeof detail === "string" ? detail : "The change was refused (" + response.status + ").";
 }
 
-async function write(method, path, body) {
-  const options = { method, headers: WRITE_HEADERS };
-  if (body !== undefined) options.body = JSON.stringify(body);
-  const response = await fetch(path, options);
-  if (!response.ok) {
-    showError(await failure(response));
+async function send(path, options, problem) {
+  let response;
+  try {
+    response = await fetch(path, options);
+  } catch (error) {
+    showProblem(problem, "Could not reach the server.");
     return null;
   }
-  showError("");
+  if (response.status === 401) {
+    window.location.assign("/login");
+    return null;
+  }
+  if (!response.ok) {
+    showProblem(problem, await failure(response));
+    return null;
+  }
+  showProblem(problem, "");
   return response;
+}
+
+function write(method, path, body, problem) {
+  const options = { method, headers: WRITE_HEADERS };
+  if (body !== undefined) options.body = JSON.stringify(body);
+  return send(path, options, problem);
+}
+
+function confirmed(title, text, action) {
+  const dialog = el("confirm");
+  el("confirm-title").textContent = title;
+  el("confirm-text").textContent = text;
+  el("confirm-yes").textContent = action;
+  dialog.returnValue = "";
+  dialog.showModal();
+  return new Promise((resolve) => {
+    dialog.addEventListener("close", () => resolve(dialog.returnValue === "yes"), { once: true });
+  });
 }
 
 const serverPath = (name) => "/admin/servers/" + encodeURIComponent(name);
@@ -293,63 +373,224 @@ function button(label, className, onClick) {
   return element;
 }
 
-function openEditor(title, entry, name) {
-  editing = name;
-  el("editor-title").textContent = title;
-  el("entry").value = JSON.stringify(entry, null, 2);
-  el("editor").hidden = false;
-  el("entry").focus();
+function serverButton(name, role) {
+  for (const control of el("servers").querySelectorAll("button")) {
+    if (control.dataset.server === name && control.dataset.role === role) return control;
+  }
+  return null;
 }
 
-async function editServer(name) {
-  const response = await fetch(serverPath(name));
-  if (!response.ok) {
-    showError(await failure(response));
-    return;
+function focusServer(name, role) {
+  (serverButton(name, role) || el("add")).focus();
+}
+
+const FORM_KEYS = [
+  "name", "url", "plain_http", "title", "description", "examples", "auth", "client_id",
+  "client_secret_env", "headers", "groups", "tools", "confirm_tools", "trusted", "always_allow",
+];
+let editing = null;
+let base = {};
+let opener = null;
+
+const listText = (items) => (items || []).join(", ");
+const textOf = (id) => el(id).value.trim();
+
+function listOf(id, separator) {
+  return el(id).value.split(separator).map((item) => item.trim()).filter((item) => item !== "");
+}
+
+function authKind(entry) {
+  if ((entry.auth || "oauth") === "oauth") return "oauth";
+  return Object.keys(entry.headers || {}).length > 0 ? "header" : "none";
+}
+
+function formShows(entry) {
+  const headers = Object.keys(entry.headers || {}).length;
+  const allowed = authKind(entry) === "header" ? headers === 1 : headers === 0;
+  return allowed && !(Array.isArray(entry.tools) && entry.tools.length === 0);
+}
+
+function showAuthFields() {
+  const kind = el("server-auth").value;
+  el("auth-oauth").hidden = kind !== "oauth";
+  el("auth-header").hidden = kind !== "header";
+}
+
+function setForm(entry) {
+  el("server-name").value = entry.name || "";
+  el("server-url").value = entry.url || "";
+  el("server-plain-http").checked = entry.plain_http === true;
+  el("server-title").value = entry.title || "";
+  el("server-description").value = entry.description || "";
+  el("server-examples").value = (entry.examples || []).join("\n");
+  el("server-auth").value = authKind(entry);
+  el("server-client-id").value = entry.client_id || "";
+  el("server-secret-env").value = entry.client_secret_env || "";
+  const header = Object.entries(entry.headers || {})[0] || ["Authorization", ""];
+  el("server-header-name").value = header[0];
+  el("server-header-value").value = header[1];
+  el("server-groups").value = listText(entry.groups);
+  el("server-tools").value = listText(entry.tools);
+  el("server-confirm-tools").value = listText(entry.confirm_tools);
+  el("server-trusted").checked = entry.trusted === true;
+  el("server-always-allow").checked = entry.always_allow !== false;
+  showAuthFields();
+}
+
+function setIfGiven(entry, key, value) {
+  if (value !== "" && !(Array.isArray(value) && value.length === 0)) entry[key] = value;
+}
+
+function formEntry() {
+  const entry = { name: textOf("server-name"), url: textOf("server-url") };
+  if (el("server-plain-http").checked) entry.plain_http = true;
+  setIfGiven(entry, "title", textOf("server-title"));
+  setIfGiven(entry, "description", textOf("server-description"));
+  setIfGiven(entry, "examples", listOf("server-examples", "\n"));
+  const kind = el("server-auth").value;
+  entry.auth = kind === "oauth" ? "oauth" : "none";
+  if (kind === "oauth") {
+    setIfGiven(entry, "client_id", textOf("server-client-id"));
+    setIfGiven(entry, "client_secret_env", textOf("server-secret-env"));
   }
-  openEditor("Edit " + name, await response.json(), name);
+  if (kind === "header") entry.headers = { [textOf("server-header-name")]: textOf("server-header-value") };
+  setIfGiven(entry, "groups", listOf("server-groups", ","));
+  setIfGiven(entry, "tools", listOf("server-tools", ","));
+  setIfGiven(entry, "confirm_tools", listOf("server-confirm-tools", ","));
+  if (el("server-trusted").checked) entry.trusted = true;
+  if (!el("server-always-allow").checked) entry.always_allow = false;
+  for (const [key, value] of Object.entries(base)) {
+    if (!FORM_KEYS.includes(key)) entry[key] = value;
+  }
+  return entry;
+}
+
+function showJson(on) {
+  el("server-form").hidden = on;
+  el("server-json").hidden = !on;
+  el("advanced").textContent = on ? "Edit as a form" : "Edit as JSON";
+  el("advanced").setAttribute("aria-pressed", String(on));
+}
+
+function parsedJson() {
+  try {
+    return JSON.parse(el("entry").value);
+  } catch (error) {
+    showProblem(el("editor-error"), "The server is not valid JSON: " + error.message);
+    return null;
+  }
+}
+
+function openEditor(title, entry, name, from) {
+  editing = name;
+  base = entry;
+  opener = from;
+  el("editor-title").textContent = title;
+  showProblem(el("editor-error"), "");
+  setForm(entry);
+  el("server-name").readOnly = name !== null;
+  el("entry").value = JSON.stringify(entry, null, 2);
+  const asForm = formShows(entry);
+  showJson(!asForm);
+  if (!asForm) showProblem(el("editor-error"), "This server uses settings the form cannot show, so it opens as JSON.");
+  el("editor").hidden = false;
+  (asForm ? el(name === null ? "server-name" : "server-url") : el("entry")).focus();
+}
+
+function closeEditor() {
+  el("editor").hidden = true;
+  showProblem(el("editor-error"), "");
+}
+
+async function editServer(name, from) {
+  const response = await send(serverPath(name), {}, el("servers-error"));
+  if (response) openEditor("Edit " + name, await response.json(), name, from);
 }
 
 async function toggleServer(server) {
   const action = server.paused ? "/resume" : "/pause";
-  if (await write("POST", serverPath(server.name) + action)) await load();
+  if (await write("POST", serverPath(server.name) + action, undefined, el("servers-error"))) {
+    await load();
+    focusServer(server.name, "toggle");
+  }
 }
 
 async function removeServer(name) {
-  if (!window.confirm("Remove " + name + "? Employees keep their stored sign-ins, but the agent stops offering it.")) return;
-  if (await write("DELETE", serverPath(name))) await load();
+  const asked = await confirmed(
+    "Remove " + name + "?",
+    "The agent stops offering " + name + " to every employee. Every employee's stored sign-in, always-allow choices and tool pins for it are deleted. Their conversations stay.",
+    "Remove server",
+  );
+  if (!asked) return;
+  if (await write("DELETE", serverPath(name), undefined, el("servers-error"))) {
+    await load();
+    el("add").focus();
+  }
 }
 
 function actions(server) {
   const td = document.createElement("td");
   td.className = "actions";
-  td.append(
-    button("Edit", "", () => editServer(server.name)),
-    " ",
-    button(server.paused ? "Resume" : "Pause", "", () => toggleServer(server)),
-    " ",
-    button("Remove", "danger", () => removeServer(server.name)),
-  );
+  const controls = [
+    ["edit", button("Edit", "", (event) => editServer(server.name, event.currentTarget))],
+    ["toggle", button(server.paused ? "Resume" : "Pause", "", () => toggleServer(server))],
+    ["remove", button("Remove", "danger", () => removeServer(server.name))],
+  ];
+  for (const [role, control] of controls) {
+    control.dataset.server = server.name;
+    control.dataset.role = role;
+    if (td.childNodes.length > 0) td.append(" ");
+    td.append(control);
+  }
   return td;
 }
 
-el("add").addEventListener("click", () => openEditor("New server", { name: "", url: "" }, null));
-el("cancel").addEventListener("click", () => { el("editor").hidden = true; });
+el("add").addEventListener("click", () => openEditor("New server", {}, null, el("add")));
+el("server-auth").addEventListener("change", showAuthFields);
+el("cancel").addEventListener("click", () => {
+  closeEditor();
+  if (opener && opener.isConnected) opener.focus();
+  else focusServer(editing, "edit");
+});
+el("advanced").addEventListener("click", () => {
+  showProblem(el("editor-error"), "");
+  if (el("server-json").hidden) {
+    el("entry").value = JSON.stringify(formEntry(), null, 2);
+    showJson(true);
+    el("entry").focus();
+    return;
+  }
+  const entry = parsedJson();
+  if (entry === null) return;
+  if (!formShows(entry)) {
+    showProblem(el("editor-error"), "This server uses settings the form cannot show. Keep editing it as JSON.");
+    return;
+  }
+  base = entry;
+  setForm(entry);
+  showJson(false);
+  el("server-url").focus();
+});
 el("editor").addEventListener("submit", async (event) => {
   event.preventDefault();
   let entry;
-  try {
-    entry = JSON.parse(el("entry").value);
-  } catch (error) {
-    showError("The server is not valid JSON: " + error.message);
-    return;
+  if (el("server-json").hidden) {
+    if (el("server-auth").value === "header" && (textOf("server-header-name") === "" || textOf("server-header-value") === "")) {
+      showProblem(el("editor-error"), "A shared secret needs a header name and a header value.");
+      return;
+    }
+    entry = formEntry();
+  } else {
+    entry = parsedJson();
+    if (entry === null) return;
   }
   const saved = editing === null
-    ? await write("POST", "/admin/servers", entry)
-    : await write("PUT", serverPath(editing), entry);
+    ? await write("POST", "/admin/servers", entry, el("editor-error"))
+    : await write("PUT", serverPath(editing), entry, el("editor-error"));
   if (saved) {
-    el("editor").hidden = true;
+    closeEditor();
     await load();
+    focusServer(entry.name, "edit");
   }
 });
 el("revoke").addEventListener("submit", async (event) => {
@@ -357,13 +598,74 @@ el("revoke").addEventListener("submit", async (event) => {
   const picked = el("revoke-user").selectedOptions[0];
   if (!picked || picked.value === "") return;
   const user = picked.value;
-  if (!window.confirm("Revoke " + picked.textContent + "?")) return;
-  const response = await write("POST", "/admin/employees/revoke", { user_id: user });
+  const asked = await confirmed("Revoke " + picked.textContent + "?", el("revoke-what").textContent, "Revoke employee");
+  if (!asked) return;
+  const response = await write("POST", "/admin/employees/revoke", { user_id: user }, el("revoke-error"));
   if (!response) return;
   const done = await response.json();
   el("revoked").textContent = "Revoked " + picked.textContent + ": " + done.secrets + " stored secrets deleted, " + done.sessions + " sessions ended.";
   await load();
 });
+
+const KINDS = {
+  ask: "Request",
+  confirm: "Approval",
+  connect: "Connected a server",
+  disconnect: "Disconnected a server",
+  admin: "Admin change",
+  erase: "Employee data erased",
+};
+const DECISIONS = {
+  approve: "Approved",
+  approve_always: "Approved, always allow",
+  edit: "Edited, then approved",
+  reject: "Rejected",
+};
+const OUTCOMES = {
+  answered: "Answered",
+  awaiting_confirmation: "Waiting for approval",
+  cancelled: "Stopped by the employee",
+  timed_out: "Timed out",
+  upstream_error: "A server or the model did not answer",
+  model_refused: "The model refused",
+  error: "Failed",
+  rate_limited: "Too many requests",
+  over_budget: "Over budget",
+  unknown_conversation: "Unknown conversation",
+  conversation_waiting: "Conversation waits for an approval",
+  nothing_pending: "Nothing to approve",
+  wrong_decisions: "Decisions refused",
+  wrong_edit: "Edit refused",
+};
+const ADMIN_ACTIONS = {
+  add_server: "added server",
+  edit_server: "edited server",
+  pause_server: "paused server",
+  resume_server: "resumed server",
+  remove_server: "removed server",
+  revoke_employee: "revoked employee",
+};
+const plain = (code) => KINDS[code] || DECISIONS[code] || OUTCOMES[code] || code;
+
+function addOptions(parent, labels) {
+  for (const [value, label] of Object.entries(labels)) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    parent.append(option);
+  }
+}
+
+function addGroup(select, label, labels) {
+  const group = document.createElement("optgroup");
+  group.label = label;
+  addOptions(group, labels);
+  select.append(group);
+}
+
+addOptions(el("audit-entry"), KINDS);
+addGroup(el("audit-decision"), "Employee decisions", DECISIONS);
+addGroup(el("audit-decision"), "Request outcomes", OUTCOMES);
 
 let auditCursor = null;
 
@@ -381,14 +683,24 @@ function auditQuery() {
   return params;
 }
 
+function codesCell(codes) {
+  const td = cell(codes.map(plain).join(", "));
+  td.title = codes.join(", ");
+  return td;
+}
+
+function kindCell(row) {
+  const td = codesCell([row.entry]);
+  if (row.entry === "admin") {
+    const fields = JSON.parse(row.line);
+    td.append(span((ADMIN_ACTIONS[fields.action] || fields.action) + " " + fields.target, "detail"));
+  }
+  return td;
+}
+
 function flagCell(flagged) {
   const td = document.createElement("td");
-  if (flagged) {
-    const badge = document.createElement("span");
-    badge.className = "badge warn";
-    badge.textContent = "Flagged by screen";
-    td.append(badge);
-  }
+  if (flagged) td.append(span("Flagged by screen", "badge warn"));
   return td;
 }
 
@@ -407,16 +719,12 @@ function lineCell(text) {
 async function loadAudit(older) {
   const params = auditQuery();
   if (older) params.set("cursor", auditCursor);
-  const response = await fetch("/admin/audit?" + params);
-  if (!response.ok) {
-    showError(await failure(response));
-    return;
-  }
-  showError("");
+  const response = await send("/admin/audit?" + params, {}, el("audit-error"));
+  if (!response) return;
   const page = await response.json();
   const rows = page.rows.map((r) => [
-    cell(new Date(r.time).toLocaleString()), personCell(r.user, r.name), cell(r.entry),
-    cell(r.servers.join(", ")), cell(r.tools.join(", ")), cell(r.decisions.join(", ")), flagCell(r.flagged),
+    cell(new Date(r.time).toLocaleString()), personCell(r.user, r.name), kindCell(r),
+    cell(r.servers.join(", ")), cell(r.tools.join(", ")), codesCell(r.decisions), flagCell(r.flagged),
     lineCell(r.line),
   ]);
   if (older) addRows(el("audit"), rows);
@@ -441,21 +749,16 @@ async function verifyChain() {
   status.className = "small muted";
   status.textContent = "Verifying…";
   try {
-    const response = await fetch("/admin/audit/verify");
-    if (!response.ok) {
+    const response = await send("/admin/audit/verify", {}, el("audit-error"));
+    if (!response) {
       status.textContent = "";
-      showError(await failure(response));
       return;
     }
-    showError("");
     const report = await response.json();
     status.className = report.ok ? "small chain-ok" : "small chain-bad";
     status.textContent = report.ok
       ? "Chain verified, " + report.rows + " lines"
       : "Chain broken at line " + report.first_broken;
-  } catch (error) {
-    status.textContent = "";
-    showError("Could not reach the server.");
   } finally {
     control.disabled = false;
   }
@@ -497,7 +800,81 @@ window.addEventListener("hashchange", () => showTab(tabFromHash(), false));
 showTab(tabFromHash(), false);
 
 const money = (value) => "$" + value.toFixed(4);
-const count = (value) => (value === null ? "n/a" : String(value));
+
+function signIn(server) {
+  if (server.auth === "oauth") return "OAuth, each employee";
+  return server.has_headers ? "Shared header" : "None";
+}
+
+function statusCell(server) {
+  const td = cell(server.paused ? "Paused" : "Active");
+  td.append(span("Checking…", "detail"));
+  return td;
+}
+
+function allowlist(server) {
+  return server.allowlist_size === null ? "The agent may use every tool." : "The agent may use " + server.allowlist_size + " of them.";
+}
+
+function toolItem(tool) {
+  const item = document.createElement("li");
+  item.append(span(tool.title ? tool.title + " (" + tool.name + ")" : tool.name), " ");
+  const notes = [tool.read_only ? "read" : "write"];
+  if (tool.read_only && tool.asks_first) notes.push("asks first");
+  if (!tool.allowlisted) notes.push("not allowed");
+  item.append(span(notes.join(", "), tool.read_only ? "tag" : "tag write"));
+  return item;
+}
+
+function showTools(td, server, tools) {
+  const writes = tools.filter((tool) => !tool.read_only).length;
+  const details = document.createElement("details");
+  const summary = document.createElement("summary");
+  summary.textContent = tools.length + (tools.length === 1 ? " tool: " : " tools: ") + writes + " write, " + (tools.length - writes) + " read only";
+  const list = document.createElement("ul");
+  list.className = "tools";
+  list.append(...tools.map(toolItem));
+  details.append(summary, list);
+  td.replaceChildren(details, span(allowlist(server), "detail"));
+  if (!server.trusted) td.append(span("Not trusted, so every call asks first.", "detail"));
+}
+
+async function checkServer(server, status, tools) {
+  const health = status.lastChild;
+  let response;
+  try {
+    response = await fetch(serverPath(server.name) + "/tools");
+  } catch (error) {
+    health.textContent = "Could not reach deskclerk.";
+    return;
+  }
+  if (!response.ok) {
+    health.textContent = "Could not check (" + response.status + ").";
+    return;
+  }
+  const check = await response.json();
+  if (check.reachable === null) {
+    health.textContent = "Not checked. Connect it in the chat to check it and list its tools.";
+    tools.replaceChildren(span(allowlist(server), "detail"));
+  } else if (check.reachable) {
+    health.replaceChildren(span("Reachable", "ok"));
+    showTools(tools, server, check.tools);
+  } else {
+    health.replaceChildren(span("Unreachable", "bad"), span(check.error, "detail"));
+    tools.replaceChildren(span(allowlist(server), "detail"));
+  }
+}
+
+function serverRow(server) {
+  const status = statusCell(server);
+  const tools = cell("Checking…");
+  checkServer(server, status, tools);
+  return [
+    cell(server.name), cell(server.url, "mono"), cell(signIn(server)),
+    cell(server.auth === "oauth" ? String(server.employees_connected) : "not needed", "num"),
+    status, tools, actions(server),
+  ];
+}
 
 function fillPicker(employees) {
   const picker = el("revoke-user");
@@ -522,18 +899,12 @@ async function load() {
     return;
   }
   if (!response.ok) {
-    el("error").textContent = "Could not load the summary (" + response.status + ").";
-    el("error").hidden = false;
+    showProblem(el("error"), "Could not load the summary (" + response.status + ").");
     return;
   }
   const summary = await response.json();
   el("month").textContent = "(" + summary.month + ")";
-  fill("servers", summary.servers.map((s) => [
-    cell(s.name), cell(s.url, "mono"), cell(s.auth),
-    cell(count(s.employees_connected), "num"),
-    cell(s.allowlist_size === null ? "all" : String(s.allowlist_size), "num"),
-    cell(s.paused ? "paused" : "active"), actions(s),
-  ]), 7);
+  fill("servers", summary.servers.map(serverRow), 7);
   fill("usage", summary.usage.map((u) => [
     personCell(u.user_id, u.name), cell(String(u.calls), "num"),
     cell(money(u.spent_usd), u.spent_usd >= u.budget_usd ? "num over" : "num"),
