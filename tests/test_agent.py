@@ -40,17 +40,20 @@ from deskclerk.agent import (
     ConversationWaiting,
     Decision,
     Edit,
+    FlaggedCall,
     Gate,
     Limits,
     McpServerFailed,
     NothingToConfirm,
     ProposedCall,
+    Reject,
     ToolAccess,
     ToolSpan,
     Verdict,
     WrongDecisions,
     no_tool_span,
     run_agent,
+    waiting_calls,
 )
 from deskclerk.connections import OAuthConnections, ToolInfo, ToolResult
 from deskclerk.conversations import FernetCipher, open_checkpointer, saved_messages
@@ -1932,6 +1935,46 @@ async def test_a_pending_call_says_whether_its_server_is_trusted_and_a_flag_came
         thread="ada/flagged",
     )
     assert [(call.trusted, call.after_flag) for call in flagged.pending] == [(True, True)]
+
+
+@pytest.mark.anyio
+async def test_a_pending_call_names_the_flagged_result_and_says_whether_it_only_reads(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncPostgresSaver
+) -> None:
+    server = server_record(mcp_server)
+    model = script(
+        calls(("notes__read_note", {})),
+        calls(("notes__read_note", {}), ("notes__write_note", {"text": "a"})),
+    )
+    paused = await run(
+        connections, [server], model, screen=FlagTheFirstResult(), checkpointer=saver
+    )
+    assert [(call.tool, call.call_id, call.read_only) for call in paused.pending] == [
+        ("read_note", "call-0", True),
+        ("write_note", "call-1", False),
+    ]
+    source = FlaggedCall("call-0", "notes", "read_note")
+    assert [call.flagged_by for call in paused.pending] == [source, source]
+    reloaded = await waiting_calls(
+        "ada", [server], connections, connections.tokens, saver, "ada/test"
+    )
+    assert [call.flagged_by for call in reloaded] == [source, source]
+
+
+@pytest.mark.anyio
+async def test_a_rejection_reason_reaches_the_model_and_stays_with_the_decided_call(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncPostgresSaver
+) -> None:
+    server = server_record(mcp_server)
+    model = script(calls(("notes__write_note", {"text": "hi"})), answer("not saved"))
+    paused = await run(connections, [server], model, checkpointer=saver)
+    decisions: dict[str, Decision] = {paused.pending[0].id: Reject("wrong day")}
+    done = await run(connections, [server], model, checkpointer=saver, decisions=decisions)
+    told = [message for message in model.seen[-1] if isinstance(message, ToolMessage)]
+    assert "wrong day" in str(told[-1].content)
+    assert [(call.decision, call.reason) for call in done.decided] == [("reject", "wrong day")]
+    assert [call.rejected for call in done.blocked] == [True]
+    assert mcp_server.notes == []
 
 
 @pytest.mark.anyio

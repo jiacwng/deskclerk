@@ -146,12 +146,15 @@ class Audit:
         return entry
 
     def _decided(self, call: DecidedCall) -> dict[str, Any]:
-        return {
+        entry: dict[str, Any] = {
             "server": call.server,
             "tool": call.tool,
             "decision": call.decision,
             "arguments_hmac": self.store.arguments_hmac(call.arguments),
         }
+        if self.include_text and call.reason != "":
+            entry["reason"] = call.reason
+        return entry
 
     def _hmac(self, text: str) -> str | None:
         if self.key is None:
