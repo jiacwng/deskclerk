@@ -32,6 +32,8 @@ from deskclerk.agent import (
     Limits,
     McpServerFailed,
     NothingToConfirm,
+    PendingCall,
+    Reject,
     RunEvent,
     ToolAccess,
     WrongDecisions,
@@ -90,14 +92,24 @@ class EditIn(BaseModel):
     edit: dict[str, Any]
 
 
+class RejectIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reject: str = Field(min_length=1, max_length=MAX_REQUEST_CHARS)
+
+
+ChoiceIn = Literal["approve", "approve_always", "reject"] | EditIn | RejectIn
+
+
 class ConfirmBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     conversation: UUID
-    decisions: dict[str, Literal["approve", "approve_always", "reject"] | EditIn]
+    decisions: dict[str, ChoiceIn]
 
 
 class ExecutedOut(BaseModel):
+    id: str
     server: str
     tool: str
     arguments: dict[str, Any]
@@ -107,6 +119,7 @@ class ExecutedOut(BaseModel):
 
 
 class BlockedOut(BaseModel):
+    id: str
     server: str
     tool: str
     arguments: dict[str, Any]
@@ -114,16 +127,38 @@ class BlockedOut(BaseModel):
     rejected: bool
 
 
+class FlaggedOut(BaseModel):
+    id: str
+    server: str
+    tool: str
+
+
 class PendingOut(BaseModel):
     id: str
+    call_id: str
     server: str
     tool: str
     description: str
     arguments: dict[str, Any]
+    read_only: bool
     destructive: bool
     always_allowable: bool
     trusted: bool
     after_flag: bool
+    flagged_by: FlaggedOut | None
+
+
+def _decision(choice: ChoiceIn) -> Decision:
+    if isinstance(choice, EditIn):
+        return Edit(choice.edit)
+    if isinstance(choice, RejectIn):
+        return Reject(choice.reject)
+    return choice
+
+
+def _pending_out(call: PendingCall) -> PendingOut:
+    flagged = None if call.flagged_by is None else FlaggedOut(**vars(call.flagged_by))
+    return PendingOut(**(vars(call) | {"flagged_by": flagged}))
 
 
 class TurnOut(BaseModel):
@@ -311,7 +346,7 @@ def router(services: Services) -> APIRouter:
             turns=[
                 TurnOut(request=request, answer=answer) for request, answer in past_turns(history)
             ],
-            pending=[PendingOut(**vars(call)) for call in waiting],
+            pending=[_pending_out(call) for call in waiting],
         )
 
     @routes.post("/ask", response_model=AskOut)
@@ -327,8 +362,7 @@ def router(services: Services) -> APIRouter:
         request: Request, body: ConfirmBody, who: Caller = Depends(services.posting_caller)
     ) -> AskOut | StreamingResponse:
         decisions: dict[str, Decision] = {
-            call_id: Edit(choice.edit) if isinstance(choice, EditIn) else choice
-            for call_id, choice in body.decisions.items()
+            call_id: _decision(choice) for call_id, choice in body.decisions.items()
         }
         return await answer_as_asked(request, who.identity, body.conversation, "", decisions, None)
 
@@ -587,13 +621,13 @@ def router(services: Services) -> APIRouter:
         )
         metrics.ask_finished(outcome, started, cost, result.executed, result)
         for call in result.pending:
-            emit(StreamEvent("pending", PendingOut(**vars(call))))
+            emit(StreamEvent("pending", _pending_out(call)))
         return AskOut(
             conversation=conversation,
             answer=result.answer,
             executed=[ExecutedOut(**vars(call)) for call in result.executed],
             blocked=[BlockedOut(**vars(call)) for call in result.blocked],
-            pending=[PendingOut(**vars(call)) for call in result.pending],
+            pending=[_pending_out(call) for call in result.pending],
             not_connected=list(result.not_connected),
             unavailable=list(result.unavailable),
             step_limit_hit=result.step_limit_hit,
