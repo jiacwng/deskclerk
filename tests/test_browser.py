@@ -248,21 +248,30 @@ def test_the_admin_tabs_switch_and_the_audit_tab_checks_the_chain(
         expect(page.get_by_text("Chain verified")).to_be_visible()
 
 
-def _server_listing(connected: bool, needs_sign_in: bool = True) -> str:
-    return json.dumps(
-        [
-            {
-                "name": "notes",
-                "url": "http://notes.example/mcp",
-                "title": None,
-                "description": None,
-                "examples": [],
-                "connected": connected,
-                "needs_sign_in": needs_sign_in,
-                "tools": [],
-                "always_allowed": [],
-            }
-        ]
+def _server(name: str, state: str, tools: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    return {
+        "name": name,
+        "url": f"http://{name}.example/mcp",
+        "title": None,
+        "description": None,
+        "examples": [],
+        "state": state,
+        "needs_sign_in": True,
+        "tools": tools or [],
+        "always_allowed": [],
+    }
+
+
+def _server_listing(state: str) -> str:
+    return json.dumps([_server("notes", state)])
+
+
+def _fulfil_json(page: Page, pattern: str, body: Any) -> None:
+    page.route(
+        pattern,
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(body)
+        ),
     )
 
 
@@ -281,9 +290,11 @@ def test_two_overlapping_loads_of_the_server_list_render_one_card(
         while len(held) < 2:
             page.wait_for_timeout(50)
         older, newer = held
-        newer.fulfill(status=200, content_type="application/json", body=_server_listing(True))
+        newer.fulfill(
+            status=200, content_type="application/json", body=_server_listing("connected")
+        )
         expect(page.locator("#servers .server")).to_have_count(1)
-        stale = json.loads(_server_listing(True)) * 2
+        stale = json.loads(_server_listing("connected")) * 2
         older.fulfill(status=200, content_type="application/json", body=json.dumps(stale))
         page.wait_for_timeout(300)
         expect(page.locator("#servers .server")).to_have_count(1)
@@ -389,7 +400,7 @@ def test_the_empty_page_points_to_the_left_panel_when_no_app_is_connected(
         page.route(
             "**/servers",
             lambda route: route.fulfill(
-                status=200, content_type="application/json", body=_server_listing(False)
+                status=200, content_type="application/json", body=_server_listing("not_connected")
             ),
         )
         page.evaluate("loadServers()")
@@ -398,15 +409,91 @@ def test_the_empty_page_points_to_the_left_panel_when_no_app_is_connected(
         expect(hint).to_contain_text("Connect an app in the left panel.")
         expect(hint.locator(".phone-only")).to_be_hidden()
         page.set_viewport_size({"width": 375, "height": 812})
-        expect(hint.locator(".phone-only")).to_contain_text("Conversations button")
+        expect(hint.locator(".phone-only")).to_contain_text("Menu button")
+        expect(page.get_by_role("button", name="Menu")).to_be_visible()
         page.route(
             "**/servers",
             lambda route: route.fulfill(
-                status=200, content_type="application/json", body=_server_listing(True)
+                status=200, content_type="application/json", body=_server_listing("connected")
             ),
         )
         page.evaluate("loadServers()")
         expect(hint).to_be_hidden()
+
+
+def test_each_server_state_shows_its_label_and_its_action(
+    page: Page, port: int, database: Database
+) -> None:
+    with _app(port, database, [], script()) as base:
+        _sign_in(page, base)
+        states = ["connected", "not_connected", "sign_in_expired", "error"]
+        _fulfil_json(
+            page, "**/servers", [_server(f"s{n}", state) for n, state in enumerate(states)]
+        )
+        page.evaluate("loadServers()")
+        cards = page.locator("#servers .server-foot")
+        expect(cards).to_have_text(
+            ["ConnectedDisconnect", "Not connectedConnect", "Sign-in expiredReconnect",
+             "Not respondingDisconnect"]
+        )  # fmt: skip
+        expect(page.get_by_role("button", name="Reconnect s2")).to_be_visible()
+        expect(page.locator("#rail-summary")).to_have_text("Connected apps: 1 of 4 connected")
+
+
+def test_the_rail_meter_shows_spend_below_one_cent(
+    page: Page, port: int, database: Database
+) -> None:
+    with _app(port, database, [], script()) as base:
+        _sign_in(page, base)
+        page.evaluate("showBudget(0.0043, 2)")
+        expect(page.locator("#budget")).to_have_text("This month: $0.0043 of $2.00")
+
+
+def test_no_suggestion_is_made_up_from_a_tool_name(
+    page: Page, port: int, database: Database
+) -> None:
+    with _app(port, database, [], script()) as base:
+        _sign_in(page, base)
+        tools = [
+            {"name": "git_status", "title": "", "read_only": True},
+            {"name": "git_commit", "title": "", "read_only": False},
+        ]
+        _fulfil_json(page, "**/servers", [_server("git", "connected", tools)])
+        page.evaluate("loadServers()")
+        expect(page.locator("#chips .chip")).to_have_text(
+            ["What can you do with git?", "List the tools git offers",
+             "Give me an example of using git"]
+        )  # fmt: skip
+
+
+def test_only_an_admin_is_told_which_variable_turns_the_screen_on(
+    page: Page, port: int, database: Database
+) -> None:
+    with _app(port, database, [], script()) as base:
+        _sign_in(page, base)
+        banner = page.locator("#unscreened")
+        expect(banner).to_contain_text("Set TYPESAFE_API_KEY")
+        me = page.evaluate("fetch('/me').then((response) => response.json())")
+        _fulfil_json(page, "**/me", me | {"admin": False})
+        page.reload()
+        expect(banner).to_have_text("Tool results are not screened for prompt injection.")
+
+
+def test_a_long_conversation_title_wraps_to_two_lines(
+    page: Page, port: int, database: Database
+) -> None:
+    title = "Summarise the open pull requests and the failing checks on the release branch"
+    with _app(port, database, [], script()) as base:
+        _sign_in(page, base)
+        listed = [{"id": "c1", "title": title, "updated_at": datetime.now(UTC).isoformat()}]
+        _fulfil_json(page, "**/conversations", listed)
+        page.evaluate("loadConversations()")
+        shown = page.locator(".conv-title")
+        expect(shown).to_have_text(title)
+        height = shown.evaluate("(node) => node.clientHeight")
+        line = shown.evaluate("(node) => parseFloat(getComputedStyle(node).lineHeight)")
+        assert round(height / line) == 2
+        assert (page.locator(".conv-open").get_attribute("title") or "").startswith(title)
 
 
 def _seed_people(database: Database) -> None:

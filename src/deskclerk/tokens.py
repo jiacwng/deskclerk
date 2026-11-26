@@ -11,7 +11,10 @@ from pydantic import BaseModel
 from deskclerk.database import Database
 from deskclerk.servers import McpServer
 
-Kind = Literal["tokens", "client", "tool_pins", "always_allowed", "tool_menu"]
+Kind = Literal["tokens", "client", "tool_pins", "always_allowed", "tool_menu", "connection_problem"]
+
+SIGN_IN_EXPIRED = "sign_in_expired"
+LISTING_FAILED = "listing_failed"
 
 KEY_CHECK_TEXT = b"deskclerk"
 
@@ -33,6 +36,12 @@ def multi_fernet(keys: str) -> MultiFernet:
 class _StoredTokens(BaseModel):
     token: OAuthToken
     expires_at: float | None
+
+
+def expired_without_refresh(text: str, now: float) -> bool:
+    stored = _StoredTokens.model_validate_json(text)
+    expires_at = stored.expires_at
+    return expires_at is not None and expires_at <= now and stored.token.refresh_token is None
 
 
 class TokenStore:
@@ -86,18 +95,19 @@ class TokenStore:
                 (user_id, server_name, kind, self.fernet.encrypt(text.encode())),
             )
 
-    def delete_tokens(self, user_id: str, server_name: str) -> None:
+    def delete(self, user_id: str, server_name: str, kind: Kind) -> None:
         with self.database.pool.connection() as connection:
             connection.execute(
-                "DELETE FROM secrets WHERE user_id = %s AND server_name = %s AND kind = 'tokens'",
-                (user_id, server_name),
+                "DELETE FROM secrets WHERE user_id = %s AND server_name = %s AND kind = %s",
+                (user_id, server_name, kind),
             )
 
     def delete_connection(self, user_id: str, server_name: str) -> None:
         with self.database.pool.connection() as connection:
             connection.execute(
                 "DELETE FROM secrets WHERE user_id = %s AND server_name = %s "
-                "AND kind IN ('tokens', 'tool_pins', 'always_allowed', 'tool_menu')",
+                "AND kind IN ('tokens', 'tool_pins', 'always_allowed', 'tool_menu', "
+                "'connection_problem')",
                 (user_id, server_name),
             )
 

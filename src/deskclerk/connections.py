@@ -28,7 +28,7 @@ from mcp.types import ContentBlock, EmbeddedResource, ResourceLink, TextContent,
 from psycopg import AsyncConnection
 
 from deskclerk.servers import McpServer
-from deskclerk.tokens import ServerTokenStorage, TokenStore
+from deskclerk.tokens import LISTING_FAILED, SIGN_IN_EXPIRED, ServerTokenStorage, TokenStore
 
 PUBLIC_CLIENT = "none"
 HTTP_TIMEOUT = httpx2.Timeout(30, read=300)
@@ -278,6 +278,7 @@ class OAuthConnections:
             provider = self._provider(storage, server, redirect_handler, callback_handler)
             async with self._client(provider, server) as client:
                 await client.list_tools()
+            await asyncio.to_thread(self.tokens.delete, user_id, server.name, "connection_problem")
 
         await self._drop_expired_flows(time.time())
         task = asyncio.create_task(authenticate())
@@ -413,12 +414,22 @@ class OAuthConnections:
             not_connected, _ = group.split(NotConnected)
             if not_connected is None:
                 raise
-            self.tokens.delete_tokens(user_id, server.name)
+            self.tokens.delete(user_id, server.name, "tokens")
+            self.tokens.put(user_id, server.name, "connection_problem", SIGN_IN_EXPIRED)
             raise not_connected.exceptions[0] from None
 
     async def tools(self, user_id: str, server: McpServer) -> list[ToolInfo]:
-        async with self._connected_client(user_id, server) as client:
-            listing = await client.list_tools()
+        try:
+            async with self._connected_client(user_id, server) as client:
+                listing = await client.list_tools()
+        except NotConnected:
+            raise
+        except (*UPSTREAM_ERRORS, ExceptionGroup):
+            await asyncio.to_thread(
+                self.tokens.put, user_id, server.name, "connection_problem", LISTING_FAILED
+            )
+            raise
+        await asyncio.to_thread(self.tokens.delete, user_id, server.name, "connection_problem")
         return [_tool_info(tool) for tool in listing.tools]
 
     async def call(

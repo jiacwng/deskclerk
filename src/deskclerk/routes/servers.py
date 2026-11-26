@@ -2,6 +2,8 @@
 # OAuth sign-in to a server and its callback, disconnecting, and revoking an always-allowed tool.
 
 import logging
+import time
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -19,6 +21,8 @@ from deskclerk.connections import (
 )
 from deskclerk.pinning import MenuEntry, allowed_tool_names, read_menu, revoke_tool
 from deskclerk.routes.services import MAX_REASON_CHARS, Caller, Services, clip, link_failure
+from deskclerk.servers import McpServer
+from deskclerk.tokens import LISTING_FAILED, SIGN_IN_EXPIRED, TokenStore, expired_without_refresh
 
 CONNECT_ERRORS: dict[type[Exception], int] = {
     UnknownState: 400,
@@ -30,6 +34,8 @@ CONNECT_ERRORS: dict[type[Exception], int] = {
 
 _log = logging.getLogger(__name__)
 
+ServerState = Literal["connected", "not_connected", "sign_in_expired", "error"]
+
 
 class ServerOut(BaseModel):
     name: str
@@ -37,7 +43,7 @@ class ServerOut(BaseModel):
     title: str | None
     description: str | None
     examples: list[str]
-    connected: bool
+    state: ServerState
     needs_sign_in: bool
     tools: list[MenuEntry]
     always_allowed: list[str]
@@ -58,6 +64,17 @@ def _connect_failed(failure: Exception) -> RedirectResponse:
     return link_failure("connect_expired" if expired else "connect_failed")
 
 
+def _state(tokens: TokenStore, user_id: str, server: McpServer) -> ServerState:
+    problem = tokens.get(user_id, server.name, "connection_problem")
+    if server.auth != "none":
+        stored = tokens.get(user_id, server.name, "tokens")
+        if stored is None:
+            return "sign_in_expired" if problem == SIGN_IN_EXPIRED else "not_connected"
+        if expired_without_refresh(stored, time.time()):
+            return "sign_in_expired"
+    return "error" if problem == LISTING_FAILED else "connected"
+
+
 def router(services: Services) -> APIRouter:
     routes = APIRouter()
     tokens = services.tokens
@@ -70,10 +87,8 @@ def router(services: Services) -> APIRouter:
         for server in services.catalog.offered:
             if not server.open_to(who.identity.groups):
                 continue
-            connected = (
-                server.auth == "none"
-                or await run_in_threadpool(tokens.get, user, server.name, "tokens") is not None
-            )
+            state = await run_in_threadpool(_state, tokens, user, server)
+            connected = state in ("connected", "error")
             menu = (
                 await run_in_threadpool(read_menu, tokens, user, server.name) if connected else []
             )
@@ -97,7 +112,7 @@ def router(services: Services) -> APIRouter:
                     title=server.title,
                     description=server.description,
                     examples=list(server.examples),
-                    connected=connected,
+                    state=state,
                     needs_sign_in=server.auth != "none",
                     tools=allowed,
                     always_allowed=always,

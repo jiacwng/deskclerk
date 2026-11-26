@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from importlib import resources
 from types import SimpleNamespace
 from typing import Any, cast
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import anthropic
 import httpx
@@ -197,8 +197,8 @@ class SlowModel(ScriptedModel):
         return super()._generate(*args, **kwargs)
 
 
-def begin_sign_in(site: Web) -> tuple[str, str, str]:
-    start = site.client.get("/login", follow_redirects=False)
+def begin_sign_in(site: Web, login: str = "/login") -> tuple[str, str, str]:
+    start = site.client.get(login, follow_redirects=False)
     assert start.status_code == 302
     query = parse_qs(urlparse(start.headers["location"]).query)
     pending = cookies.unsign(SESSION_KEY.encode(), "login", site.client.cookies[LOGIN_COOKIE])
@@ -310,16 +310,6 @@ def test_the_flag_reason_says_the_flag_holds_for_the_whole_conversation() -> Non
     page = resources.files("deskclerk").joinpath("static/index.html").read_text(encoding="utf-8")
     assert "An earlier result in this conversation was flagged" in page
     assert "in this turn" not in page
-
-
-def test_long_conversation_titles_truncate_in_the_rail_and_show_in_full_in_the_tooltip() -> None:
-    page = resources.files("deskclerk").joinpath("static/index.html").read_text(encoding="utf-8")
-    assert ".conv-list { display: grid; grid-template-columns: minmax(0, 1fr);" in page
-    title_rule = re.search(r"\.conv-title \{([^}]*)\}", page)
-    assert title_rule is not None
-    for declaration in ("overflow: hidden", "text-overflow: ellipsis", "white-space: nowrap"):
-        assert declaration in title_rule.group(1)
-    assert 'open.title = item.title + "\\n" + new Date(item.updated_at)' in page
 
 
 def test_the_client_metadata_document_is_served_without_sign_in(
@@ -479,18 +469,37 @@ def test_servers_show_whether_this_employee_is_connected(
     servers = [notes(notes_server), open_notes(open_server)]
     ada, grace = as_user(sign_token, "ada"), as_user(sign_token, "grace")
 
-    def connected(headers: dict[str, str]) -> dict[str, bool]:
+    def states(headers: dict[str, str]) -> dict[str, str]:
         listing = site.client.get("/servers", headers=headers).json()
-        return {entry["name"]: entry["connected"] for entry in listing}
+        return {entry["name"]: entry["state"] for entry in listing}
 
     with web(settings, servers, script(), token_signing_key, database) as site:
-        assert connected(ada) == {"notes": False, "open": True}
+        assert states(ada) == {"notes": "not_connected", "open": "connected"}
         connect(site, ada)
-        assert connected(ada) == {"notes": True, "open": True}
-        assert connected(grace) == {"notes": False, "open": True}
+        assert states(ada) == {"notes": "connected", "open": "connected"}
+        assert states(grace) == {"notes": "not_connected", "open": "connected"}
 
         assert site.client.post("/servers/notes/disconnect", headers=ada).status_code == 204
-        assert connected(ada) == {"notes": False, "open": True}
+        assert states(ada) == {"notes": "not_connected", "open": "connected"}
+
+
+def test_a_stored_token_that_expired_without_a_refresh_token_shows_sign_in_expired(
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    notes_server: RunningServer,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings)
+    ada = as_user(sign_token, "ada")
+    with web(settings, [notes(notes_server)], script(), token_signing_key, database) as site:
+        connect(site, ada)
+        stored = json.loads(site.tokens.get("ada", "notes", "tokens") or "")
+        stored["expires_at"] = time.time() - 60
+        stored["token"]["refresh_token"] = None
+        site.tokens.put("ada", "notes", "tokens", json.dumps(stored))
+        listing = site.client.get("/servers", headers=ada).json()
+    assert [(entry["name"], entry["state"]) for entry in listing] == [("notes", "sign_in_expired")]
 
 
 def test_servers_show_the_title_description_and_examples_the_admin_wrote(
@@ -593,7 +602,7 @@ def test_an_ask_runs_the_agent_and_the_server_sees_the_write_under_that_employee
         assert len(notes_server.notes) == 1
 
 
-def test_a_connection_whose_refresh_fails_shows_as_not_connected_and_is_named_to_the_model(
+def test_a_connection_whose_refresh_fails_shows_sign_in_expired_until_it_is_reconnected(
     sign_token: Sign,
     token_settings: Settings,
     token_signing_key: SigningKeyLookup,
@@ -612,7 +621,12 @@ def test_a_connection_whose_refresh_fails_shows_as_not_connected_and_is_named_to
         body = ask(site, ada).json()
         assert body["not_connected"] == ["notes"]
         listing = site.client.get("/servers", headers=ada).json()
-        assert [(entry["name"], entry["connected"]) for entry in listing] == [("notes", False)]
+        assert [(entry["name"], entry["state"]) for entry in listing] == [
+            ("notes", "sign_in_expired")
+        ]
+        connect(site, ada)
+        listing = site.client.get("/servers", headers=ada).json()
+        assert [(entry["name"], entry["state"]) for entry in listing] == [("notes", "connected")]
     system = model.seen[0][0]
     assert isinstance(system, SystemMessage)
     assert "has not connected these servers, so their tools are not offered: notes." in str(
@@ -1513,6 +1527,33 @@ def test_a_refused_id_token_gives_a_fixed_message_on_the_browser_path(
     assert (refused.status_code, refused.headers["location"]) == (303, SIGN_IN_REFUSED)
 
 
+@pytest.mark.parametrize(
+    ("asked", "landing"),
+    [
+        pytest.param("/admin", "/admin", id="a-local-path"),
+        pytest.param("//evil.example/admin", "/", id="a-scheme-relative-url"),
+        pytest.param("https://evil.example/admin", "/", id="an-absolute-url"),
+        pytest.param("/\\evil.example/admin", "/", id="a-backslash-host"),
+        pytest.param("/\t/evil.example", "/", id="a-tab-before-a-host"),
+        pytest.param("admin", "/", id="a-relative-path"),
+    ],
+)
+def test_sign_in_returns_to_the_local_page_it_was_started_from(
+    asked: str,
+    landing: str,
+    sign_token: Sign,
+    token_settings: Settings,
+    token_signing_key: SigningKeyLookup,
+    database: Database,
+) -> None:
+    settings = make_settings(token_settings)
+    idp = FakeIdp(settings.issuer)
+    with web(settings, [], script(), token_signing_key, database, idp.transport) as site:
+        state, _, _ = begin_sign_in(site, "/login?" + urlencode({"next": asked}))
+        done = finish_sign_in(site, idp, sign_token, state, {})
+    assert (done.status_code, done.headers["location"]) == (303, landing)
+
+
 def test_a_token_response_without_an_id_token_is_refused(
     token_settings: Settings, token_signing_key: SigningKeyLookup, database: Database
 ) -> None:
@@ -1637,7 +1678,12 @@ def test_an_ask_survives_a_server_that_stopped_and_reports_and_audits_it(
         servers = [stopped, open_notes(healthy)]
         with web(settings, servers, model, token_signing_key, database, key=key) as site:
             response = ask(site, ada)
+            listing = site.client.get("/servers", headers=ada).json()
     assert response.status_code == 200
+    assert {entry["name"]: entry["state"] for entry in listing} == {
+        "notes": "error",
+        "open": "connected",
+    }
     body = response.json()
     assert (body["unavailable"], body["answer"]) == (["notes"], "notes is down")
     assert [call["result"] for call in body["executed"]] == ["the note"]

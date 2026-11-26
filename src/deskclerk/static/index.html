@@ -156,7 +156,7 @@ button.small { min-height: 1.875rem; padding: 0.2rem 0.6rem; font-size: 0.8125re
 .conv:hover { background: var(--sunk); }
 button.conv-open { flex: 1; min-width: 0; flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 0; padding: 0.3rem 0.5rem; background: transparent; border-color: transparent; font-weight: 500; text-align: left; }
 button.conv-open[aria-current="true"] { background: var(--sunk); border-color: var(--edge); }
-.conv-title { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-title { max-width: 100%; overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 .conv-time { font-size: 0.75rem; font-weight: 400; color: var(--muted); }
 button.conv-delete { flex: none; min-height: 0; padding: 0.2rem 0.5rem; font-size: 0.75rem; background: transparent; border-color: transparent; color: var(--muted); }
 button.conv-delete:hover:not(:disabled) { color: var(--bad); }
@@ -179,6 +179,11 @@ button.conv-delete:hover:not(:disabled) { color: var(--bad); }
 .state::before { content: ""; width: 0.5rem; height: 0.5rem; border-radius: 50%; border: 1.5px solid var(--muted); }
 .state.on { color: var(--ok); }
 .state.on::before { background: var(--ok); border-color: var(--ok); }
+.state.expired { color: var(--warn); }
+.state.expired::before { border-color: var(--warn); }
+.state.error { color: var(--bad); }
+.state.error::before { background: var(--bad); border-color: var(--bad); }
+.server-problem { font-size: 0.8125rem; color: var(--muted); }
 
 .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .thread { position: relative; flex: 1; min-height: 0; display: flex; }
@@ -361,7 +366,7 @@ textarea::placeholder { color: var(--muted); }
 <body>
 <header class="bar">
   <div class="bar-inner">
-    <button id="rail-toggle" class="small rail-toggle" type="button" aria-expanded="false" aria-controls="rail">Conversations</button>
+    <button id="rail-toggle" class="small rail-toggle" type="button" aria-expanded="false" aria-controls="rail">Menu</button>
     <h1 class="brand">deskclerk</h1>
     <div id="who" class="who" hidden>
       <span id="status" class="muted small"></span>
@@ -370,7 +375,7 @@ textarea::placeholder { color: var(--muted); }
     </div>
   </div>
 </header>
-<p id="unscreened" class="banner" role="status" hidden>Tool results are not screened for prompt injection. Set TYPESAFE_API_KEY to turn the screen on.</p>
+<p id="unscreened" class="banner" role="status" hidden>Tool results are not screened for prompt injection.</p>
 
 <section id="signin" class="signin" hidden>
   <h2 class="signin-title">Sign in to continue</h2>
@@ -401,7 +406,7 @@ textarea::placeholder { color: var(--muted); }
     <div id="empty" class="empty">
       <h2 class="empty-title">What do you need from your connected apps?</h2>
       <p>Ask for something to look up or change in your connected apps.</p>
-      <p id="connect-hint" hidden>Connect an app in the left panel.<span class="phone-only"> Open it with the Conversations button.</span></p>
+      <p id="connect-hint" hidden>Connect an app in the left panel.<span class="phone-only"> Open it with the Menu button.</span></p>
       <div id="chips" class="chips"></div>
     </div>
     <div id="turns" class="turns"></div>
@@ -698,29 +703,8 @@ const PROMPTS = [
   (name) => "Give me an example of using " + name,
 ];
 
-function requestFromTool(tool) {
-  const words = (tool.title || tool.name).split(/[^A-Za-z0-9]+/).filter(Boolean).map((word) => word.toLowerCase());
-  if (words.length === 0) return "";
-  const verb = words[0].charAt(0).toUpperCase() + words[0].slice(1);
-  if (words.length === 1) return verb;
-  const noun = words.slice(1).join(" ");
-  return tool.read_only ? verb + " my " + noun : verb + " a " + noun.replace(/s$/, "");
-}
-
-function toolPrompts(servers) {
-  const picked = [];
-  for (let round = 0; picked.length < 4 && round < 4; round++) {
-    for (const server of servers) {
-      const reads = server.tools.filter((tool) => tool.read_only);
-      const writes = server.tools.filter((tool) => !tool.read_only);
-      for (const tool of [reads[round], writes[round]]) if (tool && picked.length < 4) picked.push(tool);
-    }
-  }
-  return picked.map(requestFromTool).filter(Boolean);
-}
-
 function showChips(servers) {
-  let prompts = servers.flatMap((server) => server.examples).concat(toolPrompts(servers));
+  const prompts = servers.flatMap((server) => server.examples);
   if (prompts.length === 0) {
     for (const template of PROMPTS) for (const server of servers) prompts.push(template(server.title || server.name));
   }
@@ -741,7 +725,7 @@ function showBudget(spent, budget) {
   line.dataset.level = used >= 0.8 ? "warn" : "ok";
   line.textContent = used >= 1
     ? "Budget used: asks are refused until next month"
-    : "This month: $" + spent.toFixed(2) + " of $" + budget.toFixed(2);
+    : "This month: $" + spent.toFixed(4) + " of $" + budget.toFixed(2);
   line.hidden = false;
 }
 
@@ -751,6 +735,13 @@ async function refreshBudget() {
   const me = await response.json();
   showBudget(me.spent_usd, me.budget_usd);
 }
+
+const SERVER_STATES = {
+  connected: { label: "Connected", className: "state on", action: "Disconnect", problem: "" },
+  not_connected: { label: "Not connected", className: "state", action: "Connect", problem: "" },
+  sign_in_expired: { label: "Sign-in expired", className: "state expired", action: "Reconnect", problem: "Your sign-in to this app ended. Reconnect to use it again." },
+  error: { label: "Not responding", className: "state error", action: "Disconnect", problem: "The last request to this app failed. Ask your administrator if it keeps failing." },
+};
 
 let serversLoad = 0;
 
@@ -762,24 +753,26 @@ async function loadServers() {
   const servers = await response.json();
   if (mine !== serversLoad) return;
   const cards = [];
-  const connected = servers.filter((server) => server.connected).length;
-  el("rail-summary").textContent = "Connected apps: " + connected + " of " + servers.length + " connected";
-  showChips(servers.filter((server) => server.connected));
-  el("connect-hint").hidden = servers.length === 0 || connected > 0;
+  const usable = servers.filter((server) => server.state === "connected");
+  el("rail-summary").textContent = "Connected apps: " + usable.length + " of " + servers.length + " connected";
+  showChips(usable);
+  el("connect-hint").hidden = servers.length === 0 || usable.length > 0;
   for (const server of servers) {
     const card = make("div", "server");
     card.append(make("div", "server-name", server.title || server.name), make("div", server.description ? "server-about" : "server-url", server.description || server.url));
+    const shown = SERVER_STATES[server.state];
     const foot = make("div", "server-foot");
-    foot.append(make("span", server.connected ? "state on" : "state", server.connected ? "Connected" : "Not connected"));
+    foot.append(make("span", shown.className, shown.label));
     if (server.needs_sign_in) {
-      const toggle = server.connected
+      const toggle = shown.action === "Disconnect"
         ? button("Disconnect", () => disconnect(server.name), "small")
-        : button("Connect", () => connect(server.name), "small primary");
+        : button(shown.action, () => connect(server.name), "small primary");
       toggle.setAttribute("aria-label", toggle.textContent + " " + server.name);
       foot.append(toggle);
     }
     card.append(foot);
-    if (server.connected && server.always_allowed.length > 0) {
+    if (shown.problem !== "") card.append(make("div", "server-problem", shown.problem));
+    if (server.always_allowed.length > 0) {
       const names = Object.fromEntries(server.tools.map((tool) => [tool.name, tool.title || tool.name]));
       const items = make("div", "always-list");
       for (const tool of server.always_allowed) {
@@ -1724,6 +1717,7 @@ async function start() {
   el("status").textContent = "Signed in as " + me.name;
   el("admin-link").hidden = !me.admin;
   el("unscreened").hidden = !me.unscreened;
+  if (me.admin) el("unscreened").append(" Set TYPESAFE_API_KEY to turn the screen on.");
   showBudget(me.spent_usd, me.budget_usd);
   el("who").hidden = false;
   el("app").hidden = false;

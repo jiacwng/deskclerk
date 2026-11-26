@@ -4,8 +4,9 @@
 import hmac
 import logging
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -31,18 +32,32 @@ def _sign_in_failed(code: str, reason: str) -> RedirectResponse:
     return link_failure(code)
 
 
+def _local_path(path: str | None) -> str:
+    if path is None or not path.startswith("/") or "\\" in path or not path.isprintable():
+        return "/"
+    parts = urlsplit(path)
+    if parts.scheme != "" or parts.netloc != "":
+        return "/"
+    return path
+
+
 def router(services: Services) -> APIRouter:
     routes = APIRouter()
     settings = services.settings
 
     @routes.get("/login")
-    async def login() -> Response:
+    async def login(next_path: str | None = Query(None, alias="next")) -> Response:
         try:
             found = await services.endpoints()
         except AuthUnavailable as unreachable:
             return _sign_in_failed("login_unreachable", str(unreachable))
         begun = oidc.start(settings, found)
-        pending = {"state": begun.state, "verifier": begun.verifier, "nonce": begun.nonce}
+        pending = {
+            "state": begun.state,
+            "verifier": begun.verifier,
+            "nonce": begun.nonce,
+            "next": _local_path(next_path),
+        }
         value = cookies.sign(services.session_key, "login", pending, LOGIN_LIFETIME_SECONDS)
         response = RedirectResponse(begun.url, status_code=302)
         response.set_cookie(
@@ -108,7 +123,7 @@ def router(services: Services) -> APIRouter:
         session = await run_in_threadpool(
             services.sessions.create, identity, services.session_seconds
         )
-        response = RedirectResponse("/", status_code=303)
+        response = RedirectResponse(_local_path(str(pending.get("next", "/"))), status_code=303)
         response.delete_cookie(LOGIN_COOKIE, path="/login")
         response.set_cookie(
             SESSION_COOKIE,
