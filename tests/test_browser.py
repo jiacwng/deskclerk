@@ -597,6 +597,31 @@ def test_each_server_state_shows_its_label_and_its_action(
         expect(page.locator("#rail-summary")).to_have_text("Connected apps: 1 of 4 connected")
 
 
+def test_the_rail_refreshes_app_states_after_a_request(
+    page: Page, port: int, database: Database
+) -> None:
+    with _app(port, database, [], script(answer("Done."))) as base:
+        _sign_in(page, base)
+        page.route(
+            "**/servers",
+            lambda route: route.fulfill(
+                status=200, content_type="application/json", body=_server_listing("connected")
+            ),
+        )
+        page.evaluate("loadServers()")
+        cards = page.locator("#servers .server-foot")
+        expect(cards).to_have_text(["ConnectedDisconnect"])
+        page.unroute("**/servers")
+        page.route(
+            "**/servers",
+            lambda route: route.fulfill(
+                status=200, content_type="application/json", body=_server_listing("error")
+            ),
+        )
+        _ask(page, "hello")
+        expect(cards).to_have_text(["Not respondingDisconnect"])
+
+
 def test_the_rail_meter_shows_spend_below_one_cent(
     page: Page, port: int, database: Database
 ) -> None:

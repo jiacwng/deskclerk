@@ -1847,6 +1847,7 @@ async function ask(resent, edit) {
     if (!finished && !refused) await settle(turn, request, at);
     running = null;
     setBusy(false);
+    loadServers();
     loadConversations();
     refreshBudget();
     if (waiting === 0) el("request").focus();
@@ -1860,7 +1861,6 @@ async function send() {
   setBusy(true, "Sending your decisions…");
   const turn = currentTurn;
   turn.pending = [];
-  const usedAlways = Object.values(decisions).includes("approve_always");
   const body = { conversation, decisions: decisionBody() };
   for (const { call, card, reasonField } of approvals) {
     card.approval.inert = true;
@@ -1898,7 +1898,7 @@ async function send() {
     stop();
     running = null;
     setBusy(false);
-    if (usedAlways) loadServers();
+    loadServers();
     loadConversations();
     refreshBudget();
     if (waiting === 0) el("request").focus();
