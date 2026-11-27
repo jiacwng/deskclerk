@@ -2,6 +2,7 @@
 # a scripted model: sign-in, the approval card, inert markup, the flag badge and the admin page.
 
 import json
+import re
 import socket
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
@@ -529,7 +530,7 @@ def test_a_deleted_conversation_starts_a_new_one_on_the_next_ask(
         _sign_in(page, base)
         _ask(page, "First")
         expect(page.get_by_text("First answer.")).to_be_visible()
-        page.wait_for_function("conversation !== null")
+        expect(page).to_have_url(re.compile(r"#c=[0-9a-f-]{36}$"))
         page.route(
             "**/ask",
             lambda route: route.fulfill(
