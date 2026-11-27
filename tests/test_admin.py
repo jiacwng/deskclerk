@@ -74,7 +74,9 @@ def test_a_signed_in_employee_outside_the_group_is_refused(
     with web(settings, [], script(answer("ok")), token_signing_key, database) as site:
         for groups in ([], ["finance"]):
             outsider = bearer(sign_token, "bob", groups)
-            assert site.client.get("/admin", headers=outsider).status_code == 403
+            refused = site.client.get("/admin", headers=outsider)
+            assert refused.status_code == 403
+            assert refused.json()["detail"] == "this page is for admins"
             assert site.client.get("/admin/summary", headers=outsider).status_code == 403
             assert site.client.get("/me", headers=outsider).json()["admin"] is False
 

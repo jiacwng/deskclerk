@@ -95,7 +95,7 @@ class Spending:
         if spent >= self.budget_usd:
             raise BudgetExceeded(
                 f"spent {spent:.4f} USD this month, the budget is "
-                f"{self.budget_usd:.4f} USD (DESKCLERK_BUDGET_USD); it resets at the start "
+                f"{self.budget_usd:.4f} USD; it resets at the start "
                 "of next month (UTC)"
             )
 

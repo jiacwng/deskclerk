@@ -713,7 +713,8 @@ def test_an_employee_who_spent_the_cap_is_stopped_with_402_and_others_are_not(
         assert first.json()["cost_usd"] == pytest.approx(0.009)
         stopped = ask(site, ada)
         assert stopped.status_code == 402
-        assert "DESKCLERK_BUDGET_USD" in stopped.json()["detail"]
+        assert "DESKCLERK_BUDGET_USD" not in stopped.json()["detail"]
+        assert "the budget is 0.0050 USD; it resets" in stopped.json()["detail"]
         assert ask(site, grace).status_code == 200
 
 

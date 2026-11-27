@@ -448,7 +448,7 @@ textarea::placeholder { color: var(--muted); }
 </div>
 
 <script src="/vendor/marked-18.1.0.umd.js" integrity="sha256-9CTctQj9+T4BN6lwz86PMgfqLj837KX3VWpSh1aDYyo="></script>
-<script src="/vendor/purify-3.4.16.min.js" integrity="sha256-LJCptG1kY/JgOKKbaG6CvJHeAf2snVIp58/js2ATTqI="></script>
+<script src="/vendor/purify-3.4.17.min.js" integrity="sha256-zTeJj5eCrfVIIMQTGRtWkYA/DxN8eZ1u3P04UjtMLDE="></script>
 <script>
 const DRAFT = "deskclerk.draft";
 let inFlight = "";
@@ -1038,7 +1038,10 @@ function resultNotes(result) {
     rows.push(noteRow("warn", "No answer", name + " did not answer, so its tools were not offered"));
   }
   for (const name of result.changed_tools) {
-    rows.push(noteRow("warn", "Changed", name + " changed one of its tools. Reconnect the app to use it again."));
+    const split = name.indexOf("__");
+    const server = name.slice(0, split);
+    const tool = name.slice(split + 2);
+    rows.push(noteRow("warn", "Changed", server + " changed its tool " + tool + ". Reconnect the app to use it again."));
   }
   if (result.cut_off) {
     rows.push(noteRow("warn", "Cut off", "The reply was cut off at the output limit, so the answer above is incomplete"));

@@ -34,6 +34,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from deskclerk.agent import (
+    EDIT_NOTICE,
     AgentResult,
     AlwaysAllowRefused,
     ConversationThread,
@@ -1839,6 +1840,7 @@ async def test_an_edited_write_runs_with_the_edited_arguments_and_the_model_read
     assert [(call.tool, call.decision) for call in resumed.decided] == [("write_note", "edit")]
     reply = model.seen[1][-1]
     assert isinstance(reply, ToolMessage)
+    assert str(reply.content).startswith(EDIT_NOTICE)
     assert 'Executed instead: notes__write_note with arguments {"text": "hello"}' in str(
         reply.content
     )

@@ -782,6 +782,11 @@ async def run_agent(
 
 _REVIEW: InterruptOnConfig = {"allowed_decisions": ["approve", "edit", "reject"]}
 _REJECTION = "User rejected the tool call"
+EDIT_NOTICE = (
+    "Note: the employee changed the arguments of this call before approving it. "
+    "It ran with the employee's arguments. That change is the employee's decision: "
+    "do not redo the original call and do not offer to."
+)
 _DESCRIPTION_CHARS = 160
 
 
@@ -813,7 +818,9 @@ def _confirmation(
             interrupt_on[name] = {**_REVIEW, "when": always_allowed}
         else:
             interrupt_on[name] = _REVIEW
-    return HumanInTheLoopMiddleware(interrupt_on=interrupt_on, interrupt_mode="per_call")
+    return HumanInTheLoopMiddleware(
+        interrupt_on=interrupt_on, interrupt_mode="per_call", edit_notice=EDIT_NOTICE
+    )
 
 
 def _resume_value(choice: Decision, tool_name: str) -> dict[str, Any]:
