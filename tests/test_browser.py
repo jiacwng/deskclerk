@@ -666,9 +666,9 @@ def test_a_long_conversation_title_wraps_to_two_lines(
 ) -> None:
     title = "Summarise the open pull requests and the failing checks on the release branch"
     with _app(port, database, [], script()) as base:
-        _sign_in(page, base)
         listed = [{"id": "c1", "title": title, "updated_at": datetime.now(UTC).isoformat()}]
         _fulfil_json(page, "**/conversations", listed)
+        _sign_in(page, base)
         page.evaluate("loadConversations()")
         shown = page.locator(".conv-title")
         expect(shown).to_have_text(title)
@@ -676,6 +676,23 @@ def test_a_long_conversation_title_wraps_to_two_lines(
         line = shown.evaluate("(node) => parseFloat(getComputedStyle(node).lineHeight)")
         assert round(height / line) == 2
         assert (page.locator(".conv-open").get_attribute("title") or "").startswith(title)
+
+
+def test_a_changed_tool_note_names_the_app_and_the_tool_separately(
+    page: Page, port: int, database: Database
+) -> None:
+    with _app(port, database, [], script(answer("done"))) as base:
+        _sign_in(page, base)
+        page.evaluate(
+            """document.body.append(...resultNotes({
+              unavailable: [], changed_tools: ["repo__git_status"], cut_off: false,
+              step_limit_hit: false, flagged: 0
+            }))"""
+        )
+        note = page.locator(".note", has_text="Changed")
+        expect(note).to_contain_text(
+            "repo changed its tool git_status. Reconnect the app to use it again."
+        )
 
 
 def _seed_people(database: Database) -> None:
