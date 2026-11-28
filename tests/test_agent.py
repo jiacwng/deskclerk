@@ -34,7 +34,6 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from deskclerk.agent import (
-    EDIT_NOTICE,
     AgentResult,
     AlwaysAllowRefused,
     ConversationThread,
@@ -138,6 +137,12 @@ class ProviderGoneAfterScript(ScriptedModel):
         except StopIteration:
             request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
             raise anthropic.APIConnectionError(request=request) from None
+
+
+EMPLOYEE_NOTE = (
+    "I changed the arguments of notes__write_note before approving it. "
+    'It ran with {"text": "hello"}. That is what I want.'
+)
 
 
 def script(*replies: AIMessage) -> ScriptedModel:
@@ -1817,7 +1822,7 @@ async def test_an_unknown_confirm_tool_is_logged_and_the_rest_still_work(
 
 
 @pytest.mark.anyio
-async def test_an_edited_write_runs_with_the_edited_arguments_and_the_model_reads_the_notice(
+async def test_an_edited_write_runs_with_the_edited_arguments_and_the_model_sees_the_employee_note(
     mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncPostgresSaver
 ) -> None:
     servers = [server_record(mcp_server)]
@@ -1838,13 +1843,78 @@ async def test_an_edited_write_runs_with_the_edited_arguments_and_the_model_read
     ]
     assert gate.asked[-1].arguments == {"text": "hello"}
     assert [(call.tool, call.decision) for call in resumed.decided] == [("write_note", "edit")]
-    reply = model.seen[1][-1]
+    asked, reply, note = model.seen[1][-3:]
+    assert isinstance(asked, AIMessage)
+    assert asked.tool_calls[0]["args"] == {"text": "hi"}
     assert isinstance(reply, ToolMessage)
-    assert str(reply.content).startswith(EDIT_NOTICE)
-    assert 'Executed instead: notes__write_note with arguments {"text": "hello"}' in str(
-        reply.content
+    assert reply.content == "wrote hello"
+    assert isinstance(note, HumanMessage)
+    assert note.content == EMPLOYEE_NOTE
+
+
+@pytest.mark.anyio
+async def test_a_later_turn_still_shows_the_employee_note_and_it_is_never_stored(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncPostgresSaver
+) -> None:
+    servers = [server_record(mcp_server)]
+    model = script(
+        calls(("notes__write_note", {"text": "hi"})), answer("saved it"), answer("it said hello")
     )
-    assert str(reply.content).endswith("wrote hello")
+    paused = await run(connections, servers, model, checkpointer=saver)
+    await run(
+        connections,
+        servers,
+        model,
+        checkpointer=saver,
+        decisions={paused.pending[0].id: Edit({"text": "hello"})},
+    )
+    await run(connections, servers, model, request="what did you save?", checkpointer=saver)
+    texts = [str(m.content) for m in model.seen[2] if isinstance(m, HumanMessage)]
+    assert texts == ["save a note", EMPLOYEE_NOTE, "what did you save?"]
+    state = await saved_messages(saver, "ada/test")
+    assert [str(m.content) for m in state if isinstance(m, HumanMessage)] == [
+        "save a note",
+        "what did you save?",
+    ]
+
+
+@pytest.mark.anyio
+async def test_the_employee_note_comes_after_all_the_tool_results_of_one_turn(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncPostgresSaver
+) -> None:
+    servers = [server_record(mcp_server)]
+    model = script(
+        calls(
+            ("notes__write_note", {"text": "one"}),
+            ("notes__write_note", {"text": "two"}),
+        ),
+        answer("done"),
+    )
+    paused = await run(connections, servers, model, checkpointer=saver)
+    first, second = paused.pending
+    await run(
+        connections,
+        servers,
+        model,
+        checkpointer=saver,
+        decisions={first.id: Edit({"text": "hello"}), second.id: "approve"},
+    )
+    kinds = [type(message) for message in model.seen[1][-4:]]
+    assert kinds == [AIMessage, ToolMessage, ToolMessage, HumanMessage]
+
+
+@pytest.mark.anyio
+async def test_an_approved_call_without_an_edit_adds_no_note(
+    mcp_server: RunningServer, connections: OAuthConnections, saver: AsyncPostgresSaver
+) -> None:
+    servers = [server_record(mcp_server)]
+    model = script(calls(("notes__write_note", {"text": "hi"})), answer("saved it"))
+    paused = await run(connections, servers, model, checkpointer=saver)
+    await run(
+        connections, servers, model, checkpointer=saver, decisions={paused.pending[0].id: "approve"}
+    )
+    assert [m for m in model.seen[1] if isinstance(m, HumanMessage)] == [model.seen[1][1]]
+    assert isinstance(model.seen[1][-1], ToolMessage)
 
 
 @pytest.mark.anyio

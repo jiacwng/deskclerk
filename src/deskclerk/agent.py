@@ -34,6 +34,7 @@ from langchain_core.messages import (
     ToolMessage,
     trim_messages,
 )
+from langchain_core.messages.tool import ToolCall
 from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, StructuredTool
@@ -465,6 +466,61 @@ def _typed_texts(arguments: dict[str, Any]) -> tuple[str, ...]:
     )
 
 
+_EXECUTED_CALL = "executed_call"
+
+
+def _asked_call(messages: list[AnyMessage], call_id: str) -> ToolCall | None:
+    for message in messages:
+        if isinstance(message, AIMessage):
+            for call in message.tool_calls:
+                if call["id"] == call_id:
+                    return call
+    return None
+
+
+def _employee_note(ran: dict[str, Any]) -> HumanMessage:
+    arguments = json.dumps(ran["args"], sort_keys=True, default=str)
+    return HumanMessage(
+        f"I changed the arguments of {ran['name']} before approving it. "
+        f"It ran with {arguments}. That is what I want."
+    )
+
+
+class _EditedCalls(AgentMiddleware[AgentState[Any], None, Any]):
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
+        reply = await handler(request)
+        call = request.tool_call
+        asked = _asked_call(request.state["messages"], call["id"] or "")
+        if isinstance(reply, ToolMessage) and reply.status != "error" and asked is not None:
+            if (asked["name"], asked["args"]) != (call["name"], call["args"]):
+                reply.response_metadata[_EXECUTED_CALL] = {
+                    "name": call["name"],
+                    "args": call["args"],
+                }
+        return reply
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[Any]]],
+    ) -> ModelResponse[Any]:
+        messages: list[AnyMessage] = []
+        notes: list[AnyMessage] = []
+        for message in request.messages:
+            if not isinstance(message, ToolMessage):
+                messages.extend(notes)
+                notes = []
+            messages.append(message)
+            if isinstance(message, ToolMessage) and _EXECUTED_CALL in message.response_metadata:
+                notes.append(_employee_note(message.response_metadata[_EXECUTED_CALL]))
+        messages.extend(notes)
+        return await handler(request.override(messages=messages))
+
+
 class _Run(AgentMiddleware[AgentState[Any], None, Any]):
     def __init__(self, shared: _Shared) -> None:
         super().__init__()
@@ -662,6 +718,7 @@ async def run_agent(
         ModelCallLimitMiddleware(run_limit=limits.step_limit),
         _Guard(shared),
         confirmation,
+        _EditedCalls(),
         _Run(shared),
         ToolRetryMiddleware(tools=read_only_names, retry_on=_is_upstream_error, on_failure="error"),
     ]
@@ -782,11 +839,6 @@ async def run_agent(
 
 _REVIEW: InterruptOnConfig = {"allowed_decisions": ["approve", "edit", "reject"]}
 _REJECTION = "User rejected the tool call"
-EDIT_NOTICE = (
-    "Note: the employee changed the arguments of this call before approving it. "
-    "It ran with the employee's arguments. That change is the employee's decision: "
-    "do not redo the original call and do not offer to."
-)
 _DESCRIPTION_CHARS = 160
 
 
@@ -819,7 +871,7 @@ def _confirmation(
         else:
             interrupt_on[name] = _REVIEW
     return HumanInTheLoopMiddleware(
-        interrupt_on=interrupt_on, interrupt_mode="per_call", edit_notice=EDIT_NOTICE
+        interrupt_on=interrupt_on, interrupt_mode="per_call", edit_notice=None
     )
 
 
