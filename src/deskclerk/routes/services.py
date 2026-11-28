@@ -115,13 +115,13 @@ class Services:
     async def admin_caller(self, request: Request) -> Caller:
         who = await self.caller(request)
         if not self.is_admin(who.identity):
-            raise HTTPException(403, "this page is for the admins group")
+            raise HTTPException(403, "this page is for admins")
         return who
 
     async def admin_posting_caller(self, request: Request) -> Caller:
         who = await self.posting_caller(request)
         if not self.is_admin(who.identity):
-            raise HTTPException(403, "this page is for the admins group")
+            raise HTTPException(403, "this page is for admins")
         return who
 
     def known_server(self, name: str, identity: Identity) -> McpServer:

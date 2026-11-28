@@ -156,7 +156,7 @@ button.small { min-height: 1.875rem; padding: 0.2rem 0.6rem; font-size: 0.8125re
 .conv:hover { background: var(--sunk); }
 button.conv-open { flex: 1; min-width: 0; flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 0; padding: 0.3rem 0.5rem; background: transparent; border-color: transparent; font-weight: 500; text-align: left; }
 button.conv-open[aria-current="true"] { background: var(--sunk); border-color: var(--edge); }
-.conv-title { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-title { max-width: 100%; overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 .conv-time { font-size: 0.75rem; font-weight: 400; color: var(--muted); }
 button.conv-delete { flex: none; min-height: 0; padding: 0.2rem 0.5rem; font-size: 0.75rem; background: transparent; border-color: transparent; color: var(--muted); }
 button.conv-delete:hover:not(:disabled) { color: var(--bad); }
@@ -179,6 +179,11 @@ button.conv-delete:hover:not(:disabled) { color: var(--bad); }
 .state::before { content: ""; width: 0.5rem; height: 0.5rem; border-radius: 50%; border: 1.5px solid var(--muted); }
 .state.on { color: var(--ok); }
 .state.on::before { background: var(--ok); border-color: var(--ok); }
+.state.expired { color: var(--warn); }
+.state.expired::before { border-color: var(--warn); }
+.state.error { color: var(--bad); }
+.state.error::before { background: var(--bad); border-color: var(--bad); }
+.server-problem { font-size: 0.8125rem; color: var(--muted); }
 
 .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .thread { position: relative; flex: 1; min-height: 0; display: flex; }
@@ -232,20 +237,24 @@ button.conv-delete:hover:not(:disabled) { color: var(--bad); }
 .answer th, .answer td { border: 1px solid var(--line); padding: 0.3rem 0.6rem; text-align: left; overflow-wrap: normal; }
 .answer th { background: var(--sunk); }
 
-.calls { display: grid; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
-.calls:empty { display: none; }
-.call, .note { min-width: 0; border-top: 1px solid var(--line-soft); }
-.calls > :first-child { border-top: 0; }
-.call summary, .note {
+.calls { display: grid; gap: 0.5rem; }
+.calls:empty, .notes:empty { display: none; }
+.call { min-width: 0; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
+.call[data-state="awaiting"] { border-color: var(--warn); }
+.call[data-choice="approve"], .call[data-choice="approve_always"], .call[data-choice="edit"] { box-shadow: inset 3px 0 0 var(--ok); }
+.call[data-choice="reject"] { box-shadow: inset 3px 0 0 var(--bad); }
+.call-head { display: flex; align-items: center; flex-wrap: wrap; gap: 0.25rem 0.75rem; padding: 0.3rem 0.75rem; min-height: 2.25rem; font-size: 0.8125rem; }
+.call[data-state="awaiting"] .call-head { background: var(--warn-soft); border-radius: 3px 3px 0 0; }
+.call-head .badge { min-width: 8rem; }
+button.call-toggle { margin-left: auto; min-height: 1.75rem; }
+.call-body { padding: 0.25rem 0.75rem 0.75rem; display: grid; gap: 0.5rem; }
+.notes { display: grid; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
+.note {
+  min-width: 0; border-top: 1px solid var(--line-soft);
   display: grid; grid-template-columns: 9rem minmax(0, 1fr); align-items: baseline; column-gap: 0.75rem;
   padding: 0.4rem 0.75rem; font-size: 0.8125rem;
 }
-.call summary { cursor: pointer; list-style: none; grid-template-columns: 9rem auto minmax(0, 1fr) auto; }
-.call summary::-webkit-details-marker { display: none; }
-.call summary:hover { background: var(--sunk); }
-.call summary::after { content: "Show"; font-size: 0.75rem; color: var(--muted); }
-.call[open] summary::after { content: "Hide"; }
-.call-body { padding: 0.25rem 0.75rem 0.75rem; display: grid; gap: 0.5rem; }
+.notes > :first-child { border-top: 0; }
 .call-server { color: var(--muted); }
 .call-tool { font-family: var(--mono); font-weight: 600; }
 .part-title { font-size: 0.75rem; font-weight: 600; color: var(--muted); margin-bottom: 0.2rem; }
@@ -265,15 +274,17 @@ pre {
 .confirm { background: var(--surface); border: 1px solid var(--warn); border-radius: 4px; min-width: 0; }
 .confirm-head { padding: 0.75rem; display: grid; gap: 0.125rem; background: var(--warn-soft); border-radius: 3px 3px 0 0; }
 .confirm-title { font-size: 0.9375rem; font-weight: 700; }
-.pending { display: grid; grid-template-columns: minmax(0, 1fr); }
-.pending-card { padding: 0.75rem; border-top: 1px solid var(--line); display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.5rem; }
-.pending-card[data-choice="approve"] { box-shadow: inset 3px 0 0 var(--ok); }
-.pending-card[data-choice="edit"] { box-shadow: inset 3px 0 0 var(--ok); }
-.pending-card[data-choice="reject"] { box-shadow: inset 3px 0 0 var(--bad); }
-.pending-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.25rem 0.5rem; }
-.pending-note { font-size: 0.75rem; color: var(--muted); }
-.pending-reason { display: flex; }
+.approval { padding: 0.75rem; border-top: 1px solid var(--line); display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.5rem; }
+.pending-reason { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.25rem 0.5rem; }
 .pending-reason .badge { white-space: normal; align-items: baseline; }
+.verdict { font-size: 0.8125rem; font-weight: 600; color: var(--muted); }
+.verdict.ok { color: var(--ok); }
+.verdict.bad { color: var(--bad); }
+.reject-reason { display: grid; gap: 0.25rem; justify-items: start; }
+.reject-reason textarea { min-height: 2.5rem; }
+.always { display: grid; gap: 0.375rem; justify-items: start; padding-top: 0.5rem; border-top: 1px dashed var(--line); }
+.always-confirm { display: grid; gap: 0.5rem; padding: 0.5rem 0.625rem; border: 1px solid var(--warn); border-radius: 4px; background: var(--warn-soft); }
+.always-buttons { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .call-name { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.125rem 0.5rem; min-width: 0; }
 .args { display: grid; gap: 0.25rem; font-size: 0.8125rem; }
 .arg { display: grid; grid-template-columns: minmax(0, 8rem) minmax(0, 1fr); column-gap: 0.75rem; }
@@ -294,14 +305,13 @@ pre {
 .pending-actions { display: flex; align-items: center; flex-wrap: wrap; }
 .pending-actions button.choice { min-height: 2rem; }
 .pending-actions button.choice.approve { border-radius: 4px 0 0 4px; margin-right: -1px; }
-.pending-actions button.choice.always { border-radius: 0; margin-right: -1px; }
 .pending-actions button.choice.edit { border-radius: 0; margin-right: -1px; }
 .pending-actions button.choice.reject { border-radius: 0 4px 4px 0; margin-right: 0.75rem; }
 button.choice[aria-pressed="true"].approve { background: var(--ok); border-color: var(--ok); color: var(--surface); }
-button.choice[aria-pressed="true"].always { background: var(--ok); border-color: var(--ok); color: var(--surface); }
 button.choice[aria-pressed="true"].edit { background: var(--ok); border-color: var(--ok); color: var(--surface); }
 button.choice[aria-pressed="true"].reject { background: var(--bad); border-color: var(--bad); color: var(--surface); }
-.confirm-foot { display: flex; align-items: center; gap: 0.75rem; padding: 0.625rem 0.75rem; border-top: 1px solid var(--line); }
+.confirm-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem 0.75rem; padding: 0.625rem 0.75rem; border-top: 1px solid var(--line); }
+.locked { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; color: var(--warn); font-weight: 600; }
 
 .composer {
   flex: none; background: var(--bg);
@@ -338,17 +348,17 @@ textarea::placeholder { color: var(--muted); }
   :root { interpolate-size: allow-keywords; }
   .spinner { animation: spin 0.8s linear infinite; }
   .working-label { animation: pulse 1.6s ease-in-out infinite; }
-  .note[data-state="running"] .badge { animation: pulse 1.6s ease-in-out infinite; }
-  .note[data-live] { animation: fade 0.2s ease-out backwards; }
+  .call[data-state="running"] .call-head > .badge { animation: pulse 1.6s ease-in-out infinite; }
+  .call { animation: fade 0.2s ease-out backwards; }
   .turn, .confirm, .working-row, .error, .jump, .empty, .turn-error { animation: rise 0.2s ease-out backwards; }
   button, .link-button { transition: background-color 0.15s, border-color 0.15s, color 0.15s; }
   .edit-request { transition: opacity 0.15s, background-color 0.15s, border-color 0.15s, color 0.15s; }
   @supports selector(::details-content) {
-    .call::details-content, .raw::details-content {
+    .raw::details-content {
       block-size: 0; overflow-y: clip;
       transition: block-size 0.2s ease-out, content-visibility 0.2s allow-discrete;
     }
-    .call[open]::details-content, .raw[open]::details-content { block-size: auto; }
+    .raw[open]::details-content { block-size: auto; }
   }
   @media (max-width: 51.99rem) {
     .rail { transition: translate 0.2s ease-out, visibility 0s 0.2s; }
@@ -361,7 +371,7 @@ textarea::placeholder { color: var(--muted); }
 <body>
 <header class="bar">
   <div class="bar-inner">
-    <button id="rail-toggle" class="small rail-toggle" type="button" aria-expanded="false" aria-controls="rail">Conversations</button>
+    <button id="rail-toggle" class="small rail-toggle" type="button" aria-expanded="false" aria-controls="rail">Menu</button>
     <h1 class="brand">deskclerk</h1>
     <div id="who" class="who" hidden>
       <span id="status" class="muted small"></span>
@@ -370,7 +380,7 @@ textarea::placeholder { color: var(--muted); }
     </div>
   </div>
 </header>
-<p id="unscreened" class="banner" role="status" hidden>Tool results are not screened for prompt injection. Set TYPESAFE_API_KEY to turn the screen on.</p>
+<p id="unscreened" class="banner" role="status" hidden>Tool results are not screened for prompt injection.</p>
 
 <section id="signin" class="signin" hidden>
   <h2 class="signin-title">Sign in to continue</h2>
@@ -401,7 +411,7 @@ textarea::placeholder { color: var(--muted); }
     <div id="empty" class="empty">
       <h2 class="empty-title">What do you need from your connected apps?</h2>
       <p>Ask for something to look up or change in your connected apps.</p>
-      <p id="connect-hint" hidden>Connect an app in the left panel.<span class="phone-only"> Open it with the Conversations button.</span></p>
+      <p id="connect-hint" hidden>Connect an app in the left panel.<span class="phone-only"> Open it with the Menu button.</span></p>
       <div id="chips" class="chips"></div>
     </div>
     <div id="turns" class="turns"></div>
@@ -411,8 +421,9 @@ textarea::placeholder { color: var(--muted); }
         <h2 id="confirm-title" class="confirm-title" tabindex="-1">Approval needed</h2>
         <p id="confirm-note" class="small"></p>
       </div>
-      <div id="pending" class="pending"></div>
       <div id="confirm-foot" class="confirm-foot">
+        <button id="approve-reads" type="button">Approve all reads</button>
+        <button id="reject-all" type="button">Reject all</button>
         <button id="send" class="primary" type="button" disabled>Continue</button>
         <span id="decided" class="muted small"></span>
       </div>
@@ -424,6 +435,7 @@ textarea::placeholder { color: var(--muted); }
     <form id="composer" class="composer">
       <label for="request" class="sr-only">Your request</label>
       <textarea id="request" maxlength="4000" placeholder="What do you need?"></textarea>
+      <p id="locked" class="locked small" hidden><span>Approve or reject the waiting calls above to continue.</span> <button id="jump-approval" class="small chip" type="button" hidden>Jump to approval</button></p>
       <p id="error" class="error" role="alert" hidden></p>
       <p id="working" class="sr-only" role="status"></p>
       <p id="announce" class="sr-only" role="status" aria-live="polite"></p>
@@ -436,7 +448,7 @@ textarea::placeholder { color: var(--muted); }
 </div>
 
 <script src="/vendor/marked-18.1.0.umd.js" integrity="sha256-9CTctQj9+T4BN6lwz86PMgfqLj837KX3VWpSh1aDYyo="></script>
-<script src="/vendor/purify-3.4.16.min.js" integrity="sha256-LJCptG1kY/JgOKKbaG6CvJHeAf2snVIp58/js2ATTqI="></script>
+<script src="/vendor/purify-3.4.17.min.js" integrity="sha256-zTeJj5eCrfVIIMQTGRtWkYA/DxN8eZ1u3P04UjtMLDE="></script>
 <script>
 const DRAFT = "deskclerk.draft";
 let inFlight = "";
@@ -475,9 +487,9 @@ const el = (id) => document.getElementById(id);
 const confirmBox = el("confirm");
 const confirmTitle = el("confirm-title");
 const confirmNote = el("confirm-note");
-const confirmFoot = el("confirm-foot");
-const pendingList = el("pending");
 const sendButton = el("send");
+const approveReadsButton = el("approve-reads");
+const rejectAllButton = el("reject-all");
 const decidedText = el("decided");
 confirmBox.remove();
 
@@ -493,6 +505,9 @@ function remembered() {
 }
 let currentTurn = null;
 let decisions = {};
+let approvals = [];
+let shownPending = [];
+let cardCount = 0;
 let waiting = 0;
 let busy = false;
 let running = null;
@@ -629,8 +644,8 @@ function reportProblem(status, body, statusText, turn, retry) {
   if (sentence !== undefined) showError(sentence, raw);
   else showError(raw === "" ? "Something went wrong (status " + status + ")" : raw);
   if (turn === undefined || calls.length === 0) return false;
-  const ran = { executed: calls, blocked: [], unavailable: [], changed_tools: [] };
-  turn.calls.replaceChildren(noteRow("warn", "Ran", "These calls ran before the error"), ...buildCalls(ran));
+  fillCards(turn, calls, []);
+  turn.notes.replaceChildren(noteRow("warn", "Ran", "These calls ran before the error"));
   revealTurn(turn.node);
   return true;
 }
@@ -645,7 +660,36 @@ function updateControls() {
   for (const control of el("turns").querySelectorAll(".edit-request, .edit-send")) {
     control.disabled = busy || waiting > 0;
   }
-  el("request").placeholder = waiting > 0 ? "Decide the calls above to continue" : "What do you need?";
+  const locked = waiting > 0;
+  el("request").readOnly = locked;
+  el("request").placeholder = locked ? "Decide the calls above to continue" : "What do you need?";
+  if (locked) el("request").setAttribute("aria-describedby", "locked");
+  else el("request").removeAttribute("aria-describedby");
+  el("locked").hidden = !locked;
+  updateApprovalJump();
+}
+
+function waitingCard() {
+  const turns = el("turns");
+  return turns.querySelector(".call.pending-card:not([data-choice])") ?? turns.querySelector(".call.pending-card");
+}
+
+function updateApprovalJump() {
+  const target = waiting > 0 ? waitingCard() : null;
+  let inView = false;
+  if (target !== null) {
+    const box = el("messages").getBoundingClientRect();
+    const spot = target.getBoundingClientRect();
+    inView = spot.height > 0 && spot.bottom > box.top && spot.top < box.bottom;
+  }
+  el("jump-approval").hidden = target === null || inView;
+}
+
+function jumpToApproval() {
+  const target = waitingCard();
+  if (target === null) return;
+  target.scrollIntoView({ block: "start", behavior: scrollBehavior() });
+  target.querySelector(".approval button.approve")?.focus({ preventScroll: true });
 }
 
 function fitBox(box) {
@@ -698,29 +742,8 @@ const PROMPTS = [
   (name) => "Give me an example of using " + name,
 ];
 
-function requestFromTool(tool) {
-  const words = (tool.title || tool.name).split(/[^A-Za-z0-9]+/).filter(Boolean).map((word) => word.toLowerCase());
-  if (words.length === 0) return "";
-  const verb = words[0].charAt(0).toUpperCase() + words[0].slice(1);
-  if (words.length === 1) return verb;
-  const noun = words.slice(1).join(" ");
-  return tool.read_only ? verb + " my " + noun : verb + " a " + noun.replace(/s$/, "");
-}
-
-function toolPrompts(servers) {
-  const picked = [];
-  for (let round = 0; picked.length < 4 && round < 4; round++) {
-    for (const server of servers) {
-      const reads = server.tools.filter((tool) => tool.read_only);
-      const writes = server.tools.filter((tool) => !tool.read_only);
-      for (const tool of [reads[round], writes[round]]) if (tool && picked.length < 4) picked.push(tool);
-    }
-  }
-  return picked.map(requestFromTool).filter(Boolean);
-}
-
 function showChips(servers) {
-  let prompts = servers.flatMap((server) => server.examples).concat(toolPrompts(servers));
+  const prompts = servers.flatMap((server) => server.examples);
   if (prompts.length === 0) {
     for (const template of PROMPTS) for (const server of servers) prompts.push(template(server.title || server.name));
   }
@@ -741,7 +764,7 @@ function showBudget(spent, budget) {
   line.dataset.level = used >= 0.8 ? "warn" : "ok";
   line.textContent = used >= 1
     ? "Budget used: asks are refused until next month"
-    : "This month: $" + spent.toFixed(2) + " of $" + budget.toFixed(2);
+    : "This month: $" + spent.toFixed(4) + " of $" + budget.toFixed(2);
   line.hidden = false;
 }
 
@@ -751,6 +774,13 @@ async function refreshBudget() {
   const me = await response.json();
   showBudget(me.spent_usd, me.budget_usd);
 }
+
+const SERVER_STATES = {
+  connected: { label: "Connected", className: "state on", action: "Disconnect", problem: "" },
+  not_connected: { label: "Not connected", className: "state", action: "Connect", problem: "" },
+  sign_in_expired: { label: "Sign-in expired", className: "state expired", action: "Reconnect", problem: "Your sign-in to this app ended. Reconnect to use it again." },
+  error: { label: "Not responding", className: "state error", action: "Disconnect", problem: "The last request to this app failed. Ask your administrator if it keeps failing." },
+};
 
 let serversLoad = 0;
 
@@ -762,24 +792,26 @@ async function loadServers() {
   const servers = await response.json();
   if (mine !== serversLoad) return;
   const cards = [];
-  const connected = servers.filter((server) => server.connected).length;
-  el("rail-summary").textContent = "Connected apps: " + connected + " of " + servers.length + " connected";
-  showChips(servers.filter((server) => server.connected));
-  el("connect-hint").hidden = servers.length === 0 || connected > 0;
+  const usable = servers.filter((server) => server.state === "connected");
+  el("rail-summary").textContent = "Connected apps: " + usable.length + " of " + servers.length + " connected";
+  showChips(usable);
+  el("connect-hint").hidden = servers.length === 0 || usable.length > 0;
   for (const server of servers) {
     const card = make("div", "server");
     card.append(make("div", "server-name", server.title || server.name), make("div", server.description ? "server-about" : "server-url", server.description || server.url));
+    const shown = SERVER_STATES[server.state];
     const foot = make("div", "server-foot");
-    foot.append(make("span", server.connected ? "state on" : "state", server.connected ? "Connected" : "Not connected"));
+    foot.append(make("span", shown.className, shown.label));
     if (server.needs_sign_in) {
-      const toggle = server.connected
+      const toggle = shown.action === "Disconnect"
         ? button("Disconnect", () => disconnect(server.name), "small")
-        : button("Connect", () => connect(server.name), "small primary");
+        : button(shown.action, () => connect(server.name), "small primary");
       toggle.setAttribute("aria-label", toggle.textContent + " " + server.name);
       foot.append(toggle);
     }
     card.append(foot);
-    if (server.connected && server.always_allowed.length > 0) {
+    if (shown.problem !== "") card.append(make("div", "server-problem", shown.problem));
+    if (server.always_allowed.length > 0) {
       const names = Object.fromEntries(server.tools.map((tool) => [tool.name, tool.title || tool.name]));
       const items = make("div", "always-list");
       for (const tool of server.always_allowed) {
@@ -892,23 +924,106 @@ function rawArguments(args) {
   return box;
 }
 
-const FLAGGED_BADGE = "Flagged by screen";
+const FLAGGED_BADGE = "Possible prompt injection";
+const STATES = {
+  awaiting: ["warn", "Awaiting approval"],
+  pending: ["info", "Pending"],
+  running: ["info", "Running"],
+  done: ["ok", "Done"],
+  error: ["bad", "Error"],
+  denied: ["bad", "Denied"],
+};
+const ANNOUNCED = new Set(["running", "done", "error"]);
+const FINAL = new Set(["done", "error", "denied", "ended"]);
+const HELD = new Set(["awaiting", "pending", "denied"]);
+const cardOf = new WeakMap();
 
-function callRow(call, badgeClass, badgeText, parts) {
-  const row = make("details", "call");
-  const head = make("summary");
+function newCard(turn, id, server, tool) {
+  const node = make("div", "call");
+  node.dataset.callId = id;
+  const head = make("div", "call-head");
+  const badge = make("span", "badge");
   const name = make("span", "call-name");
-  name.append(make("span", "call-tool", call.tool));
-  if (call.flagged) name.append(make("span", "badge warn", FLAGGED_BADGE));
-  head.append(
-    make("span", "badge " + badgeClass, badgeText),
-    make("span", "call-server", call.server),
-    name,
-  );
+  name.append(make("span", "call-tool", tool));
+  cardCount += 1;
   const body = make("div", "call-body");
-  body.append(...parts);
-  row.append(head, body);
-  return row;
+  body.id = "call-body-" + cardCount;
+  body.hidden = true;
+  const toggle = button("Show details", () => openCard(card, body.hidden), "small quiet call-toggle");
+  toggle.setAttribute("aria-expanded", "false");
+  toggle.setAttribute("aria-controls", body.id);
+  toggle.hidden = true;
+  head.append(badge, make("span", "call-server", server), name, toggle);
+  node.append(head, body);
+  const card = { node, id, server, tool, badge, name, body, toggle, state: "", filled: false, held: false, approval: null, rejectReason: "" };
+  cardOf.set(node, card);
+  turn.cards.push(card);
+  turn.rows.set(id, card);
+  turn.calls.append(node);
+  return card;
+}
+
+function openCard(card, open) {
+  card.body.hidden = !open;
+  card.toggle.textContent = open ? "Hide details" : "Show details";
+  card.toggle.setAttribute("aria-expanded", String(open));
+}
+
+function setState(card, state, text) {
+  const [tone, label] = state === "ended" ? ["warn", text] : STATES[state];
+  const changed = card.state !== state;
+  card.state = state;
+  card.node.dataset.state = state;
+  card.badge.className = "badge " + tone;
+  card.badge.textContent = label;
+  if (changed && ANNOUNCED.has(state)) announce(card.server + " " + card.tool + ": " + label);
+}
+
+function markFlagged(card) {
+  if (card.node.dataset.flagged !== undefined) return;
+  card.node.dataset.flagged = "";
+  card.name.append(make("span", "badge warn", FLAGGED_BADGE));
+}
+
+function fillCard(card, parts) {
+  card.body.replaceChildren(...parts);
+  card.toggle.hidden = false;
+  card.filled = true;
+}
+
+function clearApproval(card) {
+  card.approval?.remove();
+  card.approval = null;
+  card.node.classList.remove("pending-card");
+  delete card.node.dataset.choice;
+}
+
+function dropCard(turn, card) {
+  card.node.remove();
+  turn.cards = turn.cards.filter((other) => other !== card);
+  if (turn.rows.get(card.id) === card) turn.rows.delete(card.id);
+}
+
+function unfilledCard(turn, id) {
+  return turn.cards.find((card) => card.id === id && !card.filled);
+}
+
+function fillCards(turn, executed, blocked) {
+  for (const call of executed) {
+    const card = unfilledCard(turn, call.id) ?? newCard(turn, call.id, call.server, call.tool);
+    clearApproval(card);
+    fillCard(card, [part("Arguments", JSON.stringify(call.arguments, null, 2)), part("Result", call.result)]);
+    setState(card, call.is_error ? "error" : "done");
+    if (call.flagged) markFlagged(card);
+  }
+  for (const call of blocked) {
+    const card = unfilledCard(turn, call.id) ?? newCard(turn, call.id, call.server, call.tool);
+    clearApproval(card);
+    let reason = call.reason;
+    if (call.rejected) reason = card.rejectReason === "" ? "You rejected this call" : "You rejected this call: " + card.rejectReason;
+    fillCard(card, [part("Reason", reason), part("Arguments", JSON.stringify(call.arguments, null, 2))]);
+    setState(card, "denied");
+  }
 }
 
 function noteRow(badgeClass, badgeText, text) {
@@ -917,25 +1032,16 @@ function noteRow(badgeClass, badgeText, text) {
   return row;
 }
 
-function buildCalls(result) {
+function resultNotes(result) {
   const rows = [];
-  for (const call of result.executed) {
-    const parts = [part("Arguments", JSON.stringify(call.arguments, null, 2)), part("Result", call.result)];
-    rows.push(callRow(call, call.is_error ? "bad" : "ok", call.is_error ? "Failed" : "Done", parts));
-  }
-  for (const call of result.blocked) {
-    const shownArguments = part("Arguments", JSON.stringify(call.arguments, null, 2));
-    if (call.rejected) {
-      rows.push(callRow(call, "info", "Rejected by you", [shownArguments]));
-    } else {
-      rows.push(callRow(call, "bad", "Blocked", [part("Reason", call.reason), shownArguments]));
-    }
-  }
   for (const name of result.unavailable) {
     rows.push(noteRow("warn", "No answer", name + " did not answer, so its tools were not offered"));
   }
   for (const name of result.changed_tools) {
-    rows.push(noteRow("warn", "Changed", name + " changed one of its tools. Reconnect the app to use it again."));
+    const split = name.indexOf("__");
+    const server = name.slice(0, split);
+    const tool = name.slice(split + 2);
+    rows.push(noteRow("warn", "Changed", server + " changed its tool " + tool + ". Reconnect the app to use it again."));
   }
   if (result.cut_off) {
     rows.push(noteRow("warn", "Cut off", "The reply was cut off at the output limit, so the answer above is incomplete"));
@@ -945,8 +1051,8 @@ function buildCalls(result) {
   }
   if (result.flagged > 0) {
     const text = result.flagged === 1
-      ? "A tool result looked like it contained instructions, so later steps ask you first"
-      : result.flagged + " tool results looked like they contained instructions, so later steps ask you first";
+      ? "Possible prompt injection detected in a tool result, so later steps ask you first"
+      : "Possible prompt injection detected in " + result.flagged + " tool results, so later steps ask you first";
     rows.push(noteRow("warn", "Flagged", text));
   }
   return rows;
@@ -1046,10 +1152,11 @@ function newTurn(request) {
   reply.hidden = true;
   reply.append(make("div", "who-label", "Assistant"), make("div", "answer"));
   const calls = make("div", "calls");
-  turn.append(asked, reply, calls);
+  const notes = make("div", "notes");
+  turn.append(asked, calls, reply, notes);
   el("turns").append(turn);
   el("empty").hidden = true;
-  const made = { node: turn, asked, reply, answer: reply.lastChild, calls, text: "", frame: 0, rows: new Map(), pending: [], id: null, wrote: false, index: null };
+  const made = { node: turn, asked, reply, answer: reply.lastChild, calls, notes, cards: [], text: "", frame: 0, rows: new Map(), pending: [], id: null, wrote: false, index: null };
   const edit = button("Edit", () => openEditor(made), "small quiet edit-request");
   edit.setAttribute("aria-label", "Edit this request");
   edit.disabled = busy || waiting > 0;
@@ -1277,101 +1384,231 @@ function updateDecided(total) {
 }
 
 const REASONS = {
-  flag: ["warn", "An earlier result in this conversation was flagged as a possible prompt injection"],
   untrusted: ["warn", "This server is not trusted, so every call asks"],
   destructive: ["bad", "May delete or overwrite"],
   write: ["warn", "Changes data"],
 };
 
+function flagReason(call) {
+  const source = call.flagged_by;
+  const where = source === null ? "an earlier result in this conversation" : "the result of " + source.server + " " + source.tool;
+  return ["warn", "Possible prompt injection detected in " + where + ", so this call asks first"];
+}
+
 function reasonOf(call) {
-  if (call.after_flag) return REASONS.flag;
+  if (call.after_flag) return flagReason(call);
   if (!call.trusted) return REASONS.untrusted;
   return call.destructive ? REASONS.destructive : REASONS.write;
 }
 
-function showPending(pending) {
-  decisions = {};
-  const list = pendingList;
-  list.replaceChildren();
-  for (const call of pending) {
-    const card = make("div", "pending-card");
-    const title = make("div", "pending-title");
-    title.append(make("span", "call-server", call.server), make("span", "call-tool", call.tool));
-    const [reasonClass, reasonText] = reasonOf(call);
-    const reason = make("p", "pending-reason");
-    reason.append(make("span", "badge " + reasonClass, reasonText));
-    const group = make("div", "pending-actions");
-    group.setAttribute("role", "group");
-    group.setAttribute("aria-label", "Decision for " + call.server + " " + call.tool);
-    const single = pending.length === 1;
-    const choose = (choice) => {
-      decide(choice);
-      if (single) send();
-    };
-    const approve = button("Approve", () => choose("approve"), "choice approve");
-    const reject = button("Reject", () => choose("reject"), "choice reject");
-    approve.setAttribute("aria-pressed", "false");
-    reject.setAttribute("aria-pressed", "false");
-    const always = call.always_allowable && !call.after_flag ? button("Always allow", () => choose("approve_always"), "choice always") : null;
-    if (always) always.setAttribute("aria-pressed", "false");
-    const edit = button("Edit", () => decide("edit"), "choice edit");
-    edit.setAttribute("aria-pressed", "false");
-    const verdict = make("span", "badge info", "Not decided");
-    const editor = argumentEditor(call.arguments, () => decide("edit"), () => undecide());
-    editor.box.hidden = true;
-    const runEdited = single ? button("Run edited call", send, "primary small") : null;
-    if (runEdited) editor.box.append(runEdited);
-    const shown = argumentList(call.arguments);
-    const raw = rawArguments(call.arguments);
-    const decide = (choice) => {
-      const editing = choice === "edit";
-      const edited = editing ? editor.collect() : null;
-      if (editing && edited === null) delete decisions[call.id];
-      else decisions[call.id] = editing ? { edit: edited } : choice;
-      card.dataset.choice = choice;
-      editor.box.hidden = !editing;
-      shown.hidden = editing;
-      raw.hidden = editing;
-      approve.setAttribute("aria-pressed", String(choice === "approve"));
-      reject.setAttribute("aria-pressed", String(choice === "reject"));
-      edit.setAttribute("aria-pressed", String(editing));
-      if (always) always.setAttribute("aria-pressed", String(choice === "approve_always"));
+function flaggedSource(call) {
+  if (call.flagged_by === null) return null;
+  const node = el("turns").querySelector('.call[data-flagged][data-call-id="' + CSS.escape(call.flagged_by.id) + '"]');
+  return node === null ? null : cardOf.get(node);
+}
+
+function revealCard(card) {
+  openCard(card, true);
+  card.node.scrollIntoView({ block: "center", behavior: scrollBehavior() });
+  card.toggle.focus({ preventScroll: true });
+}
+
+function alwaysAllowControls(call, choose) {
+  const box = make("div", "always");
+  const ask = make("div", "always-confirm");
+  ask.setAttribute("role", "group");
+  ask.setAttribute("aria-label", "Confirm always allow");
+  ask.hidden = true;
+  const open = button("Always allow this tool…", () => {
+    open.hidden = true;
+    ask.hidden = false;
+    cancel.focus();
+  }, "small quiet always-open");
+  const close = () => {
+    ask.hidden = true;
+    open.hidden = false;
+  };
+  const cancel = button("Cancel", () => {
+    close();
+    open.focus();
+  }, "small");
+  const allow = button("Always allow " + call.tool, () => {
+    close();
+    choose("approve_always");
+  }, "small primary");
+  const buttons = make("div", "always-buttons");
+  buttons.append(allow, cancel);
+  const text = "Always allow " + call.server + " " + call.tool + "? It will run without asking you again. You can turn this off under Connected apps.";
+  ask.append(make("p", "small", text), buttons);
+  ask.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    event.stopPropagation();
+    cancel.click();
+  });
+  box.append(open, ask);
+  return box;
+}
+
+function renderApproval(card, call, total) {
+  clearApproval(card);
+  card.held = true;
+  card.node.classList.add("pending-card");
+  setState(card, "awaiting");
+  const single = total === 1;
+  const box = make("div", "approval");
+  const [reasonClass, reasonText] = reasonOf(call);
+  const reason = make("p", "pending-reason");
+  reason.append(make("span", "badge " + reasonClass, reasonText));
+  const source = call.after_flag ? flaggedSource(call) : null;
+  if (source) reason.append(button("Show that result", () => revealCard(source), "small quiet"));
+  const group = make("div", "pending-actions");
+  group.setAttribute("role", "group");
+  group.setAttribute("aria-label", "Decision for " + call.server + " " + call.tool);
+  const choose = (choice) => {
+    decide(choice);
+    if (single) send();
+  };
+  const approve = button("Approve", () => choose("approve"), "choice approve");
+  const edit = button("Edit", () => decide("edit"), "choice edit");
+  const reject = button("Reject", () => decide("reject"), "choice reject");
+  for (const choice of [approve, edit, reject]) choice.setAttribute("aria-pressed", "false");
+  const verdict = single ? null : make("span", "verdict", "Waiting for you");
+  const editor = argumentEditor(call.arguments, () => decide("edit"), () => undecide());
+  editor.box.hidden = true;
+  const runEdited = single ? button("Run edited call", send, "primary small") : null;
+  if (runEdited) editor.box.append(runEdited);
+  const shown = argumentList(call.arguments);
+  const raw = rawArguments(call.arguments);
+  cardCount += 1;
+  const reasonBox = make("div", "reject-reason");
+  reasonBox.hidden = true;
+  const reasonField = make("textarea");
+  reasonField.id = "reject-reason-" + cardCount;
+  reasonField.maxLength = el("request").maxLength;
+  const reasonLabel = make("label", "small", "Reason for rejecting (optional, sent to the assistant)");
+  reasonLabel.htmlFor = reasonField.id;
+  reasonBox.append(reasonLabel, reasonField);
+  if (single) reasonBox.append(button("Send rejection", send, "small primary"));
+  reasonField.addEventListener("input", () => fitBox(reasonField));
+  reasonField.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      undecide();
+    } else if (single && event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      send();
+    }
+  });
+  const decide = (choice) => {
+    const editing = choice === "edit";
+    const edited = editing ? editor.collect() : null;
+    if (editing && edited === null) delete decisions[call.id];
+    else decisions[call.id] = editing ? { edit: edited } : choice;
+    card.node.dataset.choice = choice;
+    editor.box.hidden = !editing;
+    shown.hidden = editing;
+    raw.hidden = editing;
+    reasonBox.hidden = choice !== "reject";
+    approve.setAttribute("aria-pressed", String(choice === "approve"));
+    reject.setAttribute("aria-pressed", String(choice === "reject"));
+    edit.setAttribute("aria-pressed", String(editing));
+    if (verdict) {
       verdict.textContent = editing && edited === null
         ? "Fix the marked values"
         : { approve: "Approved", approve_always: "Always allowed", edit: "Edited", reject: "Rejected" }[choice];
-      verdict.className = choice === "reject" || (editing && edited === null) ? "badge bad" : "badge ok";
-      if (runEdited) runEdited.disabled = edited === null;
-      updateDecided(pending.length);
-    };
-    const undecide = () => {
-      delete decisions[call.id];
-      delete card.dataset.choice;
-      editor.box.hidden = true;
-      shown.hidden = false;
-      raw.hidden = false;
-      for (const choice of [approve, reject, edit, always]) if (choice) choice.setAttribute("aria-pressed", "false");
-      verdict.textContent = "Not decided";
-      verdict.className = "badge info";
-      edit.focus();
-      updateDecided(pending.length);
-    };
-    group.append(approve, ...(always ? [always] : []), edit, reject, verdict);
-    card.append(title, reason);
-    if (call.description !== "") card.append(make("p", "small", call.description));
-    card.append(shown, editor.box, raw, group);
-    if (always) card.append(make("p", "pending-note", "Always allow runs this tool without asking again."));
-    list.append(card);
+      verdict.className = choice === "reject" || (editing && edited === null) ? "verdict bad" : "verdict ok";
+    }
+    if (runEdited) runEdited.disabled = edited === null;
+    updateDecided(total);
+    updateApprovalJump();
+    if (single && choice === "reject") reasonField.focus();
+  };
+  const undecide = () => {
+    delete decisions[call.id];
+    delete card.node.dataset.choice;
+    editor.box.hidden = true;
+    reasonBox.hidden = true;
+    shown.hidden = false;
+    raw.hidden = false;
+    for (const choice of [approve, reject, edit]) choice.setAttribute("aria-pressed", "false");
+    if (verdict) {
+      verdict.textContent = "Waiting for you";
+      verdict.className = "verdict";
+    }
+    edit.focus();
+    updateDecided(total);
+  };
+  group.append(approve, edit, reject);
+  if (verdict) group.append(verdict);
+  box.append(reason);
+  if (call.description !== "") box.append(make("p", "small", call.description));
+  box.append(shown, editor.box, raw, group, reasonBox);
+  if (call.always_allowable && !call.after_flag) box.append(alwaysAllowControls(call, choose));
+  card.approval = box;
+  card.node.append(box);
+  approvals.push({ call, card, decide, reasonField });
+}
+
+function heldCard(turn, call, taken) {
+  const found = turn.cards.find((card) => card.held && !card.filled && card.id === call.call_id && !taken.has(card));
+  if (found) return found;
+  const latest = turn.rows.get(call.call_id);
+  if (latest && !latest.filled && !FINAL.has(latest.state) && !taken.has(latest)) return latest;
+  return newCard(turn, call.call_id, call.server, call.tool);
+}
+
+function showPending(pending) {
+  decisions = {};
+  approvals = [];
+  shownPending = pending;
+  const turn = currentTurn;
+  if (turn !== null) {
+    const taken = new Set();
+    for (const call of pending) taken.add(heldCard(turn, call, taken));
+    for (const card of [...turn.cards]) {
+      if (taken.has(card)) continue;
+      if (card.held && !card.filled && HELD.has(card.state)) dropCard(turn, card);
+      else clearApproval(card);
+    }
+    const cards = [...taken];
+    pending.forEach((call, index) => renderApproval(cards[index], call, pending.length));
   }
-  waiting = pending.length;
-  updateDecided(pending.length);
-  confirmFoot.hidden = pending.length === 1;
-  confirmNote.textContent = pending.length === 1
-    ? "This call needs your approval before it runs."
-    : "Each call below needs your approval before it runs. Approve or reject each one, then press Continue.";
-  confirmBox.hidden = pending.length === 0;
-  if (pending.length === 0) confirmBox.remove();
-  else (currentTurn === null ? el("turns") : currentTurn.node).append(confirmBox);
+  waiting = turn === null ? 0 : pending.length;
+  updateDecided(waiting);
+  const several = waiting > 1;
+  approveReadsButton.hidden = !approvals.some((approval) => approval.call.read_only);
+  confirmNote.textContent = waiting + " calls wait for your approval. Decide each one in its card, or all at once below, then press Continue.";
+  confirmBox.hidden = !several;
+  if (several) turn.calls.after(confirmBox);
+  else confirmBox.remove();
   updateControls();
+}
+
+function decisionBody() {
+  const body = {};
+  for (const { call, reasonField } of approvals) {
+    const choice = decisions[call.id];
+    const reason = reasonField.value.trim();
+    body[call.id] = choice === "reject" && reason !== "" ? { reject: reason } : choice;
+  }
+  return body;
+}
+
+function approveAllReads() {
+  for (const approval of approvals) {
+    if (approval.call.read_only && decisions[approval.call.id] === undefined) approval.decide("approve");
+  }
+  if (Object.keys(decisions).length === approvals.length) send();
+}
+
+function rejectAll() {
+  for (const approval of approvals) approval.decide("reject");
+  send();
+}
+
+function focusApproval() {
+  if (waiting > 1) confirmTitle.focus({ preventScroll: true });
+  else waitingCard()?.querySelector(".approval button.approve")?.focus({ preventScroll: true });
 }
 
 function paintAnswer(turn) {
@@ -1394,42 +1631,25 @@ function stopPainting(turn) {
 
 function liveCall(turn, call) {
   if (!call.read_only) turn.wrote = true;
-  let row = turn.rows.get(call.id);
-  if (row === undefined) {
+  let card = turn.rows.get(call.id);
+  if (card === undefined || (call.status === "running" && FINAL.has(card.state))) {
     if (turn.text !== "") {
       stopPainting(turn);
       turn.text = "";
       paintAnswer(turn);
     }
-    const label = make("span");
-    label.append(make("span", "call-server", call.server + " "), make("span", "call-tool", call.tool));
-    row = make("div", "note");
-    row.dataset.live = "";
-    row.append(make("span", "badge info", "Running"), label);
-    turn.rows.set(call.id, row);
-    turn.calls.append(row);
+    card = newCard(turn, call.id, call.server, call.tool);
     if (following) scrollToBottom("auto");
     updateJump();
   }
-  if (call.status === "running") {
-    row.dataset.state = "running";
-    return;
-  }
-  row.dataset.state = call.status;
-  row.firstChild.className = "badge " + (call.status === "error" ? "bad" : "ok");
-  row.firstChild.textContent = call.status === "error" ? "Failed" : "Done";
-  if (call.flagged && row.querySelector(".flagged") === null) {
-    const flag = make("span", "badge warn flagged", FLAGGED_BADGE);
-    row.lastChild.append(" ", flag);
-  }
+  if (call.status === "running") return setState(card, "running");
+  setState(card, call.status === "error" ? "error" : "done");
+  if (call.flagged) markFlagged(card);
 }
 
 function endLiveCalls(turn, text) {
-  for (const row of turn.rows.values()) {
-    if (row.dataset.state !== "running") continue;
-    row.dataset.state = "ended";
-    row.firstChild.className = "badge warn";
-    row.firstChild.textContent = text;
+  for (const card of turn.cards) {
+    if (card.state === "running") setState(card, "ended", text);
   }
 }
 
@@ -1439,10 +1659,11 @@ function showResult(result) {
   const turn = currentTurn;
   stopPainting(turn);
   setAnswer(turn, result.answer);
-  turn.calls.replaceChildren(...buildCalls(result));
+  fillCards(turn, result.executed, result.blocked);
+  turn.notes.replaceChildren(...resultNotes(result));
   showPending(result.pending);
   if (result.pending.length > 0) {
-    confirmTitle.focus({ preventScroll: true });
+    focusApproval();
   } else if (result.answer !== "") {
     announce("Answer ready");
   }
@@ -1534,9 +1755,9 @@ async function reloadPending() {
   try {
     const response = await api("/conversations/" + encodeURIComponent(conversation));
     if (response.ok) showPending((await response.json()).pending);
-    else updateDecided(waiting);
+    else showPending(shownPending);
   } catch (error) {
-    updateDecided(waiting);
+    showPending(shownPending);
   }
 }
 
@@ -1544,7 +1765,7 @@ async function showStopped(turn) {
   stopPainting(turn);
   if (turn.text !== "") setAnswer(turn, turn.text);
   endLiveCalls(turn, "Stopped");
-  turn.calls.append(noteRow("warn", "Stopped", "You stopped this request. A call that was already sent to a server may have run."));
+  turn.notes.append(noteRow("warn", "Stopped", "You stopped this request. A call that was already sent to a server may have run."));
   revealTurn(turn.node);
   announce("Stopped");
   await adoptConversation(turn.id);
@@ -1629,6 +1850,7 @@ async function ask(resent, edit) {
     if (!finished && !refused) await settle(turn, request, at);
     running = null;
     setBusy(false);
+    loadServers();
     loadConversations();
     refreshBudget();
     if (waiting === 0) el("request").focus();
@@ -1642,10 +1864,16 @@ async function send() {
   setBusy(true, "Sending your decisions…");
   const turn = currentTurn;
   turn.pending = [];
-  const usedAlways = Object.values(decisions).includes("approve_always");
+  const body = { conversation, decisions: decisionBody() };
+  for (const { call, card, reasonField } of approvals) {
+    card.approval.inert = true;
+    const rejected = decisions[call.id] === "reject";
+    card.rejectReason = rejected ? reasonField.value.trim() : "";
+    setState(card, rejected ? "denied" : "pending");
+  }
   const stop = startWorking(turn.node, "Sending your decisions…");
   try {
-    const { response, outcome } = await streamed("/ask/confirm", { conversation, decisions }, turn);
+    const { response, outcome } = await streamed("/ask/confirm", body, turn);
     if (!response.ok) {
       await reloadPending();
       return await reportFailure(response, turn);
@@ -1666,14 +1894,14 @@ async function send() {
       showPending([]);
       await showStopped(turn);
     } else {
-      updateDecided(waiting);
+      await reloadPending();
       showError("Could not reach the server");
     }
   } finally {
     stop();
     running = null;
     setBusy(false);
-    if (usedAlways) loadServers();
+    loadServers();
     loadConversations();
     refreshBudget();
     if (waiting === 0) el("request").focus();
@@ -1724,6 +1952,7 @@ async function start() {
   el("status").textContent = "Signed in as " + me.name;
   el("admin-link").hidden = !me.admin;
   el("unscreened").hidden = !me.unscreened;
+  if (me.admin) el("unscreened").append(" Set TYPESAFE_API_KEY to turn the screen on.");
   showBudget(me.spent_usd, me.budget_usd);
   el("who").hidden = false;
   el("app").hidden = false;
@@ -1750,11 +1979,16 @@ async function start() {
   el("messages").addEventListener("scroll", () => {
     following = atBottom();
     updateJump();
+    updateApprovalJump();
   });
   new ResizeObserver(() => {
     if (following) scrollToBottom("auto");
     updateJump();
+    updateApprovalJump();
   }).observe(el("messages"));
+  el("jump-approval").addEventListener("click", jumpToApproval);
+  approveReadsButton.addEventListener("click", approveAllReads);
+  rejectAllButton.addEventListener("click", rejectAll);
   el("jump").addEventListener("click", () => {
     following = true;
     scrollToBottom(scrollBehavior());

@@ -15,7 +15,7 @@ from starlette.concurrency import run_in_threadpool
 from deskclerk.auth import AuthUnavailable
 from deskclerk.routes.services import Caller, Services
 
-VENDOR_SCRIPTS = ("marked-18.1.0.umd.js", "purify-3.4.16.min.js")
+VENDOR_SCRIPTS = ("marked-18.1.0.umd.js", "purify-3.4.17.min.js")
 SECURITY_HEADERS = {
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",

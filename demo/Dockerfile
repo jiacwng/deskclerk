@@ -1,7 +1,7 @@
 # The demo server: the official MCP git server (mcp-server-git) on a clone of the public deskclerk
 # repository, served over Streamable HTTP on port 8100 by mcp-proxy. Writes stay in the clone.
 # The newest commit in the clone is a planted prompt injection from AgentDojo.
-FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+FROM python:3.12-slim@sha256:191083cdf6c7bda8c76158983163ead5d5cf7b77cf3033e805bb0f5296f51b4b
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

@@ -74,7 +74,9 @@ def test_a_signed_in_employee_outside_the_group_is_refused(
     with web(settings, [], script(answer("ok")), token_signing_key, database) as site:
         for groups in ([], ["finance"]):
             outsider = bearer(sign_token, "bob", groups)
-            assert site.client.get("/admin", headers=outsider).status_code == 403
+            refused = site.client.get("/admin", headers=outsider)
+            assert refused.status_code == 403
+            assert refused.json()["detail"] == "this page is for admins"
             assert site.client.get("/admin/summary", headers=outsider).status_code == 403
             assert site.client.get("/me", headers=outsider).json()["admin"] is False
 
@@ -86,7 +88,7 @@ def test_someone_not_signed_in_is_sent_to_sign_in(
     with web(settings, [], script(answer("ok")), token_signing_key, database) as site:
         page = site.client.get("/admin", follow_redirects=False)
         assert page.status_code == 302
-        assert page.headers["location"] == "/login"
+        assert page.headers["location"] == "/login?next=/admin"
         assert site.client.get("/admin/summary").status_code == 401
 
 
@@ -128,6 +130,8 @@ def test_a_member_sees_the_servers_usage_and_latest_conversations_that_are_store
             "name": "notes",
             "url": "http://notes.test/mcp",
             "auth": "oauth",
+            "has_headers": False,
+            "trusted": False,
             "paused": False,
             "employees_connected": 2,
             "allowlist_size": 2,
@@ -136,6 +140,8 @@ def test_a_member_sees_the_servers_usage_and_latest_conversations_that_are_store
             "name": "open",
             "url": "http://open.test/mcp",
             "auth": "none",
+            "has_headers": False,
+            "trusted": False,
             "paused": False,
             "employees_connected": None,
             "allowlist_size": None,
@@ -238,7 +244,7 @@ def test_the_flagged_filter_checkbox_sits_inline_before_its_label() -> None:
 
 def test_each_audit_row_shows_whether_a_result_was_flagged() -> None:
     page = admin_page()
-    assert "<th>Decisions</th><th>Flagged</th><th>Line</th>" in page
+    assert "<th>Outcome</th><th>Flagged</th><th>Raw line</th>" in page
     assert "flagCell(r.flagged)" in page
     assert 'fill("audit", rows, 8)' in page
 
